@@ -104,7 +104,7 @@ The core simulator must run annual cycles (ticks) and compute the following:
 *   **Pillar 1 (AHV)**:
     *   Calculate mandatory contributions during the working phase (approx. 5.3% employee share).
     *   **Crucial**: Calculate mandatory AHV contributions for *non-working* individuals post-retirement up to age 65. This is based on wealth and imputed pension income (can be significant for early retirees).
-    *   Model payout starting at official retirement age (currently 65 for both men and women). This payout acts as an income stream that offsets living expenses and is fully subject to income tax.
+    *   Model payout starting at official retirement age (currently 65 for both men and women). The user's input representing today's pension value is adjusted for cumulative inflation from the start of the simulation until the payout starts at 65. This payout acts as an income stream that offsets living expenses and is fully subject to income tax (adjusted annually for inflation thereafter).
 *   **Pillar 2**:
     *   Model monthly growth of the **Freizügigkeitskonto** (Assumed to be 100% invested in equities proportional to target US/Non-US allocation).
     *   Model **lump-sum withdrawal (Kapitalbezug)** at retirement or staggered up to 5 years after AHV retirement age. Subject to separate capital withdrawal tax.

@@ -741,3 +741,55 @@ def test_simulation_engine_threshold_rebalancing_no_trigger():
     assert not np.isclose(final_assets[0], final_assets[2])
     assert np.isclose(final_assets[0] / total, expected_ratio, atol=1e-4)
     assert np.isclose(final_assets[2] / total, 1 - expected_ratio, atol=1e-4)
+
+
+def test_simulation_engine_ahv_pre_65_inflation():
+    # Verify that AHV pension is adjusted for inflation that occurs *before* age 65.
+    # Start age: 63. Duration: 3 years.
+    # We receive AHV in Year 2 (Age 65).
+    # Inflation: 5% annually (constant).
+    config = SimConfig(
+        num_runs=1,
+        duration_years=3,
+        inflation_mean=0.05,
+        inflation_std=0.0,
+        start_age=63,
+        dividend_yield=0.0,
+        enable_dynamic_expenses=False,
+        dynamic_expense_floor_pct=1.0,
+        enable_smart_selling=False,
+        initial_liquid_wealth=0.001,
+        initial_pillar_2=0.0,
+        initial_pillar_3a_accounts=[],
+        alloc_us_stocks=0.0,
+        alloc_non_us_stocks=0.0,
+        alloc_chf_cash=1.0,
+        alloc_gold=0.0,
+        alloc_bitcoin=0.0,
+        rebalance_strategy='Never',
+        rebalance_threshold=0.05,
+        annual_base_expenses=0.0,
+        monthly_ahv_pension=1000.0,
+        cantonal_multiplier=0.0,
+        municipal_multiplier=0.0
+    )
+    
+    # 0% returns, 5% inflation
+    return_matrix = np.zeros((1, 36, 5))
+    inflation_matrix = np.full((1, 3), 0.05)
+    
+    history = run_simulation(config, return_matrix, inflation_matrix)
+    
+    cash_y0 = history['liquid_assets_by_class'][0, 0, 2]
+    cash_y1 = history['liquid_assets_by_class'][1, 0, 2]
+    cash_y2 = history['liquid_assets_by_class'][2, 0, 2]
+    
+    # Year 0: paid minimum AHV (530). Cash: 0.001 - 530 = -529.999
+    assert np.isclose(cash_y0, -529.999)
+    # Year 1: starts at -529.999, incurs 5% penalty (-26.5), pays 530 tax. Cash: -529.999 * 1.05 - 530 = -1086.49895
+    assert np.isclose(cash_y1, -1086.49895)
+    # Year 2 (Age 65): starts at -1086.49895.
+    # Month 0: incurs 1 month penalty (-4.43), cash becomes -1090.93. Pension added (+1157.63), cash becomes positive (66.70).
+    # Month 1..11: pension added monthly. No more penalty.
+    # Final cash should be ~12800.57
+    assert np.isclose(cash_y2, 12800.5745, atol=1e-2)

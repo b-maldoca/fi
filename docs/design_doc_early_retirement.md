@@ -37,7 +37,10 @@ This is a stateless utility module responsible for all Swiss-specific calculatio
     *   Applied when Pillar 2 or Pillar 3a accounts are liquidated. Uses the separate capital withdrawal tax rate (typically 1/5th or 1/10th of standard rate, depending on the canton's formula).
 *   **AHV Non-Worker Contributions (`calculate_ahv_non_worker(wealth, imputed_pension_income=0)`)**: 
     *   Calculated based on the official 2025 AHV tables: `determining_wealth = wealth + 20 * imputed_pension_income`. Contribution is 530 CHF for wealth < 350k CHF. For wealth between 350k and 1.75M CHF, it adds 106 CHF for every 50k CHF step above 300k CHF. For wealth above 1.75M CHF, it adds 159 CHF for every 50k CHF step above 1.75M CHF. Capped at 26,500 CHF/year (2025 limits). In Phase 1, `imputed_pension_income` defaults to 0 in the simulation loop.
-    *   Starting at age 65, the user receives an annual AHV pension (adjusted annually based on CPI inflation). This is treated as taxable income (added to dividends) and reduces the required capital liquidation to meet annual expenses. If the pension exceeds expenses, the surplus is reinvested.
+    *   *Note: The tax brackets and AHV contribution thresholds are modeled as nominal constants (fixed at 2026 values) throughout the simulation, which is a conservative assumption.*
+*   **Pillar 1 AHV Pension Payments**:
+    *   Starting at age 65, the user receives an annual AHV pension. The expected pension value input by the user (in today's CHF) is adjusted for cumulative CPI inflation from the start of the simulation (e.g. if the simulation starts at age 45, it compounds inflation for 20 years before the first payout at age 65).
+    *   Once payouts start, they are adjusted annually based on the simulated CPI inflation of that year. This is treated as taxable income and reduces the required capital liquidation to meet annual expenses. If the pension exceeds expenses, the surplus is reinvested.
 
 ### 3.3. Simulation Engine (The Core Loop)
 The engine executes a **monthly tick** for `N` runs simultaneously using NumPy arrays. It tracks multi-asset portfolios (US Stocks, Non-US Stocks, CHF Cash, Gold, Bitcoin) via N-dimensional arrays. It handles automatic rebalancing logic based on user configuration (Never, Monthly, Yearly, Threshold) and applies taxes at the end of each simulated year.
