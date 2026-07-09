@@ -37,8 +37,7 @@ This is a stateless utility module responsible for all Swiss-specific calculatio
     *   Applied when Pillar 2 or Pillar 3a accounts are liquidated. Uses the separate capital withdrawal tax rate (typically 1/5th or 1/10th of standard rate, depending on the canton's formula).
 *   **AHV Non-Worker Contributions (`calculate_ahv_non_worker(wealth, imputed_pension_income=0)`)**: 
     *   Calculated based on the official 2025 AHV tables: `determining_wealth = wealth + 20 * imputed_pension_income`. Contribution is 530 CHF for wealth < 350k CHF. For wealth between 350k and 1.75M CHF, it adds 106 CHF for every 50k CHF step above 300k CHF. For wealth above 1.75M CHF, it adds 159 CHF for every 50k CHF step above 1.75M CHF. Capped at 26,500 CHF/year (2025 limits). In Phase 1, `imputed_pension_income` defaults to 0 in the simulation loop.
-*   **Pillar 1 AHV Pension Payments**:
-    *   Starting at age 65, the user receives an annual AHV pension. This is treated as taxable income (added to dividends) and reduces the required capital liquidation to meet annual expenses. If the pension exceeds expenses, the surplus is reinvested.
+    *   Starting at age 65, the user receives an annual AHV pension (adjusted annually based on CPI inflation). This is treated as taxable income (added to dividends) and reduces the required capital liquidation to meet annual expenses. If the pension exceeds expenses, the surplus is reinvested.
 
 ### 3.3. Simulation Engine (The Core Loop)
 The engine executes a **monthly tick** for `N` runs simultaneously using NumPy arrays. It tracks multi-asset portfolios (US Stocks, Non-US Stocks, CHF Cash, Gold, Bitcoin) via N-dimensional arrays. It handles automatic rebalancing logic based on user configuration (Never, Monthly, Yearly, Threshold) and applies taxes at the end of each simulated year.
@@ -46,7 +45,7 @@ The engine executes a **monthly tick** for `N` runs simultaneously using NumPy a
 **Monthly Tick Logic:**
 1. **Monthly Tick**: The simulation loop operates on a `duration_years * 12` timescale.
 2. **Growth & Drift**: At the start of each month, the 5 asset classes (US Stocks, Non-US Stocks, Cash, Gold, Bitcoin) grow by their respective monthly returns. Pillar 2 and Pillar 3a accounts also grow monthly, assumed to be 100% invested in equities proportional to the user's US/Non-US target allocation.
-3. **Pillar 1 (AHV) Pension (Monthly Check)**: Starting at age 65, the monthly AHV pension is added directly to the CHF Cash asset class each month, adjusted for inflation.
+3. **Pillar 1 (AHV) Pension (Monthly Check)**: Starting at age 65, the monthly AHV pension is added directly to the CHF Cash asset class each month, adjusted annually for CPI inflation (simplifying the official Swiss mixed index/Mischindex mechanism).
 4. **Rebalancing (Monthly Check)**: If the rebalance strategy is 'Monthly', or if 'Threshold' is breached, or if it's the 12th month of the year and the strategy is 'Yearly', the asset weights are mathematically reset to the target allocation.
     * **Smart Cash Buffer**: If enabled, rebalancing is disabled during market downturns (net worth < inflation-adjusted starting net worth).
 5. **Liquidation**: Age-triggered accounts (Pillar 3a at 60-64, Pillar 2 at 65) are liquidated in their respective months and moved into the taxable liquid wealth pool according to the target allocation.

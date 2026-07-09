@@ -94,7 +94,7 @@ dynamic_expense_floor_pct = 100.0
 if enable_dynamic_expenses:
     dynamic_expense_floor_pct = st.sidebar.number_input("Reduced Expense Floor (%)", value=85.0, step=1.0, format="%.1f", help="The percentage of your base expenses you will spend when your net worth is below the watermark.")
 
-monthly_ahv = st.sidebar.number_input("Expected Monthly AHV Pension from age 65 (CHF)", value=2000, step=100, help="The monthly AHV pension you expect to receive starting at age 65.")
+monthly_ahv = st.sidebar.number_input("Expected Monthly AHV Pension from age 65 (CHF)", value=2000, step=100, help="The monthly AHV pension you expect to receive starting at age 65 (in today's CHF, adjusted annually for CPI inflation in the simulation).")
 dividend_yield = st.sidebar.number_input("Dividend Yield (%)", value=1.5, step=0.1, format="%.1f", help="Expected annual dividend yield of the portfolio.") / 100.0
 inflation_mean = st.sidebar.number_input("Inflation Mean (%)", value=2.5, step=0.1, format="%.1f", help="Expected average annual inflation rate.") / 100.0
 inflation_std = st.sidebar.number_input("Inflation Volatility (%)", value=1.0, step=0.1, format="%.1f", help="Expected volatility of inflation.") / 100.0
