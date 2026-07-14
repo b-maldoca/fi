@@ -365,8 +365,8 @@ if True:
         
         # Find best and worst indices efficiently
         sorted_indices = np.argsort(final_nw)
-        worst_indices = sorted_indices[:5]
-        best_indices = sorted_indices[::-1][:5]
+        worst_indices = sorted_indices[:10]
+        best_indices = sorted_indices[::-1][:10]
         
         def build_df(indices):
             data = []
@@ -386,7 +386,7 @@ if True:
                 })
             return pd.DataFrame(data)
             
-        st.markdown(f"##### Top 5 Best {id_col_name}s" if is_historic else "##### Top 5 Best Runs")
+        st.markdown(f"##### Top 10 Best {id_col_name}s" if is_historic else "##### Top 10 Best Runs")
         df_best = build_df(best_indices)
         st.dataframe(df_best.style.format({
             "Final NW (Real)": "{:,.0f}",
@@ -394,7 +394,7 @@ if True:
             "Min NW (Nom)": "{:,.0f}"
         }), hide_index=True, width='stretch')
         
-        st.markdown(f"##### Top 5 Worst {id_col_name}s" if is_historic else "##### Top 5 Worst Runs")
+        st.markdown(f"##### Top 10 Worst {id_col_name}s" if is_historic else "##### Top 10 Worst Runs")
         df_worst = build_df(worst_indices)
         st.dataframe(df_worst.style.format({
             "Final NW (Real)": "{:,.0f}",

@@ -90,7 +90,7 @@ class SimulationResult:
     *   **Income vs Required Cash Chart** (Plotly): Stacked bar chart showing median Dividends, AHV Pension, and Capital Sold, with a reference line for Total Cash Needed (Expenses + Taxes).
     *   **Withdrawal Rate Chart** (Plotly): Percentile lines for the withdrawal rate over time.
     *   **Expenses & Taxes Chart** (Plotly): Stacked bar chart showing median Expenses and Taxes paid over time.
-    *   **Run Analysis Tables**: Lists of top 5 best and worst runs/cohorts based on final net worth (showing Final NW (Real), Final NW (Nom), and Min NW (Nominal) values).
+    *   **Run Analysis Tables**: Lists of top 10 best and worst runs/cohorts based on final net worth (showing Final NW (Real), Final NW (Nom), and Min NW (Nominal) values).
 
 ## 6. Implementation Plan & Milestones
 1.  **Setup**: Initialize Git repo, basic project structure, and `requirements.txt` (Streamlit, Pandas, NumPy, Plotly).
