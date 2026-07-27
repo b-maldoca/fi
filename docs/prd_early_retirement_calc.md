@@ -68,7 +68,7 @@ The application must allow the user to input the following parameters:
     *   **Never**: Assets drift naturally.
     *   **Yearly**: Rebalanced to target weights once every 12 months.
     *   **Monthly**: Rebalanced to target weights every month.
-    *   **Threshold-based**: Rebalanced only if any asset's weight drifts from its target by a user-specified percentage (e.g., ±5%).
+    *   **Cash Tent (Pfau Rising Equity Glide Path)**: A defensive sequence-of-returns risk strategy using cash instead of bonds. Assumes a cash buffer of [Tent Duration × (Annual Base Expenses + Estimated Taxes)] is already built up at retirement start (Year 0), and linearly glides down over the configured tent duration (e.g. 10 years) to the baseline target cash weight, allowing equity allocations to rise over time.
 *   **Smart Cash Buffer (Selling Strategy):** A defensive mechanism during market downturns. If the net worth drops below the inflation-adjusted starting net worth, the engine skips portfolio rebalancing and forces all expenses to be paid out of the CHF Cash allocation first, protecting equities from being sold at depressed prices. Normal proportional selling and rebalancing resumes once the portfolio recovers above the watermark.
 
 #### D. Expenses (Post-Retirement)

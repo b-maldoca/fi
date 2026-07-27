@@ -4,7 +4,7 @@ import os
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '../src')))
 
-from simulation_engine import SimConfig, run_simulation
+from simulation_engine import SimConfig, run_simulation, get_target_weights
 
 def test_simulation_engine_basic_run():
     config = SimConfig(
@@ -793,3 +793,140 @@ def test_simulation_engine_ahv_pre_65_inflation():
     # Month 1..11: pension added monthly. No more penalty.
     # Final cash should be ~12800.57
     assert np.isclose(cash_y2, 12800.5745, atol=1e-2)
+
+
+def test_get_target_weights_cash_tent():
+    config = SimConfig(
+        num_runs=1,
+        duration_years=10,
+        inflation_mean=0.0,
+        inflation_std=0.0,
+        start_age=65,
+        dividend_yield=0.0,
+        enable_dynamic_expenses=False,
+        dynamic_expense_floor_pct=1.0,
+        enable_smart_selling=False,
+        initial_liquid_wealth=1_000_000.0,
+        initial_pillar_2=0.0,
+        initial_pillar_3a_accounts=[],
+        alloc_us_stocks=0.50,
+        alloc_non_us_stocks=0.30,
+        alloc_chf_cash=0.10,
+        alloc_gold=0.10,
+        alloc_bitcoin=0.00,
+        rebalance_strategy='Cash Tent',
+        rebalance_threshold=0.0,
+        annual_base_expenses=40_000.0, # 10 * 40k = 400k peak cash (40% of 1M)
+        monthly_ahv_pension=0.0,
+        cantonal_multiplier=0.0,
+        municipal_multiplier=0.0,
+        tent_duration_years=10
+    )
+    
+    # Year 0: Cash peak = 40%, Non-cash total = 60%. Base non-cash total = 90%.
+    # US = 0.50 * (60/90) = 0.33333, Non-US = 0.30 * (60/90) = 0.20, Gold = 0.10 * (60/90) = 0.06667
+    w0 = get_target_weights(config, 0)
+    assert np.isclose(w0[2], 0.40)
+    assert np.isclose(w0[0], 0.50 * (0.60 / 0.90))
+    assert np.isclose(np.sum(w0), 1.0)
+    
+    # Year 5 (Halfway): Cash = 40% - 0.5 * (40% - 10%) = 25%.
+    w5 = get_target_weights(config, 5)
+    assert np.isclose(w5[2], 0.25)
+    assert np.isclose(np.sum(w5), 1.0)
+    
+    # Year 10 (End of tent): Cash = 10% (base allocation)
+    w10 = get_target_weights(config, 10)
+    assert np.isclose(w10[2], 0.10)
+    assert np.isclose(w10[0], 0.50)
+    assert np.isclose(np.sum(w10), 1.0)
+    
+    # Year 15 (Post-tent): Cash = 10%
+    w15 = get_target_weights(config, 15)
+    assert np.isclose(w15[2], 0.10)
+    assert np.isclose(np.sum(w15), 1.0)
+
+
+def test_simulation_engine_cash_tent_glidepath():
+    # Verify that run_simulation respects Cash Tent glidepath over time
+    config = SimConfig(
+        num_runs=1,
+        duration_years=4,
+        inflation_mean=0.0,
+        inflation_std=0.0,
+        start_age=65,
+        dividend_yield=0.0,
+        enable_dynamic_expenses=False,
+        dynamic_expense_floor_pct=1.0,
+        enable_smart_selling=False,
+        initial_liquid_wealth=100_000.0,
+        initial_pillar_2=0.0,
+        initial_pillar_3a_accounts=[],
+        alloc_us_stocks=0.80,
+        alloc_non_us_stocks=0.0,
+        alloc_chf_cash=0.20,
+        alloc_gold=0.0,
+        alloc_bitcoin=0.0,
+        rebalance_strategy='Cash Tent',
+        rebalance_threshold=0.0,
+        annual_base_expenses=15_000.0, # 4 * 15k = 60k peak cash (60% of 100k)
+        monthly_ahv_pension=0.0,
+        cantonal_multiplier=0.0,
+        municipal_multiplier=0.0,
+        tent_duration_years=4
+    )
+    
+    # 0% returns, 0% inflation
+    return_matrix = np.zeros((1, 48, 5))
+    history = run_simulation(config, return_matrix)
+    
+    # Year 0 end: 15k expenses paid -> 85k wealth remaining. 60% Cash = 51k, 40% US Stocks = 34k
+    assets_y0 = history['liquid_assets_by_class'][0, 0]
+    assert np.isclose(assets_y0[2], 51_000.0)
+    assert np.isclose(assets_y0[0], 34_000.0)
+    
+    # Year 2 end: 3 years * 15k expenses paid = 45k paid -> 55k wealth remaining. Target Cash = 40% (22k), 60% US Stocks (33k)
+    assets_y2 = history['liquid_assets_by_class'][2, 0]
+    assert np.isclose(assets_y2[2], 22_000.0)
+    assert np.isclose(assets_y2[0], 33_000.0)
+    
+    # Year 3 end: 4 years * 15k expenses paid = 60k paid -> 40k wealth remaining. Target Cash = 30% (12k), 70% US Stocks (28k)
+    assets_y3 = history['liquid_assets_by_class'][3, 0]
+    assert np.isclose(assets_y3[2], 12_000.0)
+    assert np.isclose(assets_y3[0], 28_000.0)
+
+
+def test_estimate_year_0_taxes_includes_taxes():
+    # Verify that get_target_weights includes estimated taxes in cash tent peak
+    config = SimConfig(
+        num_runs=1,
+        duration_years=10,
+        inflation_mean=0.0,
+        inflation_std=0.0,
+        start_age=50, # under 65 -> AHV non-worker tax applicable
+        dividend_yield=0.02,
+        enable_dynamic_expenses=False,
+        dynamic_expense_floor_pct=1.0,
+        enable_smart_selling=False,
+        initial_liquid_wealth=1_000_000.0,
+        initial_pillar_2=0.0,
+        initial_pillar_3a_accounts=[],
+        alloc_us_stocks=0.50,
+        alloc_non_us_stocks=0.30,
+        alloc_chf_cash=0.10,
+        alloc_gold=0.10,
+        alloc_bitcoin=0.00,
+        rebalance_strategy='Cash Tent',
+        rebalance_threshold=0.0,
+        annual_base_expenses=50_000.0,
+        monthly_ahv_pension=0.0,
+        cantonal_multiplier=0.95,
+        municipal_multiplier=1.19,
+        tent_duration_years=10
+    )
+    
+    w0 = get_target_weights(config, 0)
+    # Peak cash = 10 * (50,000 expenses + est_taxes). Must be strictly > 10 * 50,000 / 1,000,000 = 0.50
+    assert w0[2] > 0.50
+    assert np.isclose(np.sum(w0), 1.0)
+

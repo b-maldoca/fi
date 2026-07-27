@@ -42,11 +42,82 @@ class SimConfig:
     cantonal_multiplier: float
     municipal_multiplier: float
 
+    # Cash Tent Strategy (Pfau Glidepath)
+    tent_duration_years: int = 10
+
     def __post_init__(self):
         total_alloc = (self.alloc_us_stocks + self.alloc_non_us_stocks + 
                        self.alloc_chf_cash + self.alloc_gold + self.alloc_bitcoin)
         if not np.isclose(total_alloc, 1.0, atol=0.0001):
             raise ValueError(f"Asset allocations must sum to exactly 1.0. Currently: {total_alloc:.4f}")
+
+
+def estimate_year_0_taxes(config: SimConfig) -> float:
+    """Estimates Year 0 total taxes (income, wealth, AHV non-worker) for initial Cash Tent calculation."""
+    init_wealth = config.initial_liquid_wealth
+    equities = max(0.0, init_wealth * (config.alloc_us_stocks + config.alloc_non_us_stocks))
+    dividends = equities * config.dividend_yield
+    cash = max(0.0, init_wealth * config.alloc_chf_cash)
+    interest = cash * 0.01
+    annual_ahv = 12 * config.monthly_ahv_pension if config.start_age >= 65 else 0.0
+    
+    taxable_income = dividends + interest + annual_ahv
+    income_tax = float(np.asarray(calculate_income_tax(np.array([taxable_income]), config.cantonal_multiplier, config.municipal_multiplier)).flatten()[0])
+    
+    taxable_wealth = max(0.0, init_wealth - config.annual_base_expenses)
+    wealth_tax = float(np.asarray(calculate_wealth_tax(np.array([taxable_wealth]), config.cantonal_multiplier, config.municipal_multiplier)).flatten()[0])
+    
+    ahv_contrib = float(np.asarray(calculate_ahv_non_worker(taxable_wealth)).flatten()[0]) if config.start_age < 65 else 0.0
+    
+    return income_tax + wealth_tax + ahv_contrib
+
+
+def get_target_weights(config: SimConfig, year: int) -> np.ndarray:
+    """
+    Returns the target asset allocation weights for a given simulation year.
+    Supports constant target weights or dynamic Cash Tent glidepath weights.
+    """
+    base_weights = np.array([
+        config.alloc_us_stocks,
+        config.alloc_non_us_stocks,
+        config.alloc_chf_cash,
+        config.alloc_gold,
+        config.alloc_bitcoin
+    ], dtype=float)
+    
+    if config.rebalance_strategy != 'Cash Tent':
+        return base_weights
+        
+    T = config.tent_duration_years
+    w_base_cash = config.alloc_chf_cash
+    
+    if T <= 0 or year >= T:
+        return base_weights
+        
+    init_wealth = config.initial_liquid_wealth
+    if init_wealth <= 0:
+        return base_weights
+        
+    est_taxes = estimate_year_0_taxes(config)
+    annual_outflow = config.annual_base_expenses + est_taxes
+    peak_cash_amount = T * annual_outflow
+    w_peak = min(1.0, peak_cash_amount / init_wealth)
+    
+    if w_peak <= w_base_cash:
+        return base_weights
+        
+    # Linear glide of cash weight from w_peak at year 0 down to w_base_cash at year T
+    cash_weight = w_peak - (year / T) * (w_peak - w_base_cash)
+    
+    non_cash_base_total = 1.0 - w_base_cash
+    if non_cash_base_total <= 0:
+        return base_weights
+        
+    non_cash_scale = (1.0 - cash_weight) / non_cash_base_total
+    
+    weights = base_weights * non_cash_scale
+    weights[2] = cash_weight  # CHF Cash is index 2
+    return weights
 
 
 def run_simulation(config: SimConfig, return_matrix: np.ndarray, inflation_matrix: np.ndarray = None) -> dict:
@@ -57,17 +128,11 @@ def run_simulation(config: SimConfig, return_matrix: np.ndarray, inflation_matri
     num_runs = config.num_runs
     duration_months = config.duration_years * 12
     
-    target_weights = np.array([
-        config.alloc_us_stocks,
-        config.alloc_non_us_stocks,
-        config.alloc_chf_cash,
-        config.alloc_gold,
-        config.alloc_bitcoin
-    ])
+    initial_target_weights = get_target_weights(config, 0)
     
     # Assets (0: US Stocks, 1: Non-US Stocks, 2: CHF Cash, 3: Gold, 4: Bitcoin)
     liquid_assets = np.zeros((num_runs, 5))
-    liquid_assets[:] = config.initial_liquid_wealth * target_weights
+    liquid_assets[:] = config.initial_liquid_wealth * initial_target_weights
     
     pillar_2 = np.full(num_runs, config.initial_pillar_2, dtype=float)
     pillar_3a = [np.full(num_runs, acc, dtype=float) for acc in config.initial_pillar_3a_accounts]
@@ -92,6 +157,8 @@ def run_simulation(config: SimConfig, return_matrix: np.ndarray, inflation_matri
         month_of_year = m % 12
         current_age = config.start_age + year
         
+        current_target_weights = get_target_weights(config, year)
+
         # 1. Inflation (Update once a year at month 0)
         if month_of_year == 0:
             if inflation_matrix is not None:
@@ -111,7 +178,7 @@ def run_simulation(config: SimConfig, return_matrix: np.ndarray, inflation_matri
                     mask = (current_age >= liquidation_age) & (p3a > 0) & (~has_liquidated)
                     amount = p3a[mask]
                     taxable_liquidation_amount[mask] += amount
-                    liquid_assets[mask] += np.outer(amount, target_weights)
+                    liquid_assets[mask] += np.outer(amount, current_target_weights)
                     p3a[mask] = 0
                     has_liquidated[mask] = True
             else:
@@ -120,13 +187,13 @@ def run_simulation(config: SimConfig, return_matrix: np.ndarray, inflation_matri
                     mask = p3a > 0
                     amount = p3a[mask]
                     taxable_liquidation_amount[mask] += amount
-                    liquid_assets[mask] += np.outer(amount, target_weights)
+                    liquid_assets[mask] += np.outer(amount, current_target_weights)
                     p3a[mask] = 0
                 
             mask_p2 = (current_age >= 65) & (pillar_2 > 0)
             amount_p2 = pillar_2[mask_p2]
             taxable_liquidation_amount[mask_p2] += amount_p2
-            liquid_assets[mask_p2] += np.outer(amount_p2, target_weights)
+            liquid_assets[mask_p2] += np.outer(amount_p2, current_target_weights)
             pillar_2[mask_p2] = 0
             
             # Calculate Capital Withdrawal Tax immediately upon liquidation
@@ -140,7 +207,7 @@ def run_simulation(config: SimConfig, return_matrix: np.ndarray, inflation_matri
                 )
                 
                 # Deduct immediately at source (proportionally as it was added)
-                liquid_assets -= np.outer(cap_tax, target_weights)
+                liquid_assets -= np.outer(cap_tax, current_target_weights)
                 
                 # Track it for the annual history log
                 capital_withdrawal_tax_this_year += cap_tax
@@ -190,13 +257,13 @@ def run_simulation(config: SimConfig, return_matrix: np.ndarray, inflation_matri
             do_rebalance[:] = True
         elif config.rebalance_strategy == 'Quarterly' and month_of_year % 3 == 2:
             do_rebalance[:] = True
-        elif config.rebalance_strategy == 'Yearly' and month_of_year == 11:
+        elif config.rebalance_strategy in ('Yearly', 'Cash Tent') and month_of_year == 11:
             do_rebalance[:] = True
         elif config.rebalance_strategy == 'Threshold':
             current_total = np.sum(liquid_assets, axis=1, keepdims=True)
             current_total_safe = np.where(current_total > 0, current_total, 1)
             current_weights = liquid_assets / current_total_safe
-            drift = np.max(np.abs(current_weights - target_weights), axis=1)
+            drift = np.max(np.abs(current_weights - current_target_weights), axis=1)
             do_rebalance = (drift > config.rebalance_threshold) & (current_total.flatten() > 0)
             
         if config.enable_smart_selling:
@@ -208,7 +275,7 @@ def run_simulation(config: SimConfig, return_matrix: np.ndarray, inflation_matri
             
         if np.any(do_rebalance):
             total_to_rebalance = np.sum(liquid_assets[do_rebalance], axis=1, keepdims=True)
-            liquid_assets[do_rebalance] = total_to_rebalance * target_weights
+            liquid_assets[do_rebalance] = total_to_rebalance * current_target_weights
             
         # 5. Annual Taxation and Expenses
         if month_of_year == 11:
