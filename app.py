@@ -348,6 +348,45 @@ if True:
         st.subheader("Withdrawal Rate", help="This chart displays the percentage of your current net worth consumed by expenses and taxes each year.")
         st.plotly_chart(fig_wr, width='stretch')
 
+        # Asset Allocation Development Chart (Liquid Assets + Pillar 2 + Pillar 3a)
+        median_assets_by_class = np.median(history['liquid_assets_by_class'], axis=1) # shape: (years, 5)
+        median_p2 = np.median(history['pillar_2'], axis=1) if 'pillar_2' in history else np.zeros(len(years))
+        median_p3a = np.median(history['pillar_3a'], axis=1) if 'pillar_3a' in history else np.zeros(len(years))
+
+        fig_alloc = go.Figure()
+        
+        all_series = [
+            ('CHF Cash', median_assets_by_class[:, 2], 'forestgreen'),
+            ('US Stocks', median_assets_by_class[:, 0], 'royalblue'),
+            ('Non-US Stocks', median_assets_by_class[:, 1], 'darkcyan'),
+            ('Gold', median_assets_by_class[:, 3], 'gold'),
+            ('Bitcoin', median_assets_by_class[:, 4], 'purple'),
+            ('Pillar 3a', median_p3a, 'mediumpurple'),
+            ('Pillar 2', median_p2, 'darkorange'),
+        ]
+
+        for name, values, color in all_series:
+            if np.max(values) > 0:
+                fig_alloc.add_trace(go.Scatter(
+                    x=years,
+                    y=values,
+                    mode='lines',
+                    name=name,
+                    stackgroup='one',
+                    line=dict(width=0.5),
+                    marker=dict(color=color)
+                ))
+
+        fig_alloc.update_layout(
+            xaxis_title="Age",
+            yaxis_title="Asset Value (CHF)",
+            yaxis=dict(tickformat=",.0f"),
+            hovermode="x",
+            margin=dict(t=15, b=40)
+        )
+        st.subheader("Asset Allocation Development", help="This stacked chart visualizes the median nominal balance of all asset categories (taxable liquid investments, Pillar 2, and Pillar 3a) over time, showing how your net worth breakdown glides and rebalances throughout retirement.")
+        st.plotly_chart(fig_alloc, width='stretch')
+
         # Taxes Breakdown Chart
         fig2 = go.Figure(data=[
             go.Bar(name='Expenses', x=years, y=median_expenses, marker_color='blue'),

@@ -142,6 +142,8 @@ def run_simulation(config: SimConfig, return_matrix: np.ndarray, inflation_matri
     history_net_worth = np.zeros((duration_months // 12, num_runs))
     history_liquid = np.zeros((duration_months // 12, num_runs))
     history_liquid_by_class = np.zeros((duration_months // 12, num_runs, 5))
+    history_pillar_2 = np.zeros((duration_months // 12, num_runs))
+    history_pillar_3a = np.zeros((duration_months // 12, num_runs))
     history_taxes = np.zeros((duration_months // 12, num_runs))
     history_expenses = np.zeros((duration_months // 12, num_runs))
     history_income_divs = np.zeros((duration_months // 12, num_runs))
@@ -361,6 +363,8 @@ def run_simulation(config: SimConfig, return_matrix: np.ndarray, inflation_matri
             history_net_worth[year, :] = net_worth
             history_liquid[year, :] = np.sum(liquid_assets, axis=1)
             history_liquid_by_class[year, :, :] = liquid_assets
+            history_pillar_2[year, :] = pillar_2
+            history_pillar_3a[year, :] = total_p3a
             history_taxes[year, :] = total_taxes + capital_withdrawal_tax_this_year
             history_expenses[year, :] = current_expenses
             history_income_divs[year, :] = dividends
@@ -370,6 +374,8 @@ def run_simulation(config: SimConfig, return_matrix: np.ndarray, inflation_matri
         'net_worth': history_net_worth,
         'liquid_assets': history_liquid,
         'liquid_assets_by_class': history_liquid_by_class,
+        'pillar_2': history_pillar_2,
+        'pillar_3a': history_pillar_3a,
         'taxes_paid': history_taxes,
         'expenses_paid': history_expenses,
         'income_dividends': history_income_divs,

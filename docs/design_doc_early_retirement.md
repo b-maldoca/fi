@@ -89,6 +89,7 @@ class SimulationResult:
     *   **Net Worth Trajectory Chart** (Plotly): Faint lines for individual runs (capped at 100 for Monte Carlo), bold lines for 5th, 25th, 50th, 75th, 95th percentiles.
     *   **Income vs Required Cash Chart** (Plotly): Stacked bar chart showing median Dividends, AHV Pension, and Capital Sold, with a reference line for Total Cash Needed (Expenses + Taxes).
     *   **Withdrawal Rate Chart** (Plotly): Percentile lines for the withdrawal rate over time.
+    *   **Asset Allocation Development Chart** (Plotly): Stacked area chart showing the median nominal balance of all asset categories (US Stocks, Non-US Stocks, CHF Cash, Gold, Bitcoin, Pillar 2, and Pillar 3a) over time to visualize portfolio glidepaths, rebalancing, and account liquidations.
     *   **Expenses & Taxes Chart** (Plotly): Stacked bar chart showing median Expenses and Taxes paid over time.
     *   **Run Analysis Tables**: Lists of top 10 best and worst runs/cohorts based on final net worth (showing Final NW (Real), Final NW (Nom), and Min NW (Nominal) values).
 

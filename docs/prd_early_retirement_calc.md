@@ -131,6 +131,8 @@ The tool must present the user with:
     *   For multi-run simulations (Monte Carlo/Historic roll period), it must plot **all individual runs** (faint "spaghetti" lines) to show dispersion (capped at 100 runs for Monte Carlo for performance).
     *   It must overlay clear percentile lines: **5th, 25th, 50th (median), 75th, and 95th** percentiles.
 *   **Income vs Required Cash Chart**: Dynamic annual view of inflows (Dividends, AHV annuities post-65, Capital Sold) vs. outflows (Total Cash Needed: Expenses + taxes).
+*   **Withdrawal Rate Chart**: Percentile chart showing annual withdrawal rate over time.
+*   **Asset Allocation Development Chart**: Stacked area chart displaying the median nominal balance of all asset categories (taxable liquid investments: US Stocks, Non-US Stocks, CHF Cash, Gold, Bitcoin, as well as Pillar 2 and Pillar 3a accounts) over time to visualize total net worth breakdown, glidepaths, and liquidations.
 *   **Expenses & Taxes Chart**: Stacked bar chart showing median expenses and median taxes paid over time.
 *   **Success Metric**:
     *   Allows configuring a target ending net worth as a percentage of inflation-adjusted starting net worth (default is 50.0%).
