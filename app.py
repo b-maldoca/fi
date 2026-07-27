@@ -79,12 +79,12 @@ if not np.isclose(total_alloc, 100.0, atol=0.01):
 st.sidebar.subheader("Rebalancing Strategy")
 rebalance_strategy = st.sidebar.selectbox("Frequency", ["Never", "Quarterly", "Yearly", "Monthly", "Threshold", "Cash Tent"], index=5, help="How often to rebalance your portfolio. 'Cash Tent' (Pfau Glidepath) assumes a cash buffer of [Tent Duration × (Annual Expenses + Estimated Taxes)] is already built up at retirement (Year 0) and glides down to your base cash target weight over time.")
 rebalance_threshold = 0.0
-tent_duration_years = 10
+tent_duration_years = 7
 
 if rebalance_strategy == "Threshold":
     rebalance_threshold = st.sidebar.number_input("Threshold Drift (%)", value=1.0, step=0.1, format="%.1f", help="If rebalancing based on threshold, the max absolute drift allowed before rebalancing.") / 100.0
 elif rebalance_strategy == "Cash Tent":
-    tent_duration_years = int(st.sidebar.number_input("Tent Duration (Years)", value=10, min_value=1, max_value=30, step=1, help="Number of years of living expenses + estimated taxes held as cash buffer at retirement (Year 0), which glides down to your base cash target weight over the tent duration."))
+    tent_duration_years = int(st.sidebar.number_input("Tent Duration (Years)", value=7, min_value=1, max_value=30, step=1, help="Number of years of living expenses + estimated taxes held as cash buffer at retirement (Year 0), which glides down to your base cash target weight over the tent duration."))
 
 st.sidebar.subheader("Withdrawal Strategy")
 enable_smart_selling = st.sidebar.checkbox("Smart Cash Buffer", value=True, help="During market downturns (net worth < inflation-adjusted start), skip rebalancing and spend down Cash first. Only sell other assets if Cash is fully depleted. Once recovered, normal rebalancing resumes.")

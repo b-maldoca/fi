@@ -43,7 +43,7 @@ class SimConfig:
     municipal_multiplier: float
 
     # Cash Tent Strategy (Pfau Glidepath)
-    tent_duration_years: int = 10
+    tent_duration_years: int = 7
 
     def __post_init__(self):
         total_alloc = (self.alloc_us_stocks + self.alloc_non_us_stocks + 
