@@ -77,7 +77,7 @@ if not np.isclose(total_alloc, 100.0, atol=0.01):
 
 # 4. Rebalancing
 st.sidebar.subheader("Rebalancing Strategy")
-rebalance_strategy = st.sidebar.selectbox("Frequency", ["Never", "Quarterly", "Yearly", "Monthly", "Threshold", "Cash Tent"], index=5, help="How often to rebalance your portfolio. 'Cash Tent' (Pfau Glidepath) assumes a cash buffer of [Tent Duration × (Annual Expenses + Estimated Taxes)] is already built up at retirement (Year 0) and glides down to your base cash target weight over time.")
+rebalance_strategy = st.sidebar.selectbox("Frequency", ["Cash Tent", "Monthly", "Quarterly", "Yearly", "Threshold", "Never"], index=0, help="How often to rebalance your portfolio. 'Cash Tent' (Pfau Glidepath) assumes a cash buffer of [Tent Duration × (Annual Expenses + Estimated Taxes)] is already built up at retirement (Year 0) and glides down to your base cash target weight over time.")
 rebalance_threshold = 0.0
 tent_duration_years = 7
 
