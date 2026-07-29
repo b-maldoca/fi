@@ -384,16 +384,19 @@ if True:
         withdrawal_rate_history = ((history['expenses_paid'] + history['taxes_paid']) / safe_net_worth) * 100.0
         
         fig_wr = go.Figure()
+        max_p_val = 5.0
         for p, c in zip(percentiles, colors):
             p_vals = np.percentile(withdrawal_rate_history, p, axis=1)
             # Cap values for visualization purposes when net worth approaches zero
             p_vals = np.minimum(p_vals, 100.0) 
+            max_p_val = max(max_p_val, float(np.max(p_vals)))
             fig_wr.add_trace(go.Scatter(x=years, y=p_vals, mode='lines', name=f'{p}th Pct', line=dict(color=c, width=3 if p != 50 else 5)))
             
+        y_upper = min(100.0, max_p_val * 1.15)
         fig_wr.update_layout(
             xaxis_title="Age", 
             yaxis_title="Withdrawal Rate (%)", 
-            yaxis=dict(tickformat=".1f", range=[0, min(100, np.max(np.percentile(withdrawal_rate_history, 75, axis=1))*1.5 + 5)]), 
+            yaxis=dict(tickformat=".1f", range=[0, y_upper]), 
             hovermode="x",
             margin=dict(t=15, b=40)
         )
