@@ -930,3 +930,79 @@ def test_estimate_year_0_taxes_includes_taxes():
     assert w0[2] > 0.50
     assert np.isclose(np.sum(w0), 1.0)
 
+
+def test_simulation_engine_vanguard_dynamic_spending():
+    # Test Vanguard Dynamic Spending strategy
+    # Base expenses = 40,000 CHF. Target rate = 4% (0.04), Floor = 2.5%, Ceiling = 5.0%
+    config = SimConfig(
+        num_runs=1,
+        duration_years=3,
+        inflation_mean=0.0,
+        inflation_std=0.0,
+        start_age=65,
+        dividend_yield=0.0,
+        spending_strategy="Vanguard Dynamic",
+        vanguard_target_rate=0.04,
+        vanguard_floor_pct=0.025,
+        vanguard_ceiling_pct=0.05,
+        initial_liquid_wealth=1_000_000.0,
+        initial_pillar_2=0.0,
+        initial_pillar_3a_accounts=[],
+        alloc_us_stocks=0.0,
+        alloc_non_us_stocks=0.0,
+        alloc_chf_cash=1.0,
+        alloc_gold=0.0,
+        alloc_bitcoin=0.0,
+        rebalance_strategy='Never',
+        rebalance_threshold=0.0,
+        annual_base_expenses=40_000.0,
+        monthly_ahv_pension=0.0,
+        cantonal_multiplier=0.0,
+        municipal_multiplier=0.0
+    )
+
+    # Return matrix:
+    # Year 0: 0% returns -> Net worth before expenses ~ 1,000,000. Target spending = 0.04 * 1M = 40,000.
+    # Prior inflated spending = 40,000. Floor = 39,000. Ceiling = 42,000. Target 40k -> Expenses = 40,000.
+    return_matrix = np.zeros((1, 36, 5))
+    history = run_simulation(config, return_matrix)
+    
+    exp_y0 = history['expenses_paid'][0, 0]
+    assert np.isclose(exp_y0, 40_000.0)
+
+
+def test_simulation_engine_dynamic_floor_and_ceiling():
+    # Test Dynamic (Floor & Ceiling) strategy
+    config = SimConfig(
+        num_runs=1,
+        duration_years=2,
+        inflation_mean=0.0,
+        inflation_std=0.0,
+        start_age=65,
+        dividend_yield=0.0,
+        spending_strategy="Dynamic (Floor & Ceiling)",
+        dynamic_expense_floor_pct=0.80,
+        dynamic_expense_ceiling_pct=1.20,
+        initial_liquid_wealth=1_000_000.0,
+        initial_pillar_2=0.0,
+        initial_pillar_3a_accounts=[],
+        alloc_us_stocks=0.0,
+        alloc_non_us_stocks=0.0,
+        alloc_chf_cash=1.0,
+        alloc_gold=0.0,
+        alloc_bitcoin=0.0,
+        rebalance_strategy='Never',
+        rebalance_threshold=0.0,
+        annual_base_expenses=50_000.0,
+        monthly_ahv_pension=0.0,
+        cantonal_multiplier=0.0,
+        municipal_multiplier=0.0
+    )
+
+    return_matrix = np.zeros((1, 24, 5))
+    history = run_simulation(config, return_matrix)
+    
+    # Net worth equals initial net worth -> spending equals base expenses = 50,000
+    exp_y0 = history['expenses_paid'][0, 0]
+    assert np.isclose(exp_y0, 50_000.0)
+

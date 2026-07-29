@@ -71,10 +71,13 @@ The application must allow the user to input the following parameters:
     *   **Cash Tent (Pfau Rising Equity Glide Path)**: A defensive sequence-of-returns risk strategy using cash instead of bonds. Assumes a cash buffer of [Tent Duration × (Annual Base Expenses + Estimated Taxes)] is already built up at retirement start (Year 0), and linearly glides down over the configured tent duration (e.g. 10 years) to the baseline target cash weight, allowing equity allocations to rise over time.
 *   **Smart Cash Buffer (Selling Strategy):** A defensive mechanism during market downturns. If the net worth drops below the inflation-adjusted starting net worth, the engine skips portfolio rebalancing and forces all expenses to be paid out of the CHF Cash allocation first, protecting equities from being sold at depressed prices. Normal proportional selling and rebalancing resumes once the portfolio recovers above the watermark.
 
-#### D. Expenses (Post-Retirement)
+#### D. Expenses & Spending Models (Post-Retirement)
 *   Projected annual base retirement expenses (post-retirement) in CHF.
+*   **Spending Strategy Selector**: Configurable spending behavior with three selectable models:
+    *   **Static Spending**: Base expenses grow strictly with CPI inflation.
+    *   **Dynamic Spending (Floor & Ceiling)**: Expenses drop to a configurable floor (e.g. 85% of base) when total net worth is below the starting watermark, and expand to a ceiling (e.g. 115% of base) when above.
+    *   **Vanguard Dynamic Spending**: Annual spending is recalculated each year as a target percentage of total portfolio net worth (e.g. 4.0%), bounded by a maximum annual cut (floor, e.g. -2.5%) and maximum annual raise (ceiling, e.g. +5.0%) relative to prior year's inflation-adjusted spending.
 *   Expected **Monthly** Pillar 1 (AHV) Pension from age 65 (CHF).
-*   One-off future expenses (e.g., buying a car, world trip) in CHF with specified target years.
 
 
 ---

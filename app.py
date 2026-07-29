@@ -89,15 +89,35 @@ elif rebalance_strategy == "Cash Tent":
 st.sidebar.subheader("Withdrawal Strategy")
 enable_smart_selling = st.sidebar.checkbox("Smart Cash Buffer", value=True, help="During market downturns (net worth < inflation-adjusted start), skip rebalancing and spend down Cash first. Only sell other assets if Cash is fully depleted. Once recovered, normal rebalancing resumes.")
 
-# 5. Economics
-st.sidebar.subheader("Economics")
+# 5. Economics & Spending Strategy
+st.sidebar.subheader("Spending Strategy")
+spending_strategy = st.sidebar.selectbox(
+    "Spending Model",
+    ["Static", "Dynamic (Floor & Ceiling)", "Vanguard Dynamic"],
+    index=0,
+    help="Select how annual living expenses adjust over time:\n"
+         "- Static: Base expenses grow strictly with inflation.\n"
+         "- Dynamic (Floor & Ceiling): Base expenses decrease when net worth falls below the starting watermark, and increase when above.\n"
+         "- Vanguard Dynamic: Spending is recalculated annually as a percentage of total portfolio net worth, bounded by a maximum cut (floor) and maximum raise (ceiling) relative to prior year's inflation-adjusted spending."
+)
 
 annual_expenses = st.sidebar.number_input("Annual Base Expenses (CHF)", value=85_000, step=5000, help="Your expected base living expenses in today's CHF. This will automatically inflate each year.")
-enable_dynamic_expenses = st.sidebar.checkbox("Enable Dynamic Expenses", value=True, help="If enabled, base expenses are reduced when your net worth falls below your inflation-adjusted starting net worth.")
-dynamic_expense_floor_pct = 100.0
-if enable_dynamic_expenses:
-    dynamic_expense_floor_pct = st.sidebar.number_input("Reduced Expense Floor (%)", value=85.0, step=1.0, format="%.1f", help="The percentage of your base expenses you will spend when your net worth is below the watermark.")
 
+dynamic_expense_floor_pct = 100.0
+dynamic_expense_ceiling_pct = 100.0
+vanguard_target_rate = 0.04
+vanguard_floor_pct = 0.025
+vanguard_ceiling_pct = 0.050
+
+if spending_strategy == "Dynamic (Floor & Ceiling)":
+    dynamic_expense_floor_pct = st.sidebar.number_input("Reduced Expense Floor (%)", value=85.0, step=1.0, format="%.1f", help="The percentage of your base expenses you will spend when your net worth is below the watermark.")
+    dynamic_expense_ceiling_pct = st.sidebar.number_input("Expanded Expense Ceiling (%)", value=115.0, step=1.0, format="%.1f", help="The percentage of your base expenses you will spend when your net worth is above the watermark.")
+elif spending_strategy == "Vanguard Dynamic":
+    vanguard_target_rate = st.sidebar.number_input("Target Withdrawal Rate (%)", value=4.0, step=0.1, format="%.1f", help="Target annual spending percentage of total portfolio net worth.") / 100.0
+    vanguard_floor_pct = st.sidebar.number_input("Max Annual Cut / Floor (%)", value=2.5, step=0.5, format="%.1f", help="Maximum allowable reduction in spending compared to prior year's inflation-adjusted spending (Vanguard default: 2.5%).") / 100.0
+    vanguard_ceiling_pct = st.sidebar.number_input("Max Annual Raise / Ceiling (%)", value=5.0, step=0.5, format="%.1f", help="Maximum allowable increase in spending compared to prior year's inflation-adjusted spending (Vanguard default: 5.0%).") / 100.0
+
+st.sidebar.subheader("Economics Parameters")
 monthly_ahv = st.sidebar.number_input("Expected Monthly AHV Pension from age 65 (CHF)", value=2000, step=100, help="The monthly AHV pension you expect to receive starting at age 65 (in today's CHF, adjusted annually for CPI inflation in the simulation).")
 dividend_yield = st.sidebar.number_input("Dividend Yield (%)", value=1.5, step=0.1, format="%.1f", help="Expected annual dividend yield of the portfolio.") / 100.0
 inflation_mean = st.sidebar.number_input("Inflation Mean (%)", value=2.5, step=0.1, format="%.1f", help="Expected average annual inflation rate.") / 100.0
@@ -147,8 +167,13 @@ if True:
             inflation_std=inflation_std,
             start_age=int(start_age),
             dividend_yield=dividend_yield,
-            enable_dynamic_expenses=enable_dynamic_expenses,
+            spending_strategy=spending_strategy,
+            enable_dynamic_expenses=(spending_strategy == "Dynamic (Floor & Ceiling)"),
             dynamic_expense_floor_pct=dynamic_expense_floor_pct / 100.0,
+            dynamic_expense_ceiling_pct=dynamic_expense_ceiling_pct / 100.0,
+            vanguard_target_rate=vanguard_target_rate,
+            vanguard_floor_pct=vanguard_floor_pct,
+            vanguard_ceiling_pct=vanguard_ceiling_pct,
             initial_liquid_wealth=initial_liquid_wealth,
             initial_pillar_2=initial_pillar_2,
             initial_pillar_3a_accounts=pillar_3a_accounts,
@@ -159,9 +184,9 @@ if True:
             alloc_bitcoin=alloc_btc / 100.0,
             rebalance_strategy=rebalance_strategy,
             rebalance_threshold=rebalance_threshold,
-            annual_base_expenses=annual_expenses,
-            monthly_ahv_pension=float(monthly_ahv),
             enable_smart_selling=enable_smart_selling,
+            annual_base_expenses=annual_expenses,
+            monthly_ahv_pension=monthly_ahv,
             cantonal_multiplier=cantonal_multiplier,
             municipal_multiplier=municipal_multiplier,
             tent_duration_years=tent_duration_years
@@ -244,10 +269,21 @@ if True:
         pct_years_below_watermark = (avg_years_below_watermark / config.duration_years) * 100.0
         col_r1_2.metric("Avg Years Below Start NW", f"{avg_years_below_watermark:.1f} ({pct_years_below_watermark:.1f}%)", help="Average number of years per simulation where the portfolio drops below the inflation-adjusted starting net worth. If the Dynamic Expense Floor feature is enabled, this is exactly equal to the number of times the expenses are reduced.")
         
+        total_outflows_per_run = np.sum(history['expenses_paid'] + history['taxes_paid'], axis=0)
+        median_total_withdrawals = np.median(total_outflows_per_run)
+        
+        total_outflows_real_per_run = np.sum((history['expenses_paid'] + history['taxes_paid']) / cum_inflation.T, axis=0)
+        median_total_withdrawals_real = np.median(total_outflows_real_per_run)
+        
         # Row 2: Median Ending NW (Real vs Nominal)
         col_r2_1, col_r2_2 = st.columns(2)
         col_r2_1.metric("Median Ending NW (Real)", f"{median_final_inf_adj:,.0f} CHF")
         col_r2_2.metric("Median Ending NW (Nominal)", f"{median_final:,.0f} CHF")
+
+        # Row 3: Median Total Cumulative Withdrawals (Real vs Nominal)
+        col_r3_1, col_r3_2 = st.columns(2)
+        col_r3_1.metric("Median Total Withdrawals (Real)", f"{median_total_withdrawals_real:,.0f} CHF", help="Total cumulative real purchasing power spent on living expenses and taxes over the full simulation period.")
+        col_r3_2.metric("Median Total Withdrawals (Nominal)", f"{median_total_withdrawals:,.0f} CHF", help="Total cumulative nominal cash spent on living expenses and taxes over the full simulation period.")
         
         # Plotly Chart
         years = np.arange(config.start_age + 1, config.start_age + config.duration_years + 1)
@@ -327,6 +363,22 @@ if True:
         st.subheader("Income vs Required Cash", help="This chart displays the median cash flows across all simulated portfolio paths for each year.")
         st.plotly_chart(fig_income, width='stretch')
 
+        # Annual Withdrawal Breakdown Chart
+        fig_withdrawal = go.Figure(data=[
+            go.Bar(name='Living Expenses', x=years, y=median_expenses, marker_color='royalblue'),
+            go.Bar(name='Taxes Paid', x=years, y=median_taxes, marker_color='crimson')
+        ])
+        fig_withdrawal.update_layout(
+            barmode='stack', 
+            xaxis_title="Age", 
+            yaxis_title="Annual Withdrawal (CHF)", 
+            yaxis=dict(tickformat=",.0f"), 
+            hovermode="x", 
+            margin=dict(t=15, b=40)
+        )
+        st.subheader("Annual Withdrawal Breakdown", help="This stacked chart displays the median annual withdrawals (living expenses and taxes paid) across all simulated portfolio paths over time.")
+        st.plotly_chart(fig_withdrawal, width='stretch')
+
         # Withdrawal Rate Chart
         safe_net_worth = np.maximum(net_worth_history, 1.0)
         withdrawal_rate_history = ((history['expenses_paid'] + history['taxes_paid']) / safe_net_worth) * 100.0
@@ -386,15 +438,6 @@ if True:
         )
         st.subheader("Asset Allocation Development", help="This stacked chart visualizes the median nominal balance of all asset categories (taxable liquid investments, Pillar 2, and Pillar 3a) over time, showing how your net worth breakdown glides and rebalances throughout retirement.")
         st.plotly_chart(fig_alloc, width='stretch')
-
-        # Taxes Breakdown Chart
-        fig2 = go.Figure(data=[
-            go.Bar(name='Expenses', x=years, y=median_expenses, marker_color='blue'),
-            go.Bar(name='Taxes', x=years, y=median_taxes, marker_color='red')
-        ])
-        fig2.update_layout(barmode='stack', xaxis_title="Age", yaxis_title="CHF", yaxis=dict(tickformat=",.0f"), margin=dict(t=15, b=40))
-        st.subheader("Expenses & Taxes", help="This chart displays the median expenses and taxes paid across all simulated portfolio paths for each year.")
-        st.plotly_chart(fig2, width='stretch')
 
         is_historic = "Historic" in title
         analysis_name = "Cohort Analysis" if is_historic else "Run Analysis"

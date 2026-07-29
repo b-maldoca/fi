@@ -12,44 +12,58 @@ class SimConfig:
     start_age: int
     dividend_yield: float
     
-    # Dynamic Expenses
-    enable_dynamic_expenses: bool
-    dynamic_expense_floor_pct: float
+    # Spending Strategy: 'Static', 'Dynamic (Floor & Ceiling)', 'Vanguard Dynamic'
+    spending_strategy: str = "Static"
+    enable_dynamic_expenses: bool = False
+    dynamic_expense_floor_pct: float = 1.0
+    dynamic_expense_ceiling_pct: float = 1.0
+    
+    # Vanguard Dynamic Spending settings
+    vanguard_target_rate: float = 0.04
+    vanguard_floor_pct: float = 0.025
+    vanguard_ceiling_pct: float = 0.05
     
     # Initial Assets
-    initial_liquid_wealth: float
-    initial_pillar_2: float
-    initial_pillar_3a_accounts: list[float]
+    initial_liquid_wealth: float = 0.0
+    initial_pillar_2: float = 0.0
+    initial_pillar_3a_accounts: list[float] = None
     
     # Target Asset Allocation (must sum to 1.0)
     # Indices: 0: US Stocks, 1: Non-US Stocks, 2: CHF Cash, 3: Gold, 4: Bitcoin
-    alloc_us_stocks: float
-    alloc_non_us_stocks: float
-    alloc_chf_cash: float
-    alloc_gold: float
-    alloc_bitcoin: float
+    alloc_us_stocks: float = 0.0
+    alloc_non_us_stocks: float = 0.0
+    alloc_chf_cash: float = 0.0
+    alloc_gold: float = 0.0
+    alloc_bitcoin: float = 0.0
     
     # Rebalance strategy: 'never', 'yearly', 'monthly', 'threshold'
-    rebalance_strategy: str
-    rebalance_threshold: float 
-    enable_smart_selling: bool
+    rebalance_strategy: str = "Yearly"
+    rebalance_threshold: float = 0.0
+    enable_smart_selling: bool = True
     
     # Expenses & Income
-    annual_base_expenses: float
-    monthly_ahv_pension: float
+    annual_base_expenses: float = 0.0
+    monthly_ahv_pension: float = 0.0
     
     # Taxes
-    cantonal_multiplier: float
-    municipal_multiplier: float
+    cantonal_multiplier: float = 0.0
+    municipal_multiplier: float = 0.0
 
     # Cash Tent Strategy (Pfau Glidepath)
     tent_duration_years: int = 7
 
     def __post_init__(self):
+        if self.initial_pillar_3a_accounts is None:
+            self.initial_pillar_3a_accounts = []
+            
         total_alloc = (self.alloc_us_stocks + self.alloc_non_us_stocks + 
                        self.alloc_chf_cash + self.alloc_gold + self.alloc_bitcoin)
         if not np.isclose(total_alloc, 1.0, atol=0.0001):
             raise ValueError(f"Asset allocations must sum to exactly 1.0. Currently: {total_alloc:.4f}")
+            
+        # Backwards compatibility for enable_dynamic_expenses flag
+        if self.enable_dynamic_expenses and self.spending_strategy == "Static":
+            self.spending_strategy = "Dynamic (Floor & Ceiling)"
 
 
 def estimate_year_0_taxes(config: SimConfig) -> float:
@@ -151,6 +165,8 @@ def run_simulation(config: SimConfig, return_matrix: np.ndarray, inflation_matri
     history_below_watermark = np.zeros((duration_months // 12, num_runs), dtype=bool)
     
     inflation_factors = np.ones(num_runs)
+    vanguard_prev_expenses = np.full(num_runs, config.annual_base_expenses, dtype=float)
+    vanguard_prev_inflation = np.ones(num_runs, dtype=float)
     taxable_liquidation_amount = np.zeros(num_runs)
     capital_withdrawal_tax_this_year = np.zeros(num_runs)
     
@@ -281,9 +297,7 @@ def run_simulation(config: SimConfig, return_matrix: np.ndarray, inflation_matri
             
         # 5. Annual Taxation and Expenses
         if month_of_year == 11:
-            current_expenses = config.annual_base_expenses * inflation_factors
-            
-            # Dynamic Expense Adjustment
+            # Spending Model Adjustment
             total_p3a_current = sum(pillar_3a) if pillar_3a else np.zeros(num_runs)
             current_nw_before_expenses = np.sum(liquid_assets, axis=1) + pillar_2 + total_p3a_current
             
@@ -291,10 +305,33 @@ def run_simulation(config: SimConfig, return_matrix: np.ndarray, inflation_matri
             is_below_watermark = current_nw_before_expenses < inflation_adjusted_initial_nw
             history_below_watermark[year, :] = is_below_watermark
             
-            if config.enable_dynamic_expenses:
-                current_expenses = np.where(is_below_watermark, 
-                                            current_expenses * config.dynamic_expense_floor_pct, 
-                                            current_expenses)
+            if config.spending_strategy == "Vanguard Dynamic":
+                inf_step = inflation_factors / vanguard_prev_inflation
+                prior_exp_inflated = vanguard_prev_expenses * inf_step
+                
+                target_exp = config.vanguard_target_rate * np.maximum(0, current_nw_before_expenses)
+                floor_exp = prior_exp_inflated * (1.0 - config.vanguard_floor_pct)
+                ceiling_exp = prior_exp_inflated * (1.0 + config.vanguard_ceiling_pct)
+                
+                current_expenses = np.clip(target_exp, floor_exp, ceiling_exp)
+                
+                vanguard_prev_expenses = current_expenses.copy()
+                vanguard_prev_inflation = inflation_factors.copy()
+            elif config.spending_strategy == "Dynamic (Floor & Ceiling)" or config.enable_dynamic_expenses:
+                base_exp = config.annual_base_expenses * inflation_factors
+                is_above_watermark = current_nw_before_expenses > inflation_adjusted_initial_nw
+                
+                current_expenses = np.where(
+                    is_below_watermark,
+                    base_exp * config.dynamic_expense_floor_pct,
+                    np.where(
+                        is_above_watermark,
+                        base_exp * config.dynamic_expense_ceiling_pct,
+                        base_exp
+                    )
+                )
+            else: # "Static"
+                current_expenses = config.annual_base_expenses * inflation_factors
                                             
             annual_ahv_received = np.where(current_age >= 65, 12 * config.monthly_ahv_pension * inflation_factors, 0.0)
             
