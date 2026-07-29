@@ -392,7 +392,7 @@ if True:
             max_p_val = max(max_p_val, float(np.max(p_vals)))
             fig_wr.add_trace(go.Scatter(x=years, y=p_vals, mode='lines', name=f'{p}th Pct', line=dict(color=c, width=3 if p != 50 else 5)))
             
-        y_upper = min(100.0, max_p_val * 1.15)
+        y_upper = min(25.0, max_p_val * 1.15)
         fig_wr.update_layout(
             xaxis_title="Age", 
             yaxis_title="Withdrawal Rate (%)", 
