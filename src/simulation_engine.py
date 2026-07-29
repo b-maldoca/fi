@@ -19,8 +19,8 @@ class SimConfig:
     dynamic_expense_ceiling_pct: float = 1.0
     
     # Vanguard Dynamic Spending settings
-    vanguard_target_rate: float = 0.04
-    vanguard_floor_pct: float = 0.025
+    vanguard_target_rate: float = 0.035
+    vanguard_floor_pct: float = 0.05
     vanguard_ceiling_pct: float = 0.05
     
     # Initial Assets

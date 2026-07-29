@@ -94,7 +94,7 @@ st.sidebar.subheader("Spending Strategy")
 spending_strategy = st.sidebar.selectbox(
     "Spending Model",
     ["Static", "Dynamic (Floor & Ceiling)", "Vanguard Dynamic"],
-    index=0,
+    index=2,
     help="Select how annual living expenses adjust over time:\n"
          "- Static: Base expenses grow strictly with inflation.\n"
          "- Dynamic (Floor & Ceiling): Base expenses decrease when net worth falls below the starting watermark, and increase when above.\n"
@@ -105,16 +105,16 @@ annual_expenses = st.sidebar.number_input("Annual Base Expenses (CHF)", value=85
 
 dynamic_expense_floor_pct = 100.0
 dynamic_expense_ceiling_pct = 100.0
-vanguard_target_rate = 0.04
-vanguard_floor_pct = 0.025
+vanguard_target_rate = 0.035
+vanguard_floor_pct = 0.050
 vanguard_ceiling_pct = 0.050
 
 if spending_strategy == "Dynamic (Floor & Ceiling)":
     dynamic_expense_floor_pct = st.sidebar.number_input("Reduced Expense Floor (%)", value=85.0, step=1.0, format="%.1f", help="The percentage of your base expenses you will spend when your net worth is below the watermark.")
     dynamic_expense_ceiling_pct = st.sidebar.number_input("Expanded Expense Ceiling (%)", value=115.0, step=1.0, format="%.1f", help="The percentage of your base expenses you will spend when your net worth is above the watermark.")
 elif spending_strategy == "Vanguard Dynamic":
-    vanguard_target_rate = st.sidebar.number_input("Target Withdrawal Rate (%)", value=4.0, step=0.1, format="%.1f", help="Target annual spending percentage of total portfolio net worth.") / 100.0
-    vanguard_floor_pct = st.sidebar.number_input("Max Annual Cut / Floor (%)", value=2.5, step=0.5, format="%.1f", help="Maximum allowable reduction in spending compared to prior year's inflation-adjusted spending (Vanguard default: 2.5%).") / 100.0
+    vanguard_target_rate = st.sidebar.number_input("Target Withdrawal Rate (%)", value=3.5, step=0.1, format="%.1f", help="Target annual spending percentage of total portfolio net worth.") / 100.0
+    vanguard_floor_pct = st.sidebar.number_input("Max Annual Cut / Floor (%)", value=5.0, step=0.5, format="%.1f", help="Maximum allowable reduction in spending compared to prior year's inflation-adjusted spending (Vanguard default: 5.0%).") / 100.0
     vanguard_ceiling_pct = st.sidebar.number_input("Max Annual Raise / Ceiling (%)", value=5.0, step=0.5, format="%.1f", help="Maximum allowable increase in spending compared to prior year's inflation-adjusted spending (Vanguard default: 5.0%).") / 100.0
 
 st.sidebar.subheader("Economics Parameters")
