@@ -55,7 +55,7 @@ The engine executes a **monthly tick** for `N` runs simultaneously using NumPy a
 6. **Annual Taxation & Spending Models**: Every 12 months, annual spending is evaluated based on the selected **Spending Strategy**:
     *   **Static**: $E_t = \text{base\_expenses} \times \text{inflation\_factor}_t$.
     *   **Dynamic (Floor & Ceiling)**: Expenses drop to `dynamic_expense_floor_pct` of base when net worth is below the starting watermark, and expand to `dynamic_expense_ceiling_pct` when above.
-    *   **Vanguard Dynamic**: Spending is recalculated annually as $E_t^{\text{target}} = \text{vanguard\_target\_rate} \times \text{NetWorth}_t$, bounded by a floor $(1 - \text{vanguard\_floor\_pct})$ and ceiling $(1 + \text{vanguard\_ceiling\_pct})$ relative to prior year's inflation-adjusted spending.
+    *   **Vanguard Dynamic**: Total annual outflow (living expenses + taxes) is recalculated annually as $E_t^{\text{target}} = \text{vanguard\_target\_rate} \times \text{NetWorth}_t$, bounded by a floor $(1 - \text{vanguard\_floor\_pct})$ and ceiling $(1 + \text{vanguard\_ceiling\_pct})$ relative to prior year's inflation-adjusted spending. In the UI, Target Withdrawal Rate ($\text{TWR}$) is bi-directionally synchronized with Annual Base Expenses ($E_0$) via $E_0 + \text{Taxes}_0 \leftrightarrow \text{TWR} \times \text{NetWorth}_0$.
 7. **Outflows**: Annual expenses and taxes are applied (divided monthly or lumped annually). Deductions are made by selling assets proportionally to their target allocation.
     * **Smart Cash Buffer**: If enabled and the portfolio is in a downturn, expenses are paid out of the CHF Cash allocation first, protecting equities from being sold at depressed prices.
 

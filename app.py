@@ -164,7 +164,7 @@ annual_expenses = st.sidebar.number_input(
     key="annual_expenses",
     step=5000.0,
     on_change=on_expenses_change,
-    help="Your expected base living expenses in today's CHF. Under Vanguard Dynamic Spending, this is bi-directionally synchronized with Target Withdrawal Rate (%)."
+    help="Your expected net living expenses (excluding taxes) in today's CHF. Under Vanguard Dynamic Spending, this is bi-directionally synchronized with Target Withdrawal Rate (%), accounting for estimated taxes."
 )
 
 dynamic_expense_floor_pct = 100.0
@@ -183,7 +183,7 @@ elif spending_strategy == "Vanguard Dynamic":
         step=0.1, 
         format="%.2f", 
         on_change=on_twr_change,
-        help=f"Target annual spending percentage of total portfolio net worth. Bi-directionally synchronized with Annual Base Expenses ({annual_expenses:,.0f} CHF / {total_start_nw:,.0f} CHF = {st.session_state['vanguard_target_rate_pct']:.2f}%)."
+        help="Target annual total withdrawal rate (covering both net living expenses and estimated taxes) as a % of total portfolio net worth. Bi-directionally synchronized with Annual Base Expenses (CHF)."
     )
     vanguard_target_rate = twr_pct / 100.0
     vanguard_floor_pct = st.sidebar.number_input("Max Annual Cut / Floor (%)", value=5.0, step=0.5, format="%.1f", help="Maximum allowable reduction in spending compared to prior year's inflation-adjusted spending (Vanguard default: 5.0%).") / 100.0

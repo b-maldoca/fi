@@ -4,7 +4,7 @@ import os
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '../src')))
 
-from simulation_engine import SimConfig, run_simulation, get_target_weights
+from simulation_engine import SimConfig, run_simulation, get_target_weights, estimate_year_0_taxes
 
 def test_simulation_engine_basic_run():
     config = SimConfig(
@@ -1005,4 +1005,37 @@ def test_simulation_engine_dynamic_floor_and_ceiling():
     # Net worth equals initial net worth -> spending equals base expenses = 50,000
     exp_y0 = history['expenses_paid'][0, 0]
     assert np.isclose(exp_y0, 50_000.0)
+
+
+def test_estimate_year_0_taxes_inclusion():
+    # Verify that estimate_year_0_taxes includes wealth tax and income tax for tax-inclusive TWR
+    config = SimConfig(
+        num_runs=1,
+        duration_years=1,
+        inflation_mean=0.0,
+        inflation_std=0.0,
+        start_age=50,
+        dividend_yield=0.02,
+        initial_liquid_wealth=2_000_000.0,
+        initial_pillar_2=0.0,
+        initial_pillar_3a_accounts=[],
+        alloc_us_stocks=0.5,
+        alloc_non_us_stocks=0.3,
+        alloc_chf_cash=0.2,
+        alloc_gold=0.0,
+        alloc_bitcoin=0.0,
+        rebalance_strategy='Never',
+        rebalance_threshold=0.0,
+        annual_base_expenses=80_000.0,
+        monthly_ahv_pension=0.0,
+        cantonal_multiplier=1.0,
+        municipal_multiplier=1.19
+    )
+
+    est_tax = estimate_year_0_taxes(config)
+    assert est_tax > 0.0
+    
+    total_outflow = config.annual_base_expenses + est_tax
+    twr_pct = (total_outflow / config.initial_liquid_wealth) * 100.0
+    assert twr_pct > (config.annual_base_expenses / config.initial_liquid_wealth) * 100.0
 

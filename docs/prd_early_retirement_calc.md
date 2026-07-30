@@ -76,7 +76,7 @@ The application must allow the user to input the following parameters:
 *   **Spending Strategy Selector**: Configurable spending behavior with three selectable models:
     *   **Static Spending**: Base expenses grow strictly with CPI inflation.
     *   **Dynamic Spending (Floor & Ceiling)**: Expenses drop to a configurable floor (e.g. 85% of base) when total net worth is below the starting watermark, and expand to a ceiling (e.g. 115% of base) when above.
-    *   **Vanguard Dynamic Spending**: Annual spending is recalculated each year as a target percentage of total portfolio net worth (e.g. 4.0%), bounded by a maximum annual cut (floor, e.g. -2.5%) and maximum annual raise (ceiling, e.g. +5.0%) relative to prior year's inflation-adjusted spending.
+    *   **Vanguard Dynamic Spending**: Annual spending is recalculated each year as a target percentage of total portfolio net worth (e.g. 3.5%), bounded by a maximum annual cut (floor, e.g. -5.0%) and maximum annual raise (ceiling, e.g. +5.0%) relative to prior year's inflation-adjusted spending. The Target Withdrawal Rate (TWR) represents total annual portfolio outflows (net living expenses + estimated taxes) and is bi-directionally synchronized in the UI with Annual Base Expenses.
 *   Expected **Monthly** Pillar 1 (AHV) Pension from age 65 (CHF).
 
 
