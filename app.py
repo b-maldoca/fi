@@ -6,7 +6,7 @@ import plotly.graph_objects as go
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), 'src')))
 
-from simulation_engine import SimConfig, run_simulation
+from simulation_engine import SimConfig, run_simulation, estimate_year_0_taxes
 from historic_returns import get_historic_return_matrix
 
 st.set_page_config(page_title="Swiss Early Retirement Simulator", layout="wide")
@@ -104,12 +104,41 @@ spending_strategy = st.sidebar.selectbox(
 # Bi-directional synchronization for Vanguard Dynamic Spending
 total_start_nw = initial_liquid_wealth + initial_pillar_2 + sum(pillar_3a_accounts)
 
+def get_year0_taxes(exp: float) -> float:
+    try:
+        temp_config = SimConfig(
+            num_runs=1,
+            duration_years=1,
+            inflation_mean=0.025,
+            inflation_std=0.01,
+            start_age=start_age,
+            dividend_yield=0.015,
+            initial_liquid_wealth=initial_liquid_wealth,
+            initial_pillar_2=initial_pillar_2,
+            initial_pillar_3a_accounts=pillar_3a_accounts,
+            alloc_us_stocks=alloc_us / 100.0,
+            alloc_non_us_stocks=alloc_non_us / 100.0,
+            alloc_chf_cash=alloc_cash / 100.0,
+            alloc_gold=alloc_gold / 100.0,
+            alloc_bitcoin=alloc_btc / 100.0,
+            rebalance_strategy='Never',
+            rebalance_threshold=0.0,
+            annual_base_expenses=exp,
+            monthly_ahv_pension=2000,
+            cantonal_multiplier=0.95,
+            municipal_multiplier=1.19
+        )
+        return estimate_year_0_taxes(temp_config)
+    except Exception:
+        return 0.0
+
 if 'annual_expenses' not in st.session_state:
     st.session_state['annual_expenses'] = 85_000.0
 
 if 'vanguard_target_rate_pct' not in st.session_state:
     if total_start_nw > 0:
-        st.session_state['vanguard_target_rate_pct'] = round((st.session_state['annual_expenses'] / total_start_nw) * 100.0, 2)
+        est_tax = get_year0_taxes(st.session_state['annual_expenses'])
+        st.session_state['vanguard_target_rate_pct'] = round(((st.session_state['annual_expenses'] + est_tax) / total_start_nw) * 100.0, 2)
     else:
         st.session_state['vanguard_target_rate_pct'] = 3.5
 
@@ -117,13 +146,18 @@ def on_expenses_change():
     nw = total_start_nw
     if nw > 0:
         exp = float(st.session_state['annual_expenses'])
-        st.session_state['vanguard_target_rate_pct'] = round((exp / nw) * 100.0, 2)
+        est_tax = get_year0_taxes(exp)
+        total_outflow = exp + est_tax
+        st.session_state['vanguard_target_rate_pct'] = round((total_outflow / nw) * 100.0, 2)
 
 def on_twr_change():
     nw = total_start_nw
     if nw > 0:
         rate = float(st.session_state['vanguard_target_rate_pct'])
-        st.session_state['annual_expenses'] = float(round((rate / 100.0) * nw, -2))
+        target_total_outflow = (rate / 100.0) * nw
+        est_tax = get_year0_taxes(85_000.0)
+        net_living_exp = max(0.0, target_total_outflow - est_tax)
+        st.session_state['annual_expenses'] = float(round(net_living_exp, -2))
 
 annual_expenses = st.sidebar.number_input(
     "Annual Base Expenses (CHF)",
