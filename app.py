@@ -113,7 +113,15 @@ if spending_strategy == "Dynamic (Floor & Ceiling)":
     dynamic_expense_floor_pct = st.sidebar.number_input("Reduced Expense Floor (%)", value=85.0, step=1.0, format="%.1f", help="The percentage of your base expenses you will spend when your net worth is below the watermark.")
     dynamic_expense_ceiling_pct = st.sidebar.number_input("Expanded Expense Ceiling (%)", value=115.0, step=1.0, format="%.1f", help="The percentage of your base expenses you will spend when your net worth is above the watermark.")
 elif spending_strategy == "Vanguard Dynamic":
-    vanguard_target_rate = st.sidebar.number_input("Target Withdrawal Rate (%)", value=3.5, step=0.1, format="%.1f", help="Target annual spending percentage of total portfolio net worth.") / 100.0
+    total_start_nw = initial_liquid_wealth + initial_pillar_2 + sum(pillar_3a_accounts)
+    default_target_rate_pct = round((annual_expenses / total_start_nw) * 100.0, 2) if total_start_nw > 0 else 3.5
+    vanguard_target_rate = st.sidebar.number_input(
+        "Target Withdrawal Rate (%)", 
+        value=default_target_rate_pct, 
+        step=0.1, 
+        format="%.2f", 
+        help=f"Target annual spending percentage of total portfolio net worth. Automatically calculated as Annual Base Expenses ({annual_expenses:,.0f} CHF) / Total Starting Net Worth ({total_start_nw:,.0f} CHF) = {default_target_rate_pct:.2f}%."
+    ) / 100.0
     vanguard_floor_pct = st.sidebar.number_input("Max Annual Cut / Floor (%)", value=5.0, step=0.5, format="%.1f", help="Maximum allowable reduction in spending compared to prior year's inflation-adjusted spending (Vanguard default: 5.0%).") / 100.0
     vanguard_ceiling_pct = st.sidebar.number_input("Max Annual Raise / Ceiling (%)", value=5.0, step=0.5, format="%.1f", help="Maximum allowable increase in spending compared to prior year's inflation-adjusted spending (Vanguard default: 5.0%).") / 100.0
 
