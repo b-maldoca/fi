@@ -133,11 +133,11 @@ def get_year0_taxes(exp: float) -> float:
         return 0.0
 
 if 'annual_expenses' not in st.session_state:
-    st.session_state['annual_expenses'] = 85_000.0
+    st.session_state['annual_expenses'] = 85_000
 
 if 'vanguard_target_rate_pct' not in st.session_state:
     if total_start_nw > 0:
-        est_tax = get_year0_taxes(st.session_state['annual_expenses'])
+        est_tax = get_year0_taxes(float(st.session_state['annual_expenses']))
         st.session_state['vanguard_target_rate_pct'] = round(((st.session_state['annual_expenses'] + est_tax) / total_start_nw) * 100.0, 2)
     else:
         st.session_state['vanguard_target_rate_pct'] = 3.5
@@ -157,15 +157,16 @@ def on_twr_change():
         target_total_outflow = (rate / 100.0) * nw
         est_tax = get_year0_taxes(85_000.0)
         net_living_exp = max(0.0, target_total_outflow - est_tax)
-        st.session_state['annual_expenses'] = float(round(net_living_exp, -2))
+        st.session_state['annual_expenses'] = int(round(net_living_exp, -2))
 
-annual_expenses = st.sidebar.number_input(
+annual_expenses = float(st.sidebar.number_input(
     "Annual Base Expenses (CHF)",
     key="annual_expenses",
-    step=5000.0,
+    step=5000,
+    format="%d",
     on_change=on_expenses_change,
     help="Your expected net living expenses (excluding taxes) in today's CHF. Under Vanguard Dynamic Spending, this is bi-directionally synchronized with Target Withdrawal Rate (%), accounting for estimated taxes."
-)
+))
 
 dynamic_expense_floor_pct = 100.0
 dynamic_expense_ceiling_pct = 100.0
