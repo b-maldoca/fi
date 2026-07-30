@@ -115,22 +115,19 @@ if 'vanguard_target_rate_pct' not in st.session_state:
 
 def on_expenses_change():
     nw = total_start_nw
-    if nw > 0 and 'expenses_input' in st.session_state:
-        exp = float(st.session_state['expenses_input'])
-        st.session_state['annual_expenses'] = exp
+    if nw > 0:
+        exp = float(st.session_state['annual_expenses'])
         st.session_state['vanguard_target_rate_pct'] = round((exp / nw) * 100.0, 2)
 
 def on_twr_change():
     nw = total_start_nw
-    if nw > 0 and 'twr_input' in st.session_state:
-        rate = float(st.session_state['twr_input'])
-        st.session_state['vanguard_target_rate_pct'] = rate
+    if nw > 0:
+        rate = float(st.session_state['vanguard_target_rate_pct'])
         st.session_state['annual_expenses'] = float(round((rate / 100.0) * nw, -2))
 
 annual_expenses = st.sidebar.number_input(
     "Annual Base Expenses (CHF)",
-    key="expenses_input",
-    value=st.session_state['annual_expenses'],
+    key="annual_expenses",
     step=5000.0,
     on_change=on_expenses_change,
     help="Your expected base living expenses in today's CHF. Under Vanguard Dynamic Spending, this is bi-directionally synchronized with Target Withdrawal Rate (%)."
@@ -148,8 +145,7 @@ if spending_strategy == "Dynamic (Floor & Ceiling)":
 elif spending_strategy == "Vanguard Dynamic":
     twr_pct = st.sidebar.number_input(
         "Target Withdrawal Rate (%)", 
-        key="twr_input",
-        value=st.session_state['vanguard_target_rate_pct'], 
+        key="vanguard_target_rate_pct",
         step=0.1, 
         format="%.2f", 
         on_change=on_twr_change,
