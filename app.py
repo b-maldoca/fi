@@ -347,6 +347,29 @@ if True:
         
         total_outflows_real_per_run = np.sum((history['expenses_paid'] + history['taxes_paid']) / cum_inflation.T, axis=0)
         median_total_withdrawals_real = np.median(total_outflows_real_per_run)
+
+        # Pre-65 (<65) vs Post-65 (>=65) breakdown
+        ages_arr = np.arange(config.start_age + 1, config.start_age + config.duration_years + 1)
+        pre_65_mask = ages_arr < 65
+        post_65_mask = ages_arr >= 65
+
+        if np.any(pre_65_mask):
+            pre_65_outflows = np.sum(history['expenses_paid'][pre_65_mask, :] + history['taxes_paid'][pre_65_mask, :], axis=0)
+            median_pre_65_nominal = np.median(pre_65_outflows)
+            pre_65_outflows_real = np.sum((history['expenses_paid'][pre_65_mask, :] + history['taxes_paid'][pre_65_mask, :]) / cum_inflation.T[pre_65_mask, :], axis=0)
+            median_pre_65_real = np.median(pre_65_outflows_real)
+        else:
+            median_pre_65_nominal = 0.0
+            median_pre_65_real = 0.0
+
+        if np.any(post_65_mask):
+            post_65_outflows = np.sum(history['expenses_paid'][post_65_mask, :] + history['taxes_paid'][post_65_mask, :], axis=0)
+            median_post_65_nominal = np.median(post_65_outflows)
+            post_65_outflows_real = np.sum((history['expenses_paid'][post_65_mask, :] + history['taxes_paid'][post_65_mask, :]) / cum_inflation.T[post_65_mask, :], axis=0)
+            median_post_65_real = np.median(post_65_outflows_real)
+        else:
+            median_post_65_nominal = 0.0
+            median_post_65_real = 0.0
         
         # Row 2: Median Ending NW (Real vs Nominal)
         col_r2_1, col_r2_2 = st.columns(2)
@@ -357,6 +380,21 @@ if True:
         col_r3_1, col_r3_2 = st.columns(2)
         col_r3_1.metric("Median Total Withdrawals (Real)", f"{median_total_withdrawals_real:,.0f} CHF", help="Total cumulative real purchasing power spent on living expenses and taxes over the full simulation period.")
         col_r3_2.metric("Median Total Withdrawals (Nominal)", f"{median_total_withdrawals:,.0f} CHF", help="Total cumulative nominal cash spent on living expenses and taxes over the full simulation period.")
+
+        # Row 4: Pre-AHV (<65) vs Post-65 (>=65) Outflows
+        col_r4_1, col_r4_2 = st.columns(2)
+        pre_65_years_cnt = int(np.sum(pre_65_mask))
+        post_65_years_cnt = int(np.sum(post_65_mask))
+        col_r4_1.metric(
+            f"Pre-AHV Outflow (< Age 65, {pre_65_years_cnt}y)", 
+            f"{median_pre_65_real:,.0f} CHF", 
+            help=f"Median total money required to cover living expenses and taxes during the early retirement gap before age 65 ({pre_65_years_cnt} years). Nominal: {median_pre_65_nominal:,.0f} CHF."
+        )
+        col_r4_2.metric(
+            f"Post-65 Outflow (Age 65+, {post_65_years_cnt}y)", 
+            f"{median_post_65_real:,.0f} CHF", 
+            help=f"Median total money required to cover living expenses and taxes from age 65 through end-of-life ({post_65_years_cnt} years). Nominal: {median_post_65_nominal:,.0f} CHF."
+        )
         
         # Plotly Chart
         years = np.arange(config.start_age + 1, config.start_age + config.duration_years + 1)
