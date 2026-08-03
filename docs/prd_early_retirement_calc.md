@@ -137,6 +137,10 @@ The tool must present the user with:
 *   **Withdrawal Rate Chart**: Percentile chart showing annual withdrawal rate over time.
 *   **Asset Allocation Development Chart**: Stacked area chart displaying the median nominal balance of all asset categories (taxable liquid investments: US Stocks, Non-US Stocks, CHF Cash, Gold, Bitcoin, as well as Pillar 2 and Pillar 3a accounts) over time to visualize total net worth breakdown, glidepaths, and liquidations.
 *   **Expenses & Taxes Chart**: Stacked bar chart showing median expenses and median taxes paid over time.
+*   **Key Outflow KPI Metrics**:
+    *   **Median Total Withdrawals**: Total cumulative cash spent on living expenses and taxes over the entire retirement horizon (Real and Nominal).
+    *   **Pre-AHV Outflow (< Age 65)**: Total median cash required to cover living expenses and taxes during the early retirement gap before age 65.
+    *   **Post-65 Outflow (Age 65+)**: Total median cash required to cover living expenses and taxes from age 65 through end-of-life.
 *   **Success Metric**:
     *   Allows configuring a target ending net worth as a percentage of inflation-adjusted starting net worth (default is 50.0%).
     *   Shows the calculated probability of success matching this definition across all simulation runs.

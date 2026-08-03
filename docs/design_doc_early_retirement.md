@@ -88,7 +88,7 @@ class SimulationResult:
 *   **Sidebar**: All inputs (Initial Balances, Asset Allocation, Target Allocations, Economics, Monte Carlo Parameters, Success Criteria, Zurich Tax Multiplier).
 *   **Main Panel**: Displays results in two sequential full-width sections: **Historic Returns** followed by **Monte Carlo**. Each section contains:
     *   **TL;DR Status**: Displays 'BROKE', 'RICH', or 'DEAD' based on median final net worth vs 3x inflation-adjusted initial net worth.
-    *   **Metrics**: Probability of Success (based on selected success criteria), Median Ending Net Worth (Real), and Median Ending Net Worth (Nominal). Also displays average years below watermark.
+    *   **Metrics**: Probability of Success (based on selected success criteria), Median Ending Net Worth (Real), Median Ending Net Worth (Nominal), Median Total Withdrawals (Real & Nominal), Pre-AHV Outflow (< Age 65), and Post-65 Outflow (Age 65+). Also displays average years below watermark.
     *   **Net Worth Trajectory Chart** (Plotly): Faint lines for individual runs (capped at 100 for Monte Carlo), bold lines for 5th, 25th, 50th, 75th, 95th percentiles.
     *   **Income vs Required Cash Chart** (Plotly): Stacked bar chart showing median Dividends, AHV Pension, and Capital Sold, with a reference line for Total Cash Needed (Expenses + Taxes).
     *   **Withdrawal Rate Chart** (Plotly): Percentile lines for the withdrawal rate over time.
