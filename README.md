@@ -17,14 +17,29 @@ Phase 1 focuses on the **post-retirement decumulation phase** for a single indiv
 *   **Dynamic Expenses**: Optional adjustment to reduce expenses when net worth drops below the starting watermark, plus Vanguard Dynamic Spending rules.
 *   **Configurable Success Criteria**: Set target ending net worth (e.g., preserve 50% of inflation-adjusted starting wealth) and calculate probability of success.
 
+## Data Sources & Provenance
+
+This project incorporates historical datasets curated and maintained by Baptiste Wicht (*The Poor Swiss*), available in the open-source repository [wichtounet/swr-calculator](https://github.com/wichtounet/swr-calculator) and described at [The Poor Swiss](https://thepoorswiss.com):
+
+1. **US Stocks (USD)**: Robert Shiller monthly S&P 500 Total Returns dataset (1871–2025) from [`data/us_stocks.csv`](https://github.com/wichtounet/swr-calculator/blob/master/stock-data/us_stocks.csv).
+2. **Non-US Equities (USD)**: Empirical ex-US stocks total return dataset (MSCI EAFE / World ex-US proxy, 1871–2025) from [`data/ex_us_stocks.csv`](https://github.com/wichtounet/swr-calculator/blob/master/stock-data/ex_us_stocks.csv).
+3. **Currency Exchange (USD/CHF)**: Historical monthly USD/CHF exchange rates (1913–2019 from [`data/usd_chf.csv`](https://github.com/wichtounet/swr-calculator/blob/master/stock-data/usd_chf.csv), extended through 2025 via the [Swiss National Bank (SNB)](https://www.snb.ch)).
+4. **Swiss Inflation (CPI)**: Historical Swiss Consumer Price Index (1921–2023 from [`data/ch_inflation.csv`](https://github.com/wichtounet/swr-calculator/blob/master/stock-data/ch_inflation.csv), cleaned of 2022 entry error and extended through 2025 via the [Swiss Federal Statistical Office (FSO/BFS)](https://www.bfs.admin.ch)).
+
+CHF-converted equity returns are computed annually as:
+$$\text{Return}_{\text{CHF}} = (1 + \text{Return}_{\text{USD}}) \times \left(\frac{\text{FX}_{\text{End}}}{\text{FX}_{\text{Start}}}\right) - 1$$
+
 ## Project Structure
 
 ```text
 ├── app.py                  # Streamlit frontend UI
+├── data/                   # Historical CSV datasets from wichtounet/swr-calculator & SNB/FSO
 ├── src/
 │   ├── simulation_engine.py # Core decumulation simulation loop
 │   ├── tax_engine.py        # Swiss/Zurich tax calculations
 │   └── historic_returns.py  # Historic return data and generators
+├── scripts/
+│   └── build_historic_returns.py # Pipeline building historic_returns.py from data/
 ├── docs/
 │   ├── prd_early_retirement_calc.md # Product Requirement Document
 │   └── design_doc_early_retirement.md # Technical Design Document

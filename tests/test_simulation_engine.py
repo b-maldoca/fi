@@ -5,7 +5,16 @@ import os
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '../src')))
 
 from simulation_engine import SimConfig, run_simulation, get_target_weights, estimate_year_0_taxes
-from historic_returns import get_historic_return_matrix, generate_bootstrapped_returns, HISTORIC_RETURNS
+from historic_returns import (
+    get_historic_return_matrix,
+    get_historic_inflation_matrix,
+    generate_bootstrapped_returns,
+    generate_bootstrapped_inflation,
+    HISTORIC_RETURNS,
+    HISTORIC_RETURNS_NON_US_CHF,
+    HISTORIC_SWISS_INFLATION,
+    HISTORIC_YEARS
+)
 
 def test_simulation_engine_basic_run():
     config = SimConfig(
@@ -1210,8 +1219,22 @@ def test_generate_bootstrapped_returns_shape_and_values():
     assert not np.isnan(matrix).any()
     # Check cash return is 1% annual nominal
     assert np.allclose(matrix[:, :, 2], 0.01 / 12)
-    # Check non-US is exactly 0.8x US
-    assert np.allclose(matrix[:, :, 1], matrix[:, :, 0] * 0.8)
+    # Check US and Non-US equities have valid return ranges
+    assert np.all(matrix[:, :, 0] > -1.0)
+    assert np.all(matrix[:, :, 1] > -1.0)
+    
+    # Check empirical inflation bootstrapping
+    inf_matrix = generate_bootstrapped_inflation(num_runs=50, duration_years=30, seed=123)
+    assert inf_matrix.shape == (50, 30)
+    assert not np.isnan(inf_matrix).any()
+    assert np.all(inf_matrix > -0.5)
+
+
+def test_historic_inflation_matrix_valid():
+    inf_matrix = get_historic_inflation_matrix(50)
+    expected_runs = len(HISTORIC_SWISS_INFLATION) - 50 + 1
+    assert inf_matrix.shape == (expected_runs, 50)
+    assert not np.isnan(inf_matrix).any()
 
 
 def test_generate_bootstrapped_returns_reproducibility():
@@ -1251,9 +1274,8 @@ def test_bootstrapping_simulation_integration():
         municipal_multiplier=1.19
     )
     
-    rng = np.random.default_rng(42)
     boot_return_matrix = generate_bootstrapped_returns(config.num_runs, config.duration_years, seed=42)
-    inflation_matrix = rng.normal(config.inflation_mean, config.inflation_std, (config.num_runs, config.duration_years))
+    inflation_matrix = generate_bootstrapped_inflation(config.num_runs, config.duration_years, seed=42)
     
     history = run_simulation(config, boot_return_matrix, inflation_matrix)
     

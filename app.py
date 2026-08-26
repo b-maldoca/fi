@@ -4,10 +4,24 @@ import streamlit as st
 import numpy as np
 import plotly.graph_objects as go
 
+import importlib
+
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), 'src')))
 
+import simulation_engine
+import historic_returns
+
+importlib.reload(simulation_engine)
+importlib.reload(historic_returns)
+
 from simulation_engine import SimConfig, run_simulation, estimate_year_0_taxes
-from historic_returns import get_historic_return_matrix, generate_bootstrapped_returns
+from historic_returns import (
+    get_historic_return_matrix,
+    get_historic_inflation_matrix,
+    generate_bootstrapped_returns,
+    generate_bootstrapped_inflation,
+    HISTORIC_YEARS
+)
 
 st.set_page_config(page_title="Zurich Early Retirement Simulator", layout="wide")
 
@@ -215,7 +229,7 @@ boot_num_runs = int(st.sidebar.number_input("Number of Bootstrapping Runs", valu
 try:
     dummy = get_historic_return_matrix(int(duration))
     hist_num_runs = dummy.shape[0]
-    st.sidebar.info(f"Using 100-year historic CHF returns. Available contiguous cohorts: {hist_num_runs}")
+    st.sidebar.info(f"Using {len(HISTORIC_YEARS)}-year historic Swiss market data ({HISTORIC_YEARS[0]}–{HISTORIC_YEARS[-1]}). Available contiguous cohorts: {hist_num_runs}")
 except ValueError as e:
     st.sidebar.error(str(e))
     hist_num_runs = 0
@@ -294,10 +308,14 @@ if True:
         duration_years=config_boot.duration_years,
         seed=42
     )
-    boot_inflation_matrix = rng.normal(inflation_mean, inflation_std, (config_boot.num_runs, config_boot.duration_years))
+    boot_inflation_matrix = generate_bootstrapped_inflation(
+        num_runs=config_boot.num_runs,
+        duration_years=config_boot.duration_years,
+        seed=42
+    )
     
     hist_return_matrix = get_historic_return_matrix(config_hist.duration_years)
-    hist_inflation_matrix = rng.normal(inflation_mean, inflation_std, (config_hist.num_runs, config_hist.duration_years))
+    hist_inflation_matrix = get_historic_inflation_matrix(config_hist.duration_years)
     
     with st.spinner('Running Monte Carlo simulations...'):
         history_mc = run_simulation(config_mc, mc_return_matrix, mc_inflation_matrix)
@@ -419,7 +437,7 @@ if True:
         max_traces_to_plot = int(num_runs) if "Historic" in title else min(100, int(num_runs))
         for i in range(max_traces_to_plot):
             if "Historic" in title:
-                start_year = 1928 + i
+                start_year = int(HISTORIC_YEARS[i])
                 end_year = start_year + config.duration_years - 1
                 trace_name = f"Cohort: {start_year} - {end_year}"
                 custom_text = [f"Calendar Year: {start_year + y - 1}" for y in simulation_years]
@@ -585,7 +603,7 @@ if True:
             for idx in indices:
                 idx = int(idx)
                 if is_historic_backtest:
-                    cohort_year = 1928 + idx
+                    cohort_year = int(HISTORIC_YEARS[idx])
                     run_id = f"{cohort_year} - {cohort_year + config.duration_years - 1}"
                 else:
                     run_id = f"Run {idx + 1}"

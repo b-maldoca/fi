@@ -121,9 +121,14 @@ The core simulator must run annual cycles (ticks) and compute the following:
     *   Model staggered lump-sum withdrawals between age 60 and 65 (up to 5 accounts can be held to stagger tax brackets). If starting at age $\ge 65$, all accounts liquidate immediately in Year 0 Month 0. Apply capital withdrawal tax.
 
 #### D. Investment Growth & Returns (CHF-based)
-The application supports three distinct return simulation engines:
-*   **Historic Backtesting Mode**: Replays contiguous historical **nominal** return sequences (e.g., SPI / Damodaran historical dataset in CHF). Preserves historical sequence and macroeconomic autocorrelation, generating $N = \text{total\_years} - \text{duration\_years} + 1$ overlapping cohorts.
-*   **Historic Bootstrapping (Sampling) Mode**: Randomly samples annual return blocks from the historical dataset with replacement across $N$ simulation iterations (e.g. 10,000 runs). As established in FIRE literature (e.g., The Poor Swiss), bootstrapping generates thousands of plausible non-historical sequences while drawing from the true empirical distribution of returns, stress-testing sequence-of-returns risk beyond the limited contiguous periods available in historical records.
+The application supports three distinct return simulation engines utilizing empirical datasets curated by Baptiste Wicht (*The Poor Swiss*), available at [wichtounet/swr-calculator](https://github.com/wichtounet/swr-calculator) (and [The Poor Swiss](https://thepoorswiss.com)):
+*   **Empirical Datasets Ingested**:
+    *   **US Stocks (USD)**: Robert Shiller monthly S&P 500 Total Returns (1871–2025).
+    *   **Non-US Equities (USD)**: MSCI EAFE / World ex-US Total Returns proxy (1871–2025).
+    *   **USD/CHF Exchange Rates**: Historical monthly FX rates (1913–2019 via *The Poor Swiss*, 2020–2025 via Swiss National Bank SNB).
+    *   **Swiss Inflation (CPI)**: Historical Swiss Consumer Price Index (1921–2023 via *The Poor Swiss* / Swiss Federal Statistical Office FSO/BFS, 2024–2025 via FSO).
+*   **Historic Backtesting Mode**: Replays contiguous historical **nominal** return and inflation sequences (1922–2025 in CHF). Preserves historical sequence, macroeconomic autocorrelation, and historical Swiss inflation, generating $N = \text{total\_years} - \text{duration\_years} + 1$ overlapping cohorts.
+*   **Historic Bootstrapping (Sampling) Mode**: Randomly samples annual return and inflation blocks from the historical dataset with replacement across $N$ simulation iterations (e.g. 10,000 runs). Preserves cross-asset and inflation correlations while stress-testing sequence-of-returns risk beyond contiguous records.
 *   **Parametric Monte Carlo Mode**: Stochastic simulation using user-provided **nominal** asset class means ($\mu$), standard deviations ($\sigma$), and correlation assumptions via lognormal returns.
 *   Model inflation in CHF explicitly by increasing base retirement expenses and AHV pension payouts annually. This separates nominal asset growth from the rising cost of living.
 

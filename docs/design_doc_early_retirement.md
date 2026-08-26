@@ -60,10 +60,15 @@ The engine executes a **monthly tick** for `N` runs simultaneously using NumPy a
 7. **Outflows**: Annual expenses and taxes are applied (divided monthly or lumped annually). Deductions are made by selling assets proportionally to their target allocation.
     * **Smart Cash Buffer**: If enabled and the portfolio is in a downturn, expenses are paid out of the CHF Cash allocation first, protecting equities from being sold at depressed prices.
 
-### 3.4. Return Generators
-The system provides three complementary return simulation engines:
-*   **Historic Backtesting Mode**: Loads historic Swiss market returns (SPI and global equities hedged to CHF) and inflation. Replays contiguous historical blocks (e.g., 1928–1978, 1929–1979) to preserve macroeconomic sequence and cyclical autocorrelation. Produces $N = \text{total\_years} - \text{duration\_years} + 1$ overlapping cohorts.
-*   **Historic Bootstrapping (Sampling with Replacement) Mode**: Generates $N$ simulation runs (e.g., 10,000) of length `duration_years` by drawing random annual return instances from the historical empirical dataset with replacement (as described in FIRE literature such as *The Poor Swiss*). This breaks historical path dependency and stress-tests thousands of alternative sequences of returns while preserving empirical return distribution characteristics.
+### 3.4. Return Generators & Data Provenance
+The system provides three complementary return simulation engines powered by empirical datasets from Baptiste Wicht (*The Poor Swiss*), hosted at [wichtounet/swr-calculator](https://github.com/wichtounet/swr-calculator) (and documented at [The Poor Swiss](https://thepoorswiss.com)):
+*   **Empirical Source Datasets (`data/`)**:
+    *   `us_stocks.csv`: Robert Shiller monthly S&P 500 Total Returns (1871–2025).
+    *   `ex_us_stocks.csv`: MSCI EAFE / World ex-US Total Returns proxy (1871–2025).
+    *   `usd_chf.csv`: Historical monthly USD/CHF exchange rates (1913–2019 via *The Poor Swiss*, extended through 2025 via the Swiss National Bank).
+    *   `ch_inflation.csv`: Historical Swiss Consumer Price Index (1921–2023 via *The Poor Swiss* / Swiss Federal Statistical Office, extended through 2025 via FSO).
+*   **Historic Backtesting Mode**: Ingests contiguous Swiss-adjusted historical returns and Swiss CPI inflation sequences (1922–2025 in CHF). Preserves historical sequence, cross-asset correlation, and macroeconomic autocorrelation. Produces $N = \text{total\_years} - \text{duration\_years} + 1$ overlapping cohorts.
+*   **Historic Bootstrapping (Sampling with Replacement) Mode**: Generates $N$ simulation runs (e.g., 10,000) of length `duration_years` by drawing random annual return and inflation instances with replacement. Jointly samples US Equities, Non-US Equities, and Swiss CPI to preserve cross-asset correlation while stress-testing thousands of alternative sequences of returns.
 *   **Parametric Monte Carlo Mode**: Generates a matrix of `shape=(num_runs, duration_months, 5)` using `numpy.random.lognormal` based on user-provided **Nominal** Means ($\mu$) and Standard Deviations ($\sigma$) for individual asset classes, along with normally distributed inflation applied separately to expenses.
 
 ## 4. Data Models
