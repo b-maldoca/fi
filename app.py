@@ -7,9 +7,9 @@ import plotly.graph_objects as go
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), 'src')))
 
 from simulation_engine import SimConfig, run_simulation, estimate_year_0_taxes
-from historic_returns import get_historic_return_matrix
+from historic_returns import get_historic_return_matrix, generate_bootstrapped_returns
 
-st.set_page_config(page_title="Swiss Early Retirement Simulator", layout="wide")
+st.set_page_config(page_title="Zurich Early Retirement Simulator", layout="wide")
 
 st.markdown("""
 <style>
@@ -30,7 +30,7 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-st.title("Swiss Early Retirement Simulator (Zurich Phase 1)")
+st.title("Zurich Early Retirement Simulator")
 
 st.sidebar.header("Configuration")
 st.sidebar.markdown("---")
@@ -197,7 +197,7 @@ dividend_yield = st.sidebar.number_input("Dividend Yield (%)", value=1.5, step=0
 inflation_mean = st.sidebar.number_input("Inflation Mean (%)", value=2.5, step=0.1, format="%.1f", help="Expected average annual inflation rate.") / 100.0
 inflation_std = st.sidebar.number_input("Inflation Volatility (%)", value=1.0, step=0.1, format="%.1f", help="Expected volatility of inflation.") / 100.0
 
-st.sidebar.subheader("Monte Carlo Parameters")
+st.sidebar.subheader("Simulation Parameters")
 st.sidebar.caption("Note: Returns must be Nominal (unadjusted for inflation) and in CHF terms. E.g., historic US Stock returns are ~9.5% in USD, but ~7.0% in CHF due to currency drag.")
 ret_us = st.sidebar.number_input("US Stocks Nominal Mean (%)", value=7.0, step=0.1, format="%.1f", help="Expected nominal mean return for US Stocks in CHF. Note: Historic S&P500 returns are ~9.5% in USD, but ~7.0% in CHF due to the appreciating Franc.") / 100.0
 ret_non_us = st.sidebar.number_input("Non-US Stocks Nominal Mean (%)", value=6.0, step=0.1, format="%.1f", help="Expected nominal mean return for Non-US Stocks in CHF terms.") / 100.0
@@ -210,11 +210,12 @@ vol_gold = st.sidebar.number_input("Gold Volatility (%)", value=15.0, step=0.1, 
 vol_btc = st.sidebar.number_input("Bitcoin Volatility (%)", value=60.0, step=0.1, format="%.1f", help="Expected volatility for Bitcoin.") / 100.0
 
 mc_num_runs = int(st.sidebar.number_input("Number of Monte Carlo Runs", value=1000, min_value=100, max_value=10000, step=100, help="How many distinct future paths to simulate."))
+boot_num_runs = int(st.sidebar.number_input("Number of Bootstrapping Runs", value=1000, min_value=100, max_value=10000, step=100, help="How many empirical sampling paths (with replacement) to simulate."))
 
 try:
     dummy = get_historic_return_matrix(int(duration))
     hist_num_runs = dummy.shape[0]
-    st.sidebar.info(f"Using 100-year historic/synthetic CHF returns. Available overlapping runs: {hist_num_runs}")
+    st.sidebar.info(f"Using 100-year historic CHF returns. Available contiguous cohorts: {hist_num_runs}")
 except ValueError as e:
     st.sidebar.error(str(e))
     hist_num_runs = 0
@@ -267,6 +268,7 @@ if True:
         )
     
     config_mc = create_config(mc_num_runs)
+    config_boot = create_config(boot_num_runs)
     config_hist = create_config(hist_num_runs)
     
     from simulation_engine import generate_monte_carlo_returns
@@ -285,15 +287,23 @@ if True:
         vol_btc=vol_btc,
         seed=42
     )
-    
     mc_inflation_matrix = rng.normal(inflation_mean, inflation_std, (config_mc.num_runs, config_mc.duration_years))
+    
+    boot_return_matrix = generate_bootstrapped_returns(
+        num_runs=config_boot.num_runs,
+        duration_years=config_boot.duration_years,
+        seed=42
+    )
+    boot_inflation_matrix = rng.normal(inflation_mean, inflation_std, (config_boot.num_runs, config_boot.duration_years))
     
     hist_return_matrix = get_historic_return_matrix(config_hist.duration_years)
     hist_inflation_matrix = rng.normal(inflation_mean, inflation_std, (config_hist.num_runs, config_hist.duration_years))
     
     with st.spinner('Running Monte Carlo simulations...'):
         history_mc = run_simulation(config_mc, mc_return_matrix, mc_inflation_matrix)
-    with st.spinner('Running Historic simulations...'):
+    with st.spinner('Running Bootstrapping simulations...'):
+        history_boot = run_simulation(config_boot, boot_return_matrix, boot_inflation_matrix)
+    with st.spinner('Running Historic Backtesting simulations...'):
         history_hist = run_simulation(config_hist, hist_return_matrix, hist_inflation_matrix)
         
     def render_results(history, config, num_runs, title, inflation_matrix, success_pct):
@@ -554,9 +564,9 @@ if True:
         st.subheader("Asset Allocation Development", help="This stacked chart visualizes the median nominal balance of all asset categories (taxable liquid investments, Pillar 2, and Pillar 3a) over time, showing how your net worth breakdown glides and rebalances throughout retirement.")
         st.plotly_chart(fig_alloc, width='stretch')
 
-        is_historic = "Historic" in title
-        analysis_name = "Cohort Analysis" if is_historic else "Run Analysis"
-        id_col_name = "Cohort" if is_historic else "Run"
+        is_historic_backtest = "Historic Backtesting" in title or "Historic Returns" in title
+        analysis_name = "Cohort Analysis" if is_historic_backtest else "Run Analysis"
+        id_col_name = "Cohort" if is_historic_backtest else "Run"
         
         st.subheader(analysis_name, help=f"Best and worst paths based on the final net worth.")
         import pandas as pd
@@ -574,7 +584,7 @@ if True:
             data = []
             for idx in indices:
                 idx = int(idx)
-                if is_historic:
+                if is_historic_backtest:
                     cohort_year = 1928 + idx
                     run_id = f"{cohort_year} - {cohort_year + config.duration_years - 1}"
                 else:
@@ -588,7 +598,7 @@ if True:
                 })
             return pd.DataFrame(data)
             
-        st.markdown(f"##### Top 10 Best {id_col_name}s" if is_historic else "##### Top 10 Best Runs")
+        st.markdown(f"##### Top 10 Best {id_col_name}s" if is_historic_backtest else "##### Top 10 Best Runs")
         df_best = build_df(best_indices)
         st.dataframe(df_best.style.format({
             "Final NW (Real)": "{:,.0f}",
@@ -596,7 +606,7 @@ if True:
             "Min NW (Nom)": "{:,.0f}"
         }), hide_index=True, width='stretch')
         
-        st.markdown(f"##### Top 10 Worst {id_col_name}s" if is_historic else "##### Top 10 Worst Runs")
+        st.markdown(f"##### Top 10 Worst {id_col_name}s" if is_historic_backtest else "##### Top 10 Worst Runs")
         df_worst = build_df(worst_indices)
         st.dataframe(df_worst.style.format({
             "Final NW (Real)": "{:,.0f}",
@@ -604,9 +614,11 @@ if True:
             "Min NW (Nom)": "{:,.0f}"
         }), hide_index=True, width='stretch')
             
-    col_hist, col_mc = st.columns(2)
+    col_hist, col_boot, col_mc = st.columns(3)
     with col_hist:
-        render_results(history_hist, config_hist, hist_num_runs, "Historic Returns", hist_inflation_matrix, success_pct)
+        render_results(history_hist, config_hist, hist_num_runs, "Historic Backtesting", hist_inflation_matrix, success_pct)
+    with col_boot:
+        render_results(history_boot, config_boot, boot_num_runs, "Historic Bootstrapping", boot_inflation_matrix, success_pct)
     with col_mc:
         render_results(history_mc, config_mc, mc_num_runs, "Monte Carlo", mc_inflation_matrix, success_pct)
 else:

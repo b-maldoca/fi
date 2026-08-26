@@ -5,7 +5,7 @@ import os
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '../src')))
 
 from simulation_engine import SimConfig, run_simulation, get_target_weights, estimate_year_0_taxes
-from historic_returns import get_historic_return_matrix, HISTORIC_RETURNS
+from historic_returns import get_historic_return_matrix, generate_bootstrapped_returns, HISTORIC_RETURNS
 
 def test_simulation_engine_basic_run():
     config = SimConfig(
@@ -1202,4 +1202,69 @@ def test_vanguard_spending_depleted_portfolio_floor():
     assert np.isclose(history['expenses_paid'][0, 0], 47_500.0)
     # Year 1 spending is 47,500 * 0.95 = 45,125
     assert np.isclose(history['expenses_paid'][1, 0], 45_125.0)
+
+
+def test_generate_bootstrapped_returns_shape_and_values():
+    matrix = generate_bootstrapped_returns(num_runs=50, duration_years=30, seed=123)
+    assert matrix.shape == (50, 360, 5)
+    assert not np.isnan(matrix).any()
+    # Check cash return is 1% annual nominal
+    assert np.allclose(matrix[:, :, 2], 0.01 / 12)
+    # Check non-US is exactly 0.8x US
+    assert np.allclose(matrix[:, :, 1], matrix[:, :, 0] * 0.8)
+
+
+def test_generate_bootstrapped_returns_reproducibility():
+    m1 = generate_bootstrapped_returns(num_runs=20, duration_years=10, seed=42)
+    m2 = generate_bootstrapped_returns(num_runs=20, duration_years=10, seed=42)
+    assert np.array_equal(m1, m2)
+
+
+def test_generate_bootstrapped_returns_invalid_inputs():
+    import pytest
+    with pytest.raises(ValueError, match="must be positive integers"):
+        generate_bootstrapped_returns(num_runs=0, duration_years=10)
+    with pytest.raises(ValueError, match="must be positive integers"):
+        generate_bootstrapped_returns(num_runs=10, duration_years=-2)
+
+
+def test_bootstrapping_simulation_integration():
+    config = SimConfig(
+        num_runs=100,
+        duration_years=25,
+        inflation_mean=0.02,
+        inflation_std=0.01,
+        start_age=45,
+        dividend_yield=0.015,
+        initial_liquid_wealth=1_500_000.0,
+        initial_pillar_2=300_000.0,
+        initial_pillar_3a_accounts=[50_000.0, 50_000.0],
+        alloc_us_stocks=0.6,
+        alloc_non_us_stocks=0.3,
+        alloc_chf_cash=0.1,
+        alloc_gold=0.0,
+        alloc_bitcoin=0.0,
+        rebalance_strategy='Yearly',
+        annual_base_expenses=70_000.0,
+        monthly_ahv_pension=2200.0,
+        cantonal_multiplier=1.0,
+        municipal_multiplier=1.19
+    )
+    
+    rng = np.random.default_rng(42)
+    boot_return_matrix = generate_bootstrapped_returns(config.num_runs, config.duration_years, seed=42)
+    inflation_matrix = rng.normal(config.inflation_mean, config.inflation_std, (config.num_runs, config.duration_years))
+    
+    history = run_simulation(config, boot_return_matrix, inflation_matrix)
+    
+    assert history['net_worth'].shape == (25, 100)
+    assert history['liquid_assets'].shape == (25, 100)
+    assert not np.isnan(history['net_worth']).any()
+    
+    # Verify success rate computation
+    cum_inf = np.cumprod(1 + inflation_matrix, axis=1)
+    run_final_inf_factor = np.prod(1 + inflation_matrix, axis=1)
+    target_ending_nw = 0.5 * (history['initial_net_worth'] * run_final_inf_factor)
+    success_rate = np.mean(history['net_worth'][-1, :] > target_ending_nw) * 100.0
+    assert 0.0 <= success_rate <= 100.0
 

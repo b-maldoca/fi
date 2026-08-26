@@ -60,9 +60,11 @@ The engine executes a **monthly tick** for `N` runs simultaneously using NumPy a
 7. **Outflows**: Annual expenses and taxes are applied (divided monthly or lumped annually). Deductions are made by selling assets proportionally to their target allocation.
     * **Smart Cash Buffer**: If enabled and the portfolio is in a downturn, expenses are paid out of the CHF Cash allocation first, protecting equities from being sold at depressed prices.
 
-### 3.4. Return Generator
-*   **Historic Mode**: Loads a CSV of historic Swiss market returns (e.g., SPI, global equities hedged to CHF) and inflation. These returns are explicitly **nominal** (unadjusted for inflation). For a 50-year simulation, it selects contiguous 50-year blocks (e.g., 1900-1950, 1901-1951). If there are 100 years of data, it yields 50 distinct runs.
-*   **Monte Carlo Mode**: Generates a matrix of `shape=(num_runs, simulation_years)` using `numpy.random.lognormal` based on user-provided **Nominal** Means ($\mu$) and Standard Deviations ($\sigma$) for individual asset classes, along with a constant or normally distributed inflation rate applied separately to expenses.
+### 3.4. Return Generators
+The system provides three complementary return simulation engines:
+*   **Historic Backtesting Mode**: Loads historic Swiss market returns (SPI and global equities hedged to CHF) and inflation. Replays contiguous historical blocks (e.g., 1928–1978, 1929–1979) to preserve macroeconomic sequence and cyclical autocorrelation. Produces $N = \text{total\_years} - \text{duration\_years} + 1$ overlapping cohorts.
+*   **Historic Bootstrapping (Sampling with Replacement) Mode**: Generates $N$ simulation runs (e.g., 10,000) of length `duration_years` by drawing random annual return instances from the historical empirical dataset with replacement (as described in FIRE literature such as *The Poor Swiss*). This breaks historical path dependency and stress-tests thousands of alternative sequences of returns while preserving empirical return distribution characteristics.
+*   **Parametric Monte Carlo Mode**: Generates a matrix of `shape=(num_runs, duration_months, 5)` using `numpy.random.lognormal` based on user-provided **Nominal** Means ($\mu$) and Standard Deviations ($\sigma$) for individual asset classes, along with normally distributed inflation applied separately to expenses.
 
 ## 4. Data Models
 
@@ -114,8 +116,8 @@ class SimConfig:
 *   `initial_net_worth`: Float scalar starting net worth
 
 ## 5. UI Layout (Streamlit)
-*   **Sidebar**: All inputs (Demographics, Initial Balances, Asset Allocation, Target Allocations, Rebalancing Strategies, Economics & Spending Models, Monte Carlo Parameters, Success Criteria, Zurich Tax Multipliers).
-*   **Main Panel**: Displays results in two sequential full-width sections: **Historic Returns** followed by **Monte Carlo**. Each section contains:
+*   **Sidebar**: All inputs (Demographics, Initial Balances, Asset Allocation, Target Allocations, Rebalancing Strategies, Economics & Spending Models, Simulation Parameters, Success Criteria, Zurich Tax Multipliers).
+*   **Main Panel**: Displays results across three side-by-side columns for direct comparative analysis: **Historic Backtesting**, **Historic Bootstrapping (Sampling with Replacement)**, and **Monte Carlo**. Each column contains:
     *   **TL;DR Status**: Displays 'BROKE', 'RICH', or 'DEAD' based on median final net worth vs 3x inflation-adjusted initial net worth.
     *   **Metrics**: Probability of Success (based on selected success criteria), Avg Years Below Start NW, Median Ending Net Worth (Real & Nominal), Median Total Withdrawals (Real & Nominal), Pre-AHV Outflow (< Age 65), and Post-65 Outflow (Age 65+).
     *   **Net Worth Trajectory Chart** (Plotly): Faint lines for individual runs (capped at 100 for Monte Carlo), bold lines for 5th, 25th, 50th, 75th, 95th percentiles.

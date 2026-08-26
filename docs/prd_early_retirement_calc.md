@@ -17,7 +17,10 @@ To manage complexity, the project will be split into two development phases:
 *   **Phase 2: Pre-Retirement (Accumulation Phase) & Transition**. Adds compensation modeling, active saving, and optimization of transition (e.g., staggering Pillar 3a withdrawals, timing of retiring, voluntary Pillar 2 buy-ins).
 
 ### Phase 1 In-Scope
-*   Modeling return scenarios using **both Monte Carlo and Historic Returns**, calculated in **CHF**.
+*   Modeling return scenarios using three complementary simulation methods, calculated in **CHF**:
+    *   **Historic Backtesting**: Replaying contiguous historical market periods.
+    *   **Historic Bootstrapping (Sampling with Replacement)**: Stochastic sampling of empirical annual returns with replacement across thousands of runs to test non-historical return sequences.
+    *   **Parametric Monte Carlo**: Stochastic simulation using lognormal asset return distributions.
 *   Zurich Cantonal, Municipal, and Federal Income & Wealth tax rules.
 *   Mandatory AHV contributions for non-working early retirees.
 *   Pillar 2 modeled via a **Freizügigkeitskonto (Vesting Account)**, restricted to **lump-sum withdrawal (Kapitalbezug)** at retirement (no annuities for now).
@@ -118,8 +121,10 @@ The core simulator must run annual cycles (ticks) and compute the following:
     *   Model staggered lump-sum withdrawals between age 60 and 65 (up to 5 accounts can be held to stagger tax brackets). If starting at age $\ge 65$, all accounts liquidate immediately in Year 0 Month 0. Apply capital withdrawal tax.
 
 #### D. Investment Growth & Returns (CHF-based)
-*   **Historic Returns Mode**: Simulates the portfolio using actual historical **nominal** returns of CHF-denominated or CHF-hedged asset classes.
-*   **Monte Carlo Mode**: Stochastic simulation using historical averages, volatilities, and correlations. Inputs are strictly **nominal**.
+The application supports three distinct return simulation engines:
+*   **Historic Backtesting Mode**: Replays contiguous historical **nominal** return sequences (e.g., SPI / Damodaran historical dataset in CHF). Preserves historical sequence and macroeconomic autocorrelation, generating $N = \text{total\_years} - \text{duration\_years} + 1$ overlapping cohorts.
+*   **Historic Bootstrapping (Sampling) Mode**: Randomly samples annual return blocks from the historical dataset with replacement across $N$ simulation iterations (e.g. 10,000 runs). As established in FIRE literature (e.g., The Poor Swiss), bootstrapping generates thousands of plausible non-historical sequences while drawing from the true empirical distribution of returns, stress-testing sequence-of-returns risk beyond the limited contiguous periods available in historical records.
+*   **Parametric Monte Carlo Mode**: Stochastic simulation using user-provided **nominal** asset class means ($\mu$), standard deviations ($\sigma$), and correlation assumptions via lognormal returns.
 *   Model inflation in CHF explicitly by increasing base retirement expenses and AHV pension payouts annually. This separates nominal asset growth from the rising cost of living.
 
 
@@ -127,13 +132,13 @@ The core simulator must run annual cycles (ticks) and compute the following:
 
 ### 4.3. Outputs & Visualizations
 
-The tool must present the user with:
+The tool must present the user with results across simulation modes (Historic Backtesting, Bootstrapping, Monte Carlo):
 *   **TL;DR Status Indicator**: A quick overarching assessment of the median outcome:
     *   **BROKE**: Median final net worth <= 0 (You run out of money).
     *   **RICH**: Median final net worth >= 3x inflation-adjusted initial net worth (Real wealth grows massively).
     *   **DEAD**: Final net worth is positive but below 3x the inflation-adjusted initial net worth (Safe, but real wealth depletes or stagnates).
 *   **Net Worth Trajectory Chart**: A chart showing the progression of assets over the 50-year horizon.
-    *   For multi-run simulations (Monte Carlo/Historic roll period), it must plot **all individual runs** (faint "spaghetti" lines) to show dispersion (capped at 100 runs for Monte Carlo for performance).
+    *   For multi-run simulations (Monte Carlo, Bootstrapping, and Historic Backtesting cohorts), it must plot individual runs (faint "spaghetti" lines, capped at 100 runs for performant rendering in stochastic modes) to show dispersion.
     *   It must overlay clear percentile lines: **5th, 25th, 50th (median), 75th, and 95th** percentiles.
 *   **Income vs Required Cash Chart**: Dynamic annual view of inflows (Dividends, AHV annuities post-65, Capital Sold) vs. outflows (Total Cash Needed: Expenses + taxes).
 *   **Withdrawal Rate Chart**: Percentile chart showing annual withdrawal rate over time.

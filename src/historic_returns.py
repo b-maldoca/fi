@@ -142,3 +142,51 @@ def get_historic_return_matrix(duration_years: int) -> np.ndarray:
         matrix[i, :, 4] = rng.normal(0.10/12, 0.60/np.sqrt(12), duration_months)
         
     return matrix
+
+
+def generate_bootstrapped_returns(
+    num_runs: int,
+    duration_years: int,
+    seed: int = 42
+) -> np.ndarray:
+    """
+    Generates a matrix of shape (num_runs, duration_months, 5) using historical bootstrapping 
+    (sampling annual returns with replacement from the historical dataset).
+    
+    Asset Classes:
+    0: US Stocks (Sampled from Damodaran/S&P500 CHF returns)
+    1: Non-US Stocks (0.8x proxy of sampled US stocks)
+    2: CHF Cash (1% annual nominal return)
+    3: Gold (Synthetic uncorrelated, 6% mean, 15% vol)
+    4: Bitcoin (Synthetic uncorrelated, 10% mean, 60% vol)
+    """
+    total_years = len(HISTORIC_RETURNS)
+    if duration_years <= 0 or num_runs <= 0:
+        raise ValueError(f"num_runs ({num_runs}) and duration_years ({duration_years}) must be positive integers.")
+        
+    rng = np.random.default_rng(seed)
+    duration_months = duration_years * 12
+    matrix = np.zeros((num_runs, duration_months, 5))
+    
+    # Sample random historical years with replacement: shape (num_runs, duration_years)
+    random_indices = rng.integers(0, total_years, size=(num_runs, duration_years))
+    sampled_annual_returns = HISTORIC_RETURNS[random_indices] # shape: (num_runs, duration_years)
+    
+    # Convert annual returns to monthly returns
+    safe_base = np.maximum(0.0, 1.0 + sampled_annual_returns)
+    sampled_monthly_returns = safe_base**(1/12) - 1.0 # shape: (num_runs, duration_years)
+    
+    # Repeat 12 times along the time axis to match duration_months
+    sampled_monthly_expanded = np.repeat(sampled_monthly_returns, 12, axis=1) # shape: (num_runs, duration_months)
+    
+    matrix[:, :, 0] = sampled_monthly_expanded
+    matrix[:, :, 1] = sampled_monthly_expanded * 0.8
+    matrix[:, :, 2] = 0.01 / 12 # 1% annual nominal
+    
+    # Synthetic Gold & Bitcoin monthly returns per run
+    for i in range(num_runs):
+        rng_asset = np.random.default_rng(seed + i + 1000)
+        matrix[i, :, 3] = rng_asset.normal(0.06 / 12, 0.15 / np.sqrt(12), duration_months)
+        matrix[i, :, 4] = rng_asset.normal(0.10 / 12, 0.60 / np.sqrt(12), duration_months)
+        
+    return matrix
