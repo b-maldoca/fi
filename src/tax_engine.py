@@ -47,7 +47,7 @@ ZURICH_WEALTH_BRACKETS = [
 
 def _calculate_bracket_tax(taxable_amount: np.ndarray, brackets: list) -> np.ndarray:
     """Vectorized calculation of progressive tax brackets."""
-    taxable_amount = np.asarray(taxable_amount, dtype=float)
+    taxable_amount = np.maximum(0.0, np.asarray(taxable_amount, dtype=float))
     tax = np.zeros_like(taxable_amount, dtype=float)
     
     for i in range(len(brackets)):
@@ -106,10 +106,11 @@ def calculate_ahv_non_worker(wealth: np.ndarray, imputed_pension_income: np.ndar
     Based on wealth and 20x imputed pension income (e.g., from an annuity).
     Min 530 CHF, Max 26,500 CHF (2025 values).
     """
-    wealth = np.atleast_1d(wealth).astype(float)
-    imputed_pension_income = np.atleast_1d(imputed_pension_income).astype(float)
+    is_scalar = np.isscalar(wealth) or (isinstance(wealth, np.ndarray) and wealth.ndim == 0)
+    wealth_arr = np.maximum(0.0, np.asarray(wealth, dtype=float))
+    imputed_arr = np.maximum(0.0, np.asarray(imputed_pension_income, dtype=float))
     
-    determining_wealth = wealth + (20 * imputed_pension_income)
+    determining_wealth = wealth_arr + (20 * imputed_arr)
     
     # 106 CHF per 50k step above 300k (up to 1.75M)
     steps_mid = np.maximum(0.0, (determining_wealth - 300_000) // 50_000)
@@ -126,7 +127,7 @@ def calculate_ahv_non_worker(wealth: np.ndarray, imputed_pension_income: np.ndar
     # Cap at max limit
     result = np.minimum(contribution, 26_500.0)
     
-    if result.size == 1:
-        return result[0]
+    if is_scalar:
+        return float(result)
     return result
 

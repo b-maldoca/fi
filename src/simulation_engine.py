@@ -53,11 +53,26 @@ class SimConfig:
     tent_duration_years: int = 7
 
     def __post_init__(self):
+        if self.num_runs <= 0 or self.duration_years <= 0:
+            raise ValueError(f"num_runs ({self.num_runs}) and duration_years ({self.duration_years}) must be positive integers.")
+            
+        if self.start_age < 0:
+            raise ValueError(f"start_age ({self.start_age}) cannot be negative.")
+
+        if self.tent_duration_years < 0:
+            raise ValueError(f"tent_duration_years ({self.tent_duration_years}) cannot be negative.")
+            
+        if self.vanguard_floor_pct < 0.0 or self.vanguard_ceiling_pct < 0.0 or self.vanguard_target_rate < 0.0:
+            raise ValueError("Vanguard Dynamic Spending parameters cannot be negative.")
+
         if self.initial_pillar_3a_accounts is None:
             self.initial_pillar_3a_accounts = []
             
-        total_alloc = (self.alloc_us_stocks + self.alloc_non_us_stocks + 
-                       self.alloc_chf_cash + self.alloc_gold + self.alloc_bitcoin)
+        allocs = [self.alloc_us_stocks, self.alloc_non_us_stocks, self.alloc_chf_cash, self.alloc_gold, self.alloc_bitcoin]
+        if any(a < 0.0 for a in allocs):
+            raise ValueError(f"Asset allocations cannot be negative. Current: {allocs}")
+            
+        total_alloc = sum(allocs)
         if not np.isclose(total_alloc, 1.0, atol=0.0001):
             raise ValueError(f"Asset allocations must sum to exactly 1.0. Currently: {total_alloc:.4f}")
             

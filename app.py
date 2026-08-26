@@ -155,7 +155,8 @@ def on_twr_change():
     if nw > 0:
         rate = float(st.session_state['vanguard_target_rate_pct'])
         target_total_outflow = (rate / 100.0) * nw
-        est_tax = get_year0_taxes(85_000.0)
+        curr_exp = float(st.session_state.get('annual_expenses', 85_000))
+        est_tax = get_year0_taxes(curr_exp)
         net_living_exp = max(0.0, target_total_outflow - est_tax)
         st.session_state['annual_expenses'] = int(round(net_living_exp, -2))
 

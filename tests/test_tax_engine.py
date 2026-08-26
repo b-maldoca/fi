@@ -48,9 +48,29 @@ def test_ahv_precise():
     assert ahv[5] == 26500.0 # 8.95M
     assert ahv[6] == 26500.0 # Above 8.95M (capped)
 
-if __name__ == "__main__":
-    test_income_tax()
-    test_wealth_tax()
-    test_ahv()
-    test_ahv_precise()
-    print("All basic tax engine tests passed!")
+def test_capital_withdrawal_tax():
+    amounts = np.array([0, 50_000, 200_000, 1_000_000])
+    tax = calculate_capital_withdrawal_tax(amounts, cantonal_multiplier=1.0, municipal_multiplier=1.19)
+    assert tax[0] == 0.0
+    assert tax[1] > 0.0
+    assert tax[2] > tax[1]
+    assert tax[3] > tax[2]
+
+def test_negative_tax_inputs():
+    # Negative incomes/wealth must not produce negative taxes
+    tax_inc = calculate_income_tax(np.array([-50_000, -100]))
+    assert np.all(tax_inc == 0.0)
+    tax_wealth = calculate_wealth_tax(np.array([-1_000_000, -50]))
+    assert np.all(tax_wealth == 0.0)
+    tax_cap = calculate_capital_withdrawal_tax(np.array([-200_000]))
+    assert np.all(tax_cap == 0.0)
+
+def test_ahv_scalar_vs_array():
+    scalar_res = calculate_ahv_non_worker(500_000.0)
+    assert isinstance(scalar_res, float)
+    assert scalar_res == 954.0
+    
+    arr_res = calculate_ahv_non_worker(np.array([500_000.0]))
+    assert isinstance(arr_res, np.ndarray)
+    assert arr_res.shape == (1,)
+    assert arr_res[0] == 954.0

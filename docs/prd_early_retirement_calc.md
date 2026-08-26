@@ -112,10 +112,10 @@ The core simulator must run annual cycles (ticks) and compute the following:
     *   Model payout starting at official retirement age (currently 65 for both men and women). The user's input representing today's pension value is adjusted for cumulative inflation from the start of the simulation until the payout starts at 65. This payout acts as an income stream that offsets living expenses and is fully subject to income tax (adjusted annually for inflation thereafter).
 *   **Pillar 2**:
     *   Model monthly growth of the **Freizügigkeitskonto** (Assumed to be 100% invested in equities proportional to target US/Non-US allocation).
-    *   Model **lump-sum withdrawal (Kapitalbezug)** at retirement or staggered up to 5 years after AHV retirement age. Subject to separate capital withdrawal tax.
+    *   Model **lump-sum withdrawal (Kapitalbezug)** at retirement age 65 (or immediately in Year 0 Month 0 if starting retirement at age $\ge 65$). Subject to separate capital withdrawal tax.
 *   **Pillar 3a**:
     *   Model monthly growth (Assumed to be 100% invested in equities proportional to target US/Non-US allocation).
-    *   Model staggered lump-sum withdrawals between age 60 and 65 (up to 5 accounts can be held to stagger tax brackets). Apply capital withdrawal tax.
+    *   Model staggered lump-sum withdrawals between age 60 and 65 (up to 5 accounts can be held to stagger tax brackets). If starting at age $\ge 65$, all accounts liquidate immediately in Year 0 Month 0. Apply capital withdrawal tax.
 
 #### D. Investment Growth & Returns (CHF-based)
 *   **Historic Returns Mode**: Simulates the portfolio using actual historical **nominal** returns of CHF-denominated or CHF-hedged asset classes.

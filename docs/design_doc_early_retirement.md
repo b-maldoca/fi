@@ -18,7 +18,8 @@ To prioritize rapid development, rich interactive visualizations, and local data
 The system is divided into four primary modules:
 
 ### 3.1. User State & Configuration (Input Layer)
-A centralized data structure (e.g., a Pydantic model or Dataclass) representing the simulation parameters.
+A centralized data structure (`SimConfig`) representing the simulation parameters, enforcing strict mathematical validation:
+*   **Validation Rules**: `num_runs > 0`, `duration_years > 0`, `start_age >= 0`, `tent_duration_years >= 0`, individual asset allocations $\ge 0.0$ and $\sum \text{allocations} = 1.0$, and non-negative spending parameters.
 *   **Demographics**: Age, target duration.
 *   **Economics**: Inflation rate, municipal tax multiplier (Steuerfuss).
 *   **Assets**: Taxable Brokerage, Cash, Pillar 2 (Freizügigkeitskonto), Pillar 3a balances (stored as an array to support staggered withdrawals).
@@ -26,7 +27,7 @@ A centralized data structure (e.g., a Pydantic model or Dataclass) representing 
 *   **Simulation Config**: Mode (Historic vs. Monte Carlo), Num Runs, Success Criteria (Survival vs. Capital Preservation).
 
 ### 3.2. Tax & Pension Engine
-This is a stateless utility module responsible for all Swiss-specific calculations for a given year.
+This is a stateless utility module responsible for all Swiss-specific calculations for a given year. All functions are vectorized and safely clamp negative inputs to zero.
 
 *   **Income Tax (`calculate_income_tax(taxable_income, steuerfuss)`)**: 
     *   Applies Federal progressive brackets (Single tariff).
@@ -36,7 +37,7 @@ This is a stateless utility module responsible for all Swiss-specific calculatio
 *   **Capital Withdrawal Tax (`calculate_capital_withdrawal_tax(amount, steuerfuss)`)**: 
     *   Applied when Pillar 2 or Pillar 3a accounts are liquidated. Uses the separate capital withdrawal tax rate (typically 1/5th or 1/10th of standard rate, depending on the canton's formula).
 *   **AHV Non-Worker Contributions (`calculate_ahv_non_worker(wealth, imputed_pension_income=0)`)**: 
-    *   Calculated based on the official 2025 AHV tables: `determining_wealth = wealth + 20 * imputed_pension_income`. Contribution is 530 CHF for wealth < 350k CHF. For wealth between 350k and 1.75M CHF, it adds 106 CHF for every 50k CHF step above 300k CHF. For wealth above 1.75M CHF, it adds 159 CHF for every 50k CHF step above 1.75M CHF. Capped at 26,500 CHF/year (2025 limits). In Phase 1, `imputed_pension_income` defaults to 0 in the simulation loop.
+    *   Calculated based on the official 2025 AHV tables: `determining_wealth = wealth + 20 * imputed_pension_income`. Contribution is 530 CHF for wealth < 350k CHF. For wealth between 350k and 1.75M CHF, it adds 106 CHF for every 50k CHF step above 300k CHF. For wealth above 1.75M CHF, it adds 159 CHF for every 50k CHF step above 1.75M CHF. Capped at 26,500 CHF/year (2025 limits). Supports both scalar and N-dimensional array inputs while strictly preserving return type and shape.
     *   *Note: The tax brackets and AHV contribution thresholds are modeled as nominal constants (fixed at 2026 values) throughout the simulation, which is a conservative assumption.*
 *   **Pillar 1 AHV Pension Payments**:
     *   Starting at age 65, the user receives an annual AHV pension. The expected pension value input by the user (in today's CHF) is adjusted for cumulative CPI inflation from the start of the simulation (e.g. if the simulation starts at age 45, it compounds inflation for 20 years before the first payout at age 65).
@@ -51,7 +52,7 @@ The engine executes a **monthly tick** for `N` runs simultaneously using NumPy a
 3. **Pillar 1 (AHV) Pension (Monthly Check)**: Starting at age 65, the monthly AHV pension is added directly to the CHF Cash asset class each month, adjusted annually for CPI inflation (simplifying the official Swiss mixed index/Mischindex mechanism).
 4. **Rebalancing (Monthly Check)**: If the rebalance strategy is 'Monthly', or if 'Quarterly' and it is the end of a quarter, or if 'Threshold' is breached, or if it's the 12th month of the year and the strategy is 'Yearly' or 'Cash Tent', the asset weights are mathematically reset to the target allocation. Under 'Cash Tent' (Pfau Rising Equity Glide Path), target cash allocation starts at a peak calculated as `tent_duration_years * (annual_base_expenses + estimated_year_0_taxes)` (capped at 100% of initial liquid wealth) at retirement (Year 0), assuming the tent is already built up, and linearly glides down over `tent_duration_years` (default: 7 years) to the base cash allocation, allowing non-cash asset target weights to rise over time.
     * **Smart Cash Buffer**: If enabled, rebalancing is disabled during market downturns (net worth < inflation-adjusted starting net worth).
-5. **Liquidation**: Age-triggered accounts (Pillar 3a at 60-64, Pillar 2 at 65) are liquidated in their respective months and moved into the taxable liquid wealth pool according to the target allocation.
+5. **Liquidation**: Age-triggered accounts (Pillar 3a at 60-64, Pillar 2 at 65) are liquidated in their respective months and moved into the taxable liquid wealth pool according to the target allocation. If starting at age $\ge 65$, all Pillar 2 and Pillar 3a accounts are liquidated immediately in Year 0 Month 0, subject to progressive Capital Withdrawal Tax.
 6. **Annual Taxation & Spending Models**: Every 12 months, annual spending is evaluated based on the selected **Spending Strategy**:
     *   **Static**: $E_t = \text{base\_expenses} \times \text{inflation\_factor}_t$.
     *   **Dynamic (Floor & Ceiling)**: Expenses drop to `dynamic_expense_floor_pct` of base when net worth is below the starting watermark, and expand to `dynamic_expense_ceiling_pct` when above.

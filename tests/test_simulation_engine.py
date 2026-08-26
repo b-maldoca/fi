@@ -5,6 +5,7 @@ import os
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '../src')))
 
 from simulation_engine import SimConfig, run_simulation, get_target_weights, estimate_year_0_taxes
+from historic_returns import get_historic_return_matrix, HISTORIC_RETURNS
 
 def test_simulation_engine_basic_run():
     config = SimConfig(
@@ -1038,4 +1039,167 @@ def test_estimate_year_0_taxes_inclusion():
     total_outflow = config.annual_base_expenses + est_tax
     twr_pct = (total_outflow / config.initial_liquid_wealth) * 100.0
     assert twr_pct > (config.annual_base_expenses / config.initial_liquid_wealth) * 100.0
+
+
+def test_simulation_engine_start_at_age_65_immediate_liquidation():
+    # Starting at age 65 should liquidate all Pillar 2 and Pillar 3a in Year 0 Month 0
+    config = SimConfig(
+        num_runs=1,
+        duration_years=2,
+        inflation_mean=0.0,
+        inflation_std=0.0,
+        start_age=65,
+        dividend_yield=0.0,
+        initial_liquid_wealth=100_000.0,
+        initial_pillar_2=300_000.0,
+        initial_pillar_3a_accounts=[50_000.0, 50_000.0],
+        alloc_us_stocks=0.5,
+        alloc_non_us_stocks=0.5,
+        alloc_chf_cash=0.0,
+        alloc_gold=0.0,
+        alloc_bitcoin=0.0,
+        rebalance_strategy='Never',
+        rebalance_threshold=0.0,
+        annual_base_expenses=0.0,
+        monthly_ahv_pension=2_000.0,
+        cantonal_multiplier=1.0,
+        municipal_multiplier=1.19
+    )
+    
+    return_matrix = np.zeros((1, 24, 5))
+    history = run_simulation(config, return_matrix)
+    
+    # Pillar 2 and 3a should be 0 at end of year 0 (liquidated)
+    assert history['pillar_2'][0, 0] == 0.0
+    assert history['pillar_3a'][0, 0] == 0.0
+    # Liquid assets should have absorbed 400k (minus capital withdrawal taxes) plus initial 100k + AHV
+    assert history['liquid_assets'][0, 0] > 400_000.0
+    assert history['taxes_paid'][0, 0] > 0.0
+
+
+def test_simulation_engine_staggered_pillar_3a_multiple_accounts():
+    # Start at age 60 with 3 accounts: Account 0 liquidates at 60 (yr 0), Account 1 at 61 (yr 1), Account 2 at 62 (yr 2)
+    config = SimConfig(
+        num_runs=1,
+        duration_years=4,
+        inflation_mean=0.0,
+        inflation_std=0.0,
+        start_age=60,
+        dividend_yield=0.0,
+        initial_liquid_wealth=100_000.0,
+        initial_pillar_2=0.0,
+        initial_pillar_3a_accounts=[20_000.0, 20_000.0, 20_000.0],
+        alloc_us_stocks=0.5,
+        alloc_non_us_stocks=0.5,
+        alloc_chf_cash=0.0,
+        alloc_gold=0.0,
+        alloc_bitcoin=0.0,
+        rebalance_strategy='Never',
+        rebalance_threshold=0.0,
+        annual_base_expenses=0.0,
+        monthly_ahv_pension=0.0,
+        cantonal_multiplier=1.0,
+        municipal_multiplier=1.19
+    )
+    
+    return_matrix = np.zeros((1, 48, 5))
+    history = run_simulation(config, return_matrix)
+    
+    # Year 0 (age 60): 1 account liquidated, 2 remain (40k)
+    assert np.isclose(history['pillar_3a'][0, 0], 40_000.0)
+    # Year 1 (age 61): 2nd account liquidated, 1 remains (20k)
+    assert np.isclose(history['pillar_3a'][1, 0], 20_000.0)
+    # Year 2 (age 62): 3rd account liquidated, 0 remain (0k)
+    assert np.isclose(history['pillar_3a'][2, 0], 0.0)
+    assert np.isclose(history['pillar_3a'][3, 0], 0.0)
+
+
+def test_historic_returns_matrix_valid():
+    # 50-year duration
+    matrix = get_historic_return_matrix(50)
+    expected_runs = len(HISTORIC_RETURNS) - 50 + 1
+    assert matrix.shape == (expected_runs, 50 * 12, 5)
+    # Check that cash return is 1% annual nominal
+    assert np.allclose(matrix[:, :, 2], 0.01 / 12)
+
+
+def test_historic_returns_matrix_invalid():
+    import pytest
+    with pytest.raises(ValueError, match="Duration must be a positive integer"):
+        get_historic_return_matrix(0)
+    with pytest.raises(ValueError, match="Duration must be a positive integer"):
+        get_historic_return_matrix(-5)
+    with pytest.raises(ValueError, match="exceeds available historic data"):
+        get_historic_return_matrix(len(HISTORIC_RETURNS) + 10)
+
+
+def test_sim_config_validation_invalid_runs_or_duration():
+    import pytest
+    with pytest.raises(ValueError, match="must be positive integers"):
+        SimConfig(num_runs=0, duration_years=5, inflation_mean=0.0, inflation_std=0.0, start_age=40, dividend_yield=0.0)
+    with pytest.raises(ValueError, match="must be positive integers"):
+        SimConfig(num_runs=10, duration_years=-1, inflation_mean=0.0, inflation_std=0.0, start_age=40, dividend_yield=0.0)
+
+
+def test_sim_config_validation_negative_allocations():
+    import pytest
+    with pytest.raises(ValueError, match="cannot be negative"):
+        SimConfig(
+            num_runs=1, duration_years=5, inflation_mean=0.0, inflation_std=0.0, start_age=40, dividend_yield=0.0,
+            alloc_us_stocks=1.2, alloc_non_us_stocks=-0.2, alloc_chf_cash=0.0, alloc_gold=0.0, alloc_bitcoin=0.0
+        )
+
+
+def test_sim_config_validation_negative_age_and_vanguard():
+    import pytest
+    with pytest.raises(ValueError, match="start_age.*cannot be negative"):
+        SimConfig(num_runs=1, duration_years=5, inflation_mean=0.0, inflation_std=0.0, start_age=-5, dividend_yield=0.0, alloc_us_stocks=1.0)
+    with pytest.raises(ValueError, match="tent_duration_years.*cannot be negative"):
+        SimConfig(num_runs=1, duration_years=5, inflation_mean=0.0, inflation_std=0.0, start_age=40, dividend_yield=0.0, tent_duration_years=-1, alloc_us_stocks=1.0)
+    with pytest.raises(ValueError, match="Vanguard Dynamic Spending parameters cannot be negative"):
+        SimConfig(num_runs=1, duration_years=5, inflation_mean=0.0, inflation_std=0.0, start_age=40, dividend_yield=0.0, vanguard_floor_pct=-0.1, alloc_us_stocks=1.0)
+
+
+def test_estimate_year_0_taxes_zero_and_edge_values():
+    # Zero liquid wealth
+    cfg_zero = SimConfig(
+        num_runs=1, duration_years=1, inflation_mean=0.0, inflation_std=0.0,
+        start_age=40, dividend_yield=0.0, initial_liquid_wealth=0.0, alloc_us_stocks=1.0
+    )
+    assert estimate_year_0_taxes(cfg_zero) >= 0.0
+
+    # Start age >= 65 (no AHV non-worker tax, AHV pension received)
+    cfg_ret = SimConfig(
+        num_runs=1, duration_years=1, inflation_mean=0.0, inflation_std=0.0,
+        start_age=65, dividend_yield=0.0, initial_liquid_wealth=1_000_000.0,
+        alloc_us_stocks=1.0, monthly_ahv_pension=2000.0, cantonal_multiplier=1.0, municipal_multiplier=1.19
+    )
+    tax = estimate_year_0_taxes(cfg_ret)
+    assert tax > 0.0
+
+
+def test_vanguard_spending_depleted_portfolio_floor():
+    # In a depleted portfolio scenario, Vanguard Dynamic spending still respects the floor
+    config = SimConfig(
+        num_runs=1,
+        duration_years=3,
+        inflation_mean=0.0,
+        inflation_std=0.0,
+        start_age=50,
+        dividend_yield=0.0,
+        spending_strategy="Vanguard Dynamic",
+        vanguard_target_rate=0.04,
+        vanguard_floor_pct=0.05,
+        vanguard_ceiling_pct=0.05,
+        annual_base_expenses=50_000.0,
+        initial_liquid_wealth=0.0, # Zero wealth
+        alloc_us_stocks=1.0
+    )
+    return_matrix = np.zeros((1, 36, 5))
+    history = run_simulation(config, return_matrix)
+    
+    # Year 0 spending is bounded by floor: 50,000 * 0.95 = 47,500
+    assert np.isclose(history['expenses_paid'][0, 0], 47_500.0)
+    # Year 1 spending is 47,500 * 0.95 = 45,125
+    assert np.isclose(history['expenses_paid'][1, 0], 45_125.0)
 

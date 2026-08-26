@@ -112,6 +112,8 @@ def get_historic_return_matrix(duration_years: int) -> np.ndarray:
     since 100-year historical data is limited.
     """
     total_years = len(HISTORIC_RETURNS)
+    if duration_years <= 0:
+        raise ValueError(f"Duration must be a positive integer, got {duration_years}.")
     if duration_years > total_years:
         raise ValueError(f"Duration {duration_years} exceeds available historic data ({total_years} years).")
         
@@ -124,7 +126,8 @@ def get_historic_return_matrix(duration_years: int) -> np.ndarray:
         
         # Approximate monthly returns by taking the 12th root of the annual return
         # and repeating it 12 times per year
-        monthly_sp500 = (1 + annual_sp500)**(1/12) - 1
+        safe_base = np.maximum(0.0, 1.0 + annual_sp500)
+        monthly_sp500 = safe_base**(1/12) - 1.0
         monthly_sp500_expanded = np.repeat(monthly_sp500, 12)
         
         matrix[i, :, 0] = monthly_sp500_expanded # US Stocks
