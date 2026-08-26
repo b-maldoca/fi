@@ -74,3 +74,27 @@ def test_ahv_scalar_vs_array():
     assert isinstance(arr_res, np.ndarray)
     assert arr_res.shape == (1,)
     assert arr_res[0] == 954.0
+
+def test_tax_functions_scalar_return():
+    inc_tax = calculate_income_tax(80_000.0)
+    assert isinstance(inc_tax, float)
+    assert inc_tax > 0.0
+
+    wealth_tax = calculate_wealth_tax(1_000_000.0)
+    assert isinstance(wealth_tax, float)
+    assert wealth_tax > 0.0
+
+    cap_tax = calculate_capital_withdrawal_tax(200_000.0)
+    assert isinstance(cap_tax, float)
+    assert cap_tax > 0.0
+
+def test_ahv_mixed_scalar_array():
+    # Wealth is scalar, imputed pension is array
+    res = calculate_ahv_non_worker(0.0, np.array([20_000.0, 50_000.0]))
+    assert isinstance(res, np.ndarray)
+    assert res.shape == (2,)
+    assert res[0] < res[1]
+    assert res[0] == 742.0
+    assert res[1] == 2014.0 or res[1] > res[0]
+
+

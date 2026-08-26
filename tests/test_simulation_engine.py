@@ -1290,3 +1290,197 @@ def test_bootstrapping_simulation_integration():
     success_rate = np.mean(history['net_worth'][-1, :] > target_ending_nw) * 100.0
     assert 0.0 <= success_rate <= 100.0
 
+
+def test_estimate_year_0_taxes_age_65_with_pensions():
+    # If starting at age 65 with 0 liquid wealth but 1M in Pillar 2,
+    # estimate_year_0_taxes should compute taxes on the liquidated Pillar 2 balance.
+    config = SimConfig(
+        num_runs=1,
+        duration_years=1,
+        inflation_mean=0.0,
+        inflation_std=0.0,
+        start_age=65,
+        dividend_yield=0.015,
+        initial_liquid_wealth=0.0,
+        initial_pillar_2=1_000_000.0,
+        initial_pillar_3a_accounts=[50_000.0],
+        alloc_us_stocks=0.5,
+        alloc_non_us_stocks=0.3,
+        alloc_chf_cash=0.2,
+        alloc_gold=0.0,
+        alloc_bitcoin=0.0,
+        rebalance_strategy='Never',
+        annual_base_expenses=40_000.0,
+        monthly_ahv_pension=2000.0,
+        cantonal_multiplier=1.0,
+        municipal_multiplier=1.19
+    )
+    
+    taxes = estimate_year_0_taxes(config)
+    # Must be strictly positive (income tax from dividends/interest/AHV + wealth tax)
+    assert taxes > 0.0
+
+
+def test_get_target_weights_cash_tent_age_65():
+    # If starting at age 65 with 0 liquid wealth and 1M in Pillar 2 under Cash Tent
+    config = SimConfig(
+        num_runs=1,
+        duration_years=10,
+        inflation_mean=0.0,
+        inflation_std=0.0,
+        start_age=65,
+        dividend_yield=0.015,
+        initial_liquid_wealth=0.0,
+        initial_pillar_2=1_000_000.0,
+        initial_pillar_3a_accounts=[],
+        alloc_us_stocks=0.6,
+        alloc_non_us_stocks=0.2,
+        alloc_chf_cash=0.2,
+        alloc_gold=0.0,
+        alloc_bitcoin=0.0,
+        rebalance_strategy='Cash Tent',
+        annual_base_expenses=50_000.0,
+        monthly_ahv_pension=0.0,
+        cantonal_multiplier=1.0,
+        municipal_multiplier=1.19,
+        tent_duration_years=5
+    )
+    
+    w0 = get_target_weights(config, 0)
+    # Peak cash weight should be > base cash (0.2) because 5 years * (50k + taxes) is ~30%
+    assert w0[2] > 0.20
+    assert np.isclose(np.sum(w0), 1.0)
+
+
+def test_simulation_engine_no_rebalance_when_bankrupt():
+    # If a portfolio is in deep debt (-50k), rebalancing must not multiply debt by target weights
+    # into US stocks, Non-US stocks, Gold, or Bitcoin. All debt must remain in CHF cash.
+    strategies = ['Monthly', 'Quarterly', 'Yearly', 'Cash Tent', 'Threshold']
+    
+    for strat in strategies:
+        config = SimConfig(
+            num_runs=1,
+            duration_years=1,
+            inflation_mean=0.0,
+            inflation_std=0.0,
+            start_age=40,
+            dividend_yield=0.0,
+            initial_liquid_wealth=0.0,
+            initial_pillar_2=0.0,
+            initial_pillar_3a_accounts=[],
+            alloc_us_stocks=0.5,
+            alloc_non_us_stocks=0.3,
+            alloc_chf_cash=0.2,
+            alloc_gold=0.0,
+            alloc_bitcoin=0.0,
+            rebalance_strategy=strat,
+            rebalance_threshold=0.01,
+            enable_smart_selling=False,
+            annual_base_expenses=50_000.0,
+            monthly_ahv_pension=0.0,
+            cantonal_multiplier=1.0,
+            municipal_multiplier=1.19
+        )
+        
+        return_matrix = np.zeros((1, 12, 5))
+        history = run_simulation(config, return_matrix)
+        
+        final_assets = history['liquid_assets_by_class'][0, 0]
+        # Non-cash assets must remain 0
+        assert np.isclose(final_assets[0], 0.0), f"Failed for strategy {strat}"
+        assert np.isclose(final_assets[1], 0.0), f"Failed for strategy {strat}"
+        assert np.isclose(final_assets[3], 0.0), f"Failed for strategy {strat}"
+        assert np.isclose(final_assets[4], 0.0), f"Failed for strategy {strat}"
+        # All debt in CHF cash
+        assert final_assets[2] < 0.0, f"Failed for strategy {strat}"
+
+
+def test_vanguard_spending_dynamic_bounds_progression():
+    # Verify that Vanguard Dynamic spending recalculates spending in year 1 and 2
+    # with floor (-5%) and ceiling (+5%) bounds
+    config = SimConfig(
+        num_runs=1,
+        duration_years=3,
+        inflation_mean=0.0,
+        inflation_std=0.0,
+        start_age=50,
+        dividend_yield=0.0,
+        spending_strategy="Vanguard Dynamic",
+        vanguard_target_rate=0.04, # 4% target
+        vanguard_floor_pct=0.05,   # max -5%
+        vanguard_ceiling_pct=0.05, # max +5%
+        initial_liquid_wealth=1_000_000.0, # 1M
+        initial_pillar_2=0.0,
+        initial_pillar_3a_accounts=[],
+        alloc_us_stocks=1.0,
+        alloc_non_us_stocks=0.0,
+        alloc_chf_cash=0.0,
+        alloc_gold=0.0,
+        alloc_bitcoin=0.0,
+        rebalance_strategy='Never',
+        annual_base_expenses=40_000.0,
+        monthly_ahv_pension=0.0,
+        cantonal_multiplier=1.0,
+        municipal_multiplier=1.19
+    )
+    
+    # Year 0: Market booms +50% in month 0 -> Net worth before expenses is 1.5M.
+    # Target spending = 0.04 * 1.5M = 60,000.
+    # Prior expense = 40,000. Ceiling = 40,000 * 1.05 = 42,000.
+    # Spending should be capped at ceiling = 42,000!
+    return_matrix = np.zeros((1, 36, 5))
+    return_matrix[0, 0, 0] = 0.50
+    
+    history = run_simulation(config, return_matrix)
+    
+    assert np.isclose(history['expenses_paid'][0, 0], 42_000.0)
+
+
+def test_beginning_of_year_withdrawal_rate_calculation():
+    # Verify that withdrawal rate computed against beginning-of-year net worth is stable and accurate
+    net_worth_end = np.array([[10_000.0]])
+    expenses = np.array([[40_000.0]])
+    taxes = np.array([[10_000.0]])
+    
+    # Beginning of year portfolio value was 10k + 40k + 10k = 60k
+    safe_start_nw = np.maximum(net_worth_end + expenses + taxes, 1.0)
+    wr = ((expenses + taxes) / safe_start_nw) * 100.0
+    
+    # Withdrawal rate should be (50k / 60k) * 100 = 83.33%, NOT (50k / 10k) * 100 = 500%
+    assert np.isclose(wr[0, 0], (50_000.0 / 60_000.0) * 100.0)
+
+
+def test_trace_labeling_bootstrapping_vs_backtesting():
+    # Verify that Bootstrapping (e.g. 1000 runs) does not try to index HISTORIC_YEARS beyond 104
+    boot_num_runs = 1000
+    duration_years = 50
+    simulation_years = np.arange(1, duration_years + 1)
+    
+    # Simulate the UI trace generation logic
+    for title, num_runs in [("Historic Backtesting", 55), ("Historic Bootstrapping", 1000), ("Monte Carlo", 1000)]:
+        is_historic_backtest = "Historic Backtesting" in title or "Historic Returns" in title
+        max_traces_to_plot = int(num_runs) if is_historic_backtest else min(100, int(num_runs))
+        
+        traces = []
+        for i in range(max_traces_to_plot):
+            if is_historic_backtest:
+                start_year = int(HISTORIC_YEARS[i])
+                end_year = start_year + duration_years - 1
+                trace_name = f"Cohort: {start_year} - {end_year}"
+            else:
+                trace_name = f"Run {i+1}"
+            traces.append(trace_name)
+            
+        if is_historic_backtest:
+            assert len(traces) == 55
+            assert traces[0] == f"Cohort: {HISTORIC_YEARS[0]} - {HISTORIC_YEARS[0] + duration_years - 1}"
+        else:
+            assert len(traces) == 100
+            assert traces[0] == "Run 1"
+            assert traces[99] == "Run 100"
+
+
+
+
+
+

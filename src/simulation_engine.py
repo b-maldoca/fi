@@ -84,6 +84,18 @@ class SimConfig:
 def estimate_year_0_taxes(config: SimConfig) -> float:
     """Estimates Year 0 total taxes (income, wealth, AHV non-worker) for initial Cash Tent calculation."""
     init_wealth = config.initial_liquid_wealth
+    if config.start_age >= 65:
+        p2 = config.initial_pillar_2
+        p3a = sum(config.initial_pillar_3a_accounts) if config.initial_pillar_3a_accounts else 0.0
+        total_pension_liq = p2 + p3a
+        if total_pension_liq > 0:
+            cap_tax = float(np.asarray(calculate_capital_withdrawal_tax(
+                np.array([total_pension_liq]),
+                config.cantonal_multiplier,
+                config.municipal_multiplier
+            )).flatten()[0])
+            init_wealth += max(0.0, total_pension_liq - cap_tax)
+
     equities = max(0.0, init_wealth * (config.alloc_us_stocks + config.alloc_non_us_stocks))
     dividends = equities * config.dividend_yield
     cash = max(0.0, init_wealth * config.alloc_chf_cash)
@@ -124,6 +136,18 @@ def get_target_weights(config: SimConfig, year: int) -> np.ndarray:
         return base_weights
         
     init_wealth = config.initial_liquid_wealth
+    if config.start_age >= 65:
+        p2 = config.initial_pillar_2
+        p3a = sum(config.initial_pillar_3a_accounts) if config.initial_pillar_3a_accounts else 0.0
+        total_pension_liq = p2 + p3a
+        if total_pension_liq > 0:
+            cap_tax = float(np.asarray(calculate_capital_withdrawal_tax(
+                np.array([total_pension_liq]),
+                config.cantonal_multiplier,
+                config.municipal_multiplier
+            )).flatten()[0])
+            init_wealth += max(0.0, total_pension_liq - cap_tax)
+
     if init_wealth <= 0:
         return base_weights
         
@@ -286,6 +310,9 @@ def run_simulation(config: SimConfig, return_matrix: np.ndarray, inflation_matri
             liquid_assets[:, 2] += monthly_ahv # Add directly to CHF Cash
 
         
+        total_liquid_val = np.sum(liquid_assets, axis=1)
+        is_solvent = total_liquid_val > 0
+        
         if config.rebalance_strategy == 'Monthly':
             do_rebalance[:] = True
         elif config.rebalance_strategy == 'Quarterly' and month_of_year % 3 == 2:
@@ -294,10 +321,13 @@ def run_simulation(config: SimConfig, return_matrix: np.ndarray, inflation_matri
             do_rebalance[:] = True
         elif config.rebalance_strategy == 'Threshold':
             current_total = np.sum(liquid_assets, axis=1, keepdims=True)
-            current_total_safe = np.where(current_total > 0, current_total, 1)
+            current_total_safe = np.where(current_total > 0, current_total, 1.0)
             current_weights = liquid_assets / current_total_safe
             drift = np.max(np.abs(current_weights - current_target_weights), axis=1)
-            do_rebalance = (drift > config.rebalance_threshold) & (current_total.flatten() > 0)
+            do_rebalance = (drift > config.rebalance_threshold)
+
+        # Do not rebalance bankrupt or depleted portfolios
+        do_rebalance &= is_solvent
             
         if config.enable_smart_selling:
             current_p3a = sum(p3a for p3a in pillar_3a) if len(pillar_3a) > 0 else 0

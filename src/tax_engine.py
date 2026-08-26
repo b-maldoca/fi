@@ -47,17 +47,20 @@ ZURICH_WEALTH_BRACKETS = [
 
 def _calculate_bracket_tax(taxable_amount: np.ndarray, brackets: list) -> np.ndarray:
     """Vectorized calculation of progressive tax brackets."""
-    taxable_amount = np.maximum(0.0, np.asarray(taxable_amount, dtype=float))
-    tax = np.zeros_like(taxable_amount, dtype=float)
+    is_scalar = np.isscalar(taxable_amount) or (isinstance(taxable_amount, np.ndarray) and taxable_amount.ndim == 0)
+    arr = np.maximum(0.0, np.asarray(taxable_amount, dtype=float))
+    tax = np.zeros_like(arr, dtype=float)
     
     for i in range(len(brackets)):
         threshold, rate = brackets[i]
         next_threshold = brackets[i+1][0] if i + 1 < len(brackets) else np.inf
         
         # Calculate how much of the taxable amount falls within this specific bracket
-        amount_in_bracket = np.clip(taxable_amount - threshold, 0, next_threshold - threshold)
+        amount_in_bracket = np.clip(arr - threshold, 0, next_threshold - threshold)
         tax += amount_in_bracket * rate
         
+    if is_scalar:
+        return float(tax)
     return tax
 
 def calculate_income_tax(taxable_income: np.ndarray, cantonal_multiplier: float = 1.0, municipal_multiplier: float = 1.19) -> np.ndarray:
@@ -66,24 +69,30 @@ def calculate_income_tax(taxable_income: np.ndarray, cantonal_multiplier: float 
     multiplier is typically sum of cantonal (e.g., 1.0) + municipal (e.g., 1.19 in Zurich city).
     Total multiplier = 2.19
     """
+    is_scalar = np.isscalar(taxable_income) or (isinstance(taxable_income, np.ndarray) and taxable_income.ndim == 0)
     total_multiplier = cantonal_multiplier + municipal_multiplier
     
     fed_tax = _calculate_bracket_tax(taxable_income, FEDERAL_INCOME_BRACKETS)
     cantonal_base_tax = _calculate_bracket_tax(taxable_income, ZURICH_INCOME_BRACKETS)
     
     total_cantonal_municipal_tax = cantonal_base_tax * total_multiplier
-    
-    return fed_tax + total_cantonal_municipal_tax
+    result = fed_tax + total_cantonal_municipal_tax
+    if is_scalar:
+        return float(result)
+    return result
 
 def calculate_wealth_tax(taxable_wealth: np.ndarray, cantonal_multiplier: float = 1.0, municipal_multiplier: float = 1.19) -> np.ndarray:
     """
     Calculate Cantonal and Municipal wealth tax. (Federal level does not have a wealth tax).
     """
+    is_scalar = np.isscalar(taxable_wealth) or (isinstance(taxable_wealth, np.ndarray) and taxable_wealth.ndim == 0)
     total_multiplier = cantonal_multiplier + municipal_multiplier
     
     cantonal_base_tax = _calculate_bracket_tax(taxable_wealth, ZURICH_WEALTH_BRACKETS)
-    
-    return cantonal_base_tax * total_multiplier
+    result = cantonal_base_tax * total_multiplier
+    if is_scalar:
+        return float(result)
+    return result
 
 def calculate_capital_withdrawal_tax(amount: np.ndarray, cantonal_multiplier: float = 1.0, municipal_multiplier: float = 1.19) -> np.ndarray:
     """
@@ -91,14 +100,17 @@ def calculate_capital_withdrawal_tax(amount: np.ndarray, cantonal_multiplier: fl
     Federal: Roughly 1/5 of the standard tariff.
     Zurich: Roughly 1/10 of the standard tariff on the base rate.
     """
+    is_scalar = np.isscalar(amount) or (isinstance(amount, np.ndarray) and amount.ndim == 0)
     # Federal capital withdrawal tax approximation (1/5 of regular)
     fed_tax = _calculate_bracket_tax(amount, FEDERAL_INCOME_BRACKETS) / 5.0
     
     # Zurich capital withdrawal tax approximation (1/10 of regular base)
     cantonal_base_tax = _calculate_bracket_tax(amount, ZURICH_INCOME_BRACKETS) / 10.0
     total_cantonal_tax = cantonal_base_tax * (cantonal_multiplier + municipal_multiplier)
-    
-    return fed_tax + total_cantonal_tax
+    result = fed_tax + total_cantonal_tax
+    if is_scalar:
+        return float(result)
+    return result
 
 def calculate_ahv_non_worker(wealth: np.ndarray, imputed_pension_income: np.ndarray = 0) -> np.ndarray:
     """
@@ -106,7 +118,10 @@ def calculate_ahv_non_worker(wealth: np.ndarray, imputed_pension_income: np.ndar
     Based on wealth and 20x imputed pension income (e.g., from an annuity).
     Min 530 CHF, Max 26,500 CHF (2025 values).
     """
-    is_scalar = np.isscalar(wealth) or (isinstance(wealth, np.ndarray) and wealth.ndim == 0)
+    is_wealth_scalar = np.isscalar(wealth) or (isinstance(wealth, np.ndarray) and wealth.ndim == 0)
+    is_imputed_scalar = np.isscalar(imputed_pension_income) or (isinstance(imputed_pension_income, np.ndarray) and imputed_pension_income.ndim == 0)
+    is_scalar = is_wealth_scalar and is_imputed_scalar
+
     wealth_arr = np.maximum(0.0, np.asarray(wealth, dtype=float))
     imputed_arr = np.maximum(0.0, np.asarray(imputed_pension_income, dtype=float))
     

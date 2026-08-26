@@ -169,10 +169,12 @@ def on_twr_change():
     if nw > 0:
         rate = float(st.session_state['vanguard_target_rate_pct'])
         target_total_outflow = (rate / 100.0) * nw
-        curr_exp = float(st.session_state.get('annual_expenses', 85_000))
-        est_tax = get_year0_taxes(curr_exp)
-        net_living_exp = max(0.0, target_total_outflow - est_tax)
-        st.session_state['annual_expenses'] = int(round(net_living_exp, -2))
+        # Fixed point iteration to solve: living_exp + taxes(living_exp) = target_total_outflow
+        living_exp = max(0.0, target_total_outflow - get_year0_taxes(float(st.session_state.get('annual_expenses', 85_000))))
+        for _ in range(5):
+            est_tax = get_year0_taxes(living_exp)
+            living_exp = max(0.0, target_total_outflow - est_tax)
+        st.session_state['annual_expenses'] = int(round(living_exp, -2))
 
 annual_expenses = float(st.sidebar.number_input(
     "Annual Base Expenses (CHF)",
@@ -378,9 +380,10 @@ if True:
         median_total_withdrawals_real = np.median(total_outflows_real_per_run)
 
         # Pre-65 (<65) vs Post-65 (>=65) breakdown
-        ages_arr = np.arange(config.start_age + 1, config.start_age + config.duration_years + 1)
-        pre_65_mask = ages_arr < 65
-        post_65_mask = ages_arr >= 65
+        # Year index y in 0..duration_years-1 represents the retirement year where age is start_age + y
+        sim_ages = np.arange(config.start_age, config.start_age + config.duration_years)
+        pre_65_mask = sim_ages < 65
+        post_65_mask = sim_ages >= 65
 
         if np.any(pre_65_mask):
             pre_65_outflows = np.sum(history['expenses_paid'][pre_65_mask, :] + history['taxes_paid'][pre_65_mask, :], axis=0)
@@ -434,9 +437,10 @@ if True:
         
         simulation_years = np.arange(1, config.duration_years + 1)
         
-        max_traces_to_plot = int(num_runs) if "Historic" in title else min(100, int(num_runs))
+        is_historic_backtest = "Historic Backtesting" in title or "Historic Returns" in title
+        max_traces_to_plot = int(num_runs) if is_historic_backtest else min(100, int(num_runs))
         for i in range(max_traces_to_plot):
-            if "Historic" in title:
+            if is_historic_backtest:
                 start_year = int(HISTORIC_YEARS[i])
                 end_year = start_year + config.duration_years - 1
                 trace_name = f"Cohort: {start_year} - {end_year}"
@@ -519,9 +523,9 @@ if True:
         st.subheader("Annual Withdrawal Breakdown", help="This stacked chart displays the median annual withdrawals (living expenses and taxes paid) across all simulated portfolio paths over time.")
         st.plotly_chart(fig_withdrawal, width='stretch')
 
-        # Withdrawal Rate Chart
-        safe_net_worth = np.maximum(net_worth_history, 1.0)
-        withdrawal_rate_history = ((history['expenses_paid'] + history['taxes_paid']) / safe_net_worth) * 100.0
+        # Withdrawal Rate Chart (relative to beginning-of-year portfolio value)
+        safe_start_nw = np.maximum(net_worth_history + history['expenses_paid'] + history['taxes_paid'], 1.0)
+        withdrawal_rate_history = ((history['expenses_paid'] + history['taxes_paid']) / safe_start_nw) * 100.0
         
         fig_wr = go.Figure()
         max_p_val = 5.0
