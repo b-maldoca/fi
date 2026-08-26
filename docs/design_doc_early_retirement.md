@@ -43,13 +43,13 @@ This is a stateless utility module responsible for all Swiss-specific calculatio
     *   Once payouts start, they are adjusted annually based on the simulated CPI inflation of that year. This is treated as taxable income and reduces the required capital liquidation to meet annual expenses. If the pension exceeds expenses, the surplus is reinvested.
 
 ### 3.3. Simulation Engine (The Core Loop)
-The engine executes a **monthly tick** for `N` runs simultaneously using NumPy arrays. It tracks multi-asset portfolios (US Stocks, Non-US Stocks, CHF Cash, Gold, Bitcoin) via N-dimensional arrays. It handles automatic rebalancing logic based on user configuration (Never, Monthly, Yearly, Threshold, Cash Tent) and applies taxes at the end of each simulated year.
+The engine executes a **monthly tick** for `N` runs simultaneously using NumPy arrays. It tracks multi-asset portfolios (US Stocks, Non-US Stocks, CHF Cash, Gold, Bitcoin) via N-dimensional arrays. It handles automatic rebalancing logic based on user configuration (Never, Monthly, Quarterly, Yearly, Threshold, Cash Tent) and applies taxes at the end of each simulated year.
 
 **Monthly Tick Logic:**
 1. **Monthly Tick**: The simulation loop operates on a `duration_years * 12` timescale.
 2. **Growth & Drift**: At the start of each month, the 5 asset classes (US Stocks, Non-US Stocks, Cash, Gold, Bitcoin) grow by their respective monthly returns. Pillar 2 and Pillar 3a accounts also grow monthly, assumed to be 100% invested in equities proportional to the user's US/Non-US target allocation.
 3. **Pillar 1 (AHV) Pension (Monthly Check)**: Starting at age 65, the monthly AHV pension is added directly to the CHF Cash asset class each month, adjusted annually for CPI inflation (simplifying the official Swiss mixed index/Mischindex mechanism).
-4. **Rebalancing (Monthly Check)**: If the rebalance strategy is 'Monthly', or if 'Threshold' is breached, or if it's the 12th month of the year and the strategy is 'Yearly' or 'Cash Tent', the asset weights are mathematically reset to the target allocation. Under 'Cash Tent' (Pfau Rising Equity Glide Path), target cash allocation starts at a peak calculated as `tent_duration_years * (annual_base_expenses + estimated_year_0_taxes)` (capped at 100% of initial liquid wealth) at retirement (Year 0), assuming the tent is already built up, and linearly glides down over `tent_duration_years` to the base cash allocation, allowing non-cash asset target weights to rise over time.
+4. **Rebalancing (Monthly Check)**: If the rebalance strategy is 'Monthly', or if 'Quarterly' and it is the end of a quarter, or if 'Threshold' is breached, or if it's the 12th month of the year and the strategy is 'Yearly' or 'Cash Tent', the asset weights are mathematically reset to the target allocation. Under 'Cash Tent' (Pfau Rising Equity Glide Path), target cash allocation starts at a peak calculated as `tent_duration_years * (annual_base_expenses + estimated_year_0_taxes)` (capped at 100% of initial liquid wealth) at retirement (Year 0), assuming the tent is already built up, and linearly glides down over `tent_duration_years` (default: 7 years) to the base cash allocation, allowing non-cash asset target weights to rise over time.
     * **Smart Cash Buffer**: If enabled, rebalancing is disabled during market downturns (net worth < inflation-adjusted starting net worth).
 5. **Liquidation**: Age-triggered accounts (Pillar 3a at 60-64, Pillar 2 at 65) are liquidated in their respective months and moved into the taxable liquid wealth pool according to the target allocation.
 6. **Annual Taxation & Spending Models**: Every 12 months, annual spending is evaluated based on the selected **Spending Strategy**:
@@ -67,34 +67,62 @@ The engine executes a **monthly tick** for `N` runs simultaneously using NumPy a
 
 ```python
 @dataclass
-class SimulationState:
-    age: np.ndarray             # shape: (num_runs,)
-    taxable_brokerage: np.ndarray 
-    cash: np.ndarray
-    pillar_2: np.ndarray
-    pillar_3a_accounts: list[np.ndarray] # List of accounts for staggering
-    
-@dataclass
-class SimulationResult:
-    year: int
-    net_worth: np.ndarray
-    income_tax_paid: np.ndarray
-    wealth_tax_paid: np.ndarray
-    capital_withdrawal_tax_paid: np.ndarray
-    ahv_paid: np.ndarray
+class SimConfig:
+    num_runs: int
+    duration_years: int
+    inflation_mean: float
+    inflation_std: float
+    start_age: int
+    dividend_yield: float
+    spending_strategy: str = "Vanguard Dynamic" # "Static", "Dynamic (Floor & Ceiling)", "Vanguard Dynamic"
+    enable_dynamic_expenses: bool = False
+    dynamic_expense_floor_pct: float = 1.0
+    dynamic_expense_ceiling_pct: float = 1.0
+    vanguard_target_rate: float = 0.035
+    vanguard_floor_pct: float = 0.05
+    vanguard_ceiling_pct: float = 0.05
+    initial_liquid_wealth: float = 0.0
+    initial_pillar_2: float = 0.0
+    initial_pillar_3a_accounts: list[float] = None
+    alloc_us_stocks: float = 0.0
+    alloc_non_us_stocks: float = 0.0
+    alloc_chf_cash: float = 0.0
+    alloc_gold: float = 0.0
+    alloc_bitcoin: float = 0.0
+    rebalance_strategy: str = "Cash Tent" # "Cash Tent", "Monthly", "Quarterly", "Yearly", "Threshold", "Never"
+    rebalance_threshold: float = 0.0
+    enable_smart_selling: bool = True
+    annual_base_expenses: float = 0.0
+    monthly_ahv_pension: float = 0.0
+    cantonal_multiplier: float = 0.0
+    municipal_multiplier: float = 0.0
+    tent_duration_years: int = 7
 ```
 
+**Simulation Output Dictionary:**
+*   `net_worth`: Annual total net worth array `shape=(duration_years, num_runs)`
+*   `liquid_assets`: Annual taxable liquid assets array `shape=(duration_years, num_runs)`
+*   `liquid_assets_by_class`: Annual asset class breakdown `shape=(duration_years, num_runs, 5)`
+*   `pillar_2`: Annual Pillar 2 balance `shape=(duration_years, num_runs)`
+*   `pillar_3a`: Annual total Pillar 3a balance `shape=(duration_years, num_runs)`
+*   `taxes_paid`: Annual taxes paid `shape=(duration_years, num_runs)`
+*   `expenses_paid`: Annual living expenses paid `shape=(duration_years, num_runs)`
+*   `income_dividends`: Annual dividend income `shape=(duration_years, num_runs)`
+*   `income_ahv`: Annual AHV pension received `shape=(duration_years, num_runs)`
+*   `below_watermark`: Boolean mask indicating runs below starting watermark `shape=(duration_years, num_runs)`
+*   `initial_net_worth`: Float scalar starting net worth
+
 ## 5. UI Layout (Streamlit)
-*   **Sidebar**: All inputs (Initial Balances, Asset Allocation, Target Allocations, Economics, Monte Carlo Parameters, Success Criteria, Zurich Tax Multiplier).
+*   **Sidebar**: All inputs (Demographics, Initial Balances, Asset Allocation, Target Allocations, Rebalancing Strategies, Economics & Spending Models, Monte Carlo Parameters, Success Criteria, Zurich Tax Multipliers).
 *   **Main Panel**: Displays results in two sequential full-width sections: **Historic Returns** followed by **Monte Carlo**. Each section contains:
     *   **TL;DR Status**: Displays 'BROKE', 'RICH', or 'DEAD' based on median final net worth vs 3x inflation-adjusted initial net worth.
-    *   **Metrics**: Probability of Success (based on selected success criteria), Median Ending Net Worth (Real), Median Ending Net Worth (Nominal), Median Total Withdrawals (Real & Nominal), Pre-AHV Outflow (< Age 65), and Post-65 Outflow (Age 65+). Also displays average years below watermark.
+    *   **Metrics**: Probability of Success (based on selected success criteria), Avg Years Below Start NW, Median Ending Net Worth (Real & Nominal), Median Total Withdrawals (Real & Nominal), Pre-AHV Outflow (< Age 65), and Post-65 Outflow (Age 65+).
     *   **Net Worth Trajectory Chart** (Plotly): Faint lines for individual runs (capped at 100 for Monte Carlo), bold lines for 5th, 25th, 50th, 75th, 95th percentiles.
     *   **Income vs Required Cash Chart** (Plotly): Stacked bar chart showing median Dividends, AHV Pension, and Capital Sold, with a reference line for Total Cash Needed (Expenses + Taxes).
-    *   **Withdrawal Rate Chart** (Plotly): Percentile lines for the withdrawal rate over time.
+    *   **Withdrawal Rate Chart** (Plotly): Percentile lines for the withdrawal rate over time (dynamically capped at 25% max).
     *   **Asset Allocation Development Chart** (Plotly): Stacked area chart showing the median nominal balance of all asset categories (US Stocks, Non-US Stocks, CHF Cash, Gold, Bitcoin, Pillar 2, and Pillar 3a) over time to visualize portfolio glidepaths, rebalancing, and account liquidations.
     *   **Expenses & Taxes Chart** (Plotly): Stacked bar chart showing median Expenses and Taxes paid over time.
-    *   **Run Analysis Tables**: Lists of top 10 best and worst runs/cohorts based on final net worth (showing Final NW (Real), Final NW (Nom), and Min NW (Nominal) values).
+    *   **Run Analysis Tables**: Interactive tables of top 10 best and worst runs/cohorts based on final net worth (showing Final NW (Real), Final NW (Nom), and Min NW (Nominal) values).
 
 ## 6. Implementation Plan & Milestones
 1.  **Setup**: Initialize Git repo, basic project structure, and `requirements.txt` (Streamlit, Pandas, NumPy, Plotly).

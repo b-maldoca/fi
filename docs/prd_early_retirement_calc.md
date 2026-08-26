@@ -65,10 +65,12 @@ The application must allow the user to input the following parameters:
     *   Bitcoin (%)
     *   *Constraint: Sum of allocation must exactly equal 100%.*
 *   **Rebalancing Strategy**:
-    *   **Never**: Assets drift naturally.
-    *   **Yearly**: Rebalanced to target weights once every 12 months.
+    *   **Cash Tent (Pfau Rising Equity Glide Path)**: A defensive sequence-of-returns risk strategy using cash instead of bonds. Assumes a cash buffer of [Tent Duration × (Annual Base Expenses + Estimated Taxes)] is already built up at retirement start (Year 0), and linearly glides down over the configured tent duration (default: 7 years) to the baseline target cash weight, allowing equity allocations to rise over time.
     *   **Monthly**: Rebalanced to target weights every month.
-    *   **Cash Tent (Pfau Rising Equity Glide Path)**: A defensive sequence-of-returns risk strategy using cash instead of bonds. Assumes a cash buffer of [Tent Duration × (Annual Base Expenses + Estimated Taxes)] is already built up at retirement start (Year 0), and linearly glides down over the configured tent duration (e.g. 10 years) to the baseline target cash weight, allowing equity allocations to rise over time.
+    *   **Quarterly**: Rebalanced to target weights once every 3 months.
+    *   **Yearly**: Rebalanced to target weights once every 12 months.
+    *   **Threshold**: Rebalanced when any asset drifts beyond a user-configured threshold (e.g. 1.0%).
+    *   **Never**: Assets drift naturally.
 *   **Smart Cash Buffer (Selling Strategy):** A defensive mechanism during market downturns. If the net worth drops below the inflation-adjusted starting net worth, the engine skips portfolio rebalancing and forces all expenses to be paid out of the CHF Cash allocation first, protecting equities from being sold at depressed prices. Normal proportional selling and rebalancing resumes once the portfolio recovers above the watermark.
 
 #### D. Expenses & Spending Models (Post-Retirement)
@@ -141,6 +143,7 @@ The tool must present the user with:
     *   **Median Total Withdrawals**: Total cumulative cash spent on living expenses and taxes over the entire retirement horizon (Real and Nominal).
     *   **Pre-AHV Outflow (< Age 65)**: Total median cash required to cover living expenses and taxes during the early retirement gap before age 65.
     *   **Post-65 Outflow (Age 65+)**: Total median cash required to cover living expenses and taxes from age 65 through end-of-life.
+*   **Run Analysis Tables**: Interactive data tables detailing the Top 10 Best and Worst individual simulation cohorts/runs, reporting Final Net Worth (Real), Final Net Worth (Nominal), and Minimum Net Worth (Nominal) reached.
 *   **Success Metric**:
     *   Allows configuring a target ending net worth as a percentage of inflation-adjusted starting net worth (default is 50.0%).
     *   Shows the calculated probability of success matching this definition across all simulation runs.
