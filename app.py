@@ -67,7 +67,7 @@ success_pct = st.sidebar.number_input(
 
 # 2. Initial Assets
 st.sidebar.subheader("Initial Assets (CHF)")
-initial_liquid_wealth = st.sidebar.number_input("Taxable Liquid Wealth (CHF)", value=2_400_000, step=100_000, help="Your easily accessible taxable investments (stocks, bonds, cash). Do not include your primary residence.")
+initial_liquid_wealth = st.sidebar.number_input("Taxable Liquid Wealth (CHF)", value=2_450_000, step=50_000, help="Your easily accessible taxable investments (stocks, bonds, cash). Do not include your primary residence.")
 initial_pillar_2 = st.sidebar.number_input("Pillar 2 (Freizügigkeitskonto)", value=450_000, step=50_000, help="The current balance of your Swiss Pillar 2 pension. Assumed to be 100% invested in equities (proportional to your US vs Non-US target allocation). Withdrawn at age 65.")
 
 num_pillar_3a = st.sidebar.number_input("Number of Pillar 3a Accounts", value=5, min_value=0, max_value=5, help="How many separate Pillar 3a accounts you hold. Liquidated sequentially starting 5 years before age 65 to minimize taxes.")
