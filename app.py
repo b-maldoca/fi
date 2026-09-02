@@ -27,19 +27,46 @@ st.set_page_config(page_title="Zurich Early Retirement Simulator", layout="wide"
 
 st.markdown("""
 <style>
+    /* Maximize content area by reducing side margins and padding */
+    .block-container,
+    div[data-testid="stMainBlockContainer"],
+    div[data-testid="stAppViewBlockContainer"],
+    section.main > div.block-container {
+        padding-left: 1.0rem !important;
+        padding-right: 1.0rem !important;
+        padding-top: 1.25rem !important;
+        padding-bottom: 2rem !important;
+        max-width: 100% !important;
+    }
+
+    /* Tighten gap between columns */
+    div[data-testid="stHorizontalBlock"] {
+        gap: 0.5rem !important;
+    }
+
+    /* Condense sidebar internal horizontal padding to reduce grey space on left/right edges */
+    section[data-testid="stSidebar"] > div:first-child,
+    div[data-testid="stSidebarContent"],
+    section[data-testid="stSidebar"] div.block-container,
+    section[data-testid="stSidebar"] div[data-testid="stVerticalBlock"] {
+        padding-left: 0.25rem !important;
+        padding-right: 0.25rem !important;
+        padding-top: 1.25rem !important;
+    }
+
     /* Condense the sidebar vertical spacing without overlapping */
     section[data-testid="stSidebar"] [data-testid="stVerticalBlock"] {
-        gap: 0.75rem !important;
+        gap: 0.6rem !important;
     }
     /* Condense headers but leave breathing room */
     section[data-testid="stSidebar"] h3 {
-        padding-top: 1rem !important;
-        padding-bottom: 0.25rem !important;
+        padding-top: 0.75rem !important;
+        padding-bottom: 0.2rem !important;
     }
     /* Condense dividers */
     section[data-testid="stSidebar"] hr {
-        margin-top: 0.5em !important;
-        margin-bottom: 0.5em !important;
+        margin-top: 0.4em !important;
+        margin-bottom: 0.4em !important;
     }
 </style>
 """, unsafe_allow_html=True)
@@ -484,7 +511,14 @@ if True:
             hovertemplate="<b>Inflation-Adj Start NW</b><br>Age: %{x}<br>Value: %{y:,.0f} CHF<extra></extra>"
         ))
             
-        fig.update_layout(xaxis_title="Age", yaxis_title="Net Worth (CHF)", yaxis=dict(tickformat=",.0f"), hovermode="closest", margin=dict(t=15, b=40))
+        fig.update_layout(
+            xaxis_title="Age", 
+            yaxis_title="Net Worth (CHF)", 
+            yaxis=dict(tickformat=",.0f"), 
+            hovermode="closest", 
+            legend=dict(orientation="h", yanchor="top", y=-0.22, xanchor="center", x=0.5),
+            margin=dict(t=15, b=65, l=10, r=10)
+        )
         st.subheader("Net Worth Trajectory", help="This chart displays the value of your assets over time.")
         st.plotly_chart(fig, width='stretch')
 
@@ -503,7 +537,15 @@ if True:
         
         fig_income.add_trace(go.Scatter(x=years, y=median_expenses + median_taxes, mode='lines', name='Total Cash Needed', line=dict(color='black', width=2, dash='dash')))
         
-        fig_income.update_layout(xaxis_title="Age", yaxis_title="Amount (CHF)", barmode='stack', yaxis=dict(tickformat=",.0f"), hovermode="x", margin=dict(t=15, b=40))
+        fig_income.update_layout(
+            xaxis_title="Age", 
+            yaxis_title="Amount (CHF)", 
+            barmode='stack', 
+            yaxis=dict(tickformat=",.0f"), 
+            hovermode="x", 
+            legend=dict(orientation="h", yanchor="top", y=-0.22, xanchor="center", x=0.5),
+            margin=dict(t=15, b=65, l=10, r=10)
+        )
         st.subheader("Income vs Required Cash", help="This chart displays the median cash flows across all simulated portfolio paths for each year.")
         st.plotly_chart(fig_income, width='stretch')
 
@@ -518,7 +560,8 @@ if True:
             yaxis_title="Annual Withdrawal (CHF)", 
             yaxis=dict(tickformat=",.0f"), 
             hovermode="x", 
-            margin=dict(t=15, b=40)
+            legend=dict(orientation="h", yanchor="top", y=-0.22, xanchor="center", x=0.5),
+            margin=dict(t=15, b=65, l=10, r=10)
         )
         st.subheader("Annual Withdrawal Breakdown", help="This stacked chart displays the median annual withdrawals (living expenses and taxes paid) across all simulated portfolio paths over time.")
         st.plotly_chart(fig_withdrawal, width='stretch')
@@ -542,7 +585,8 @@ if True:
             yaxis_title="Withdrawal Rate (%)", 
             yaxis=dict(tickformat=".1f", range=[0, y_upper]), 
             hovermode="x",
-            margin=dict(t=15, b=40)
+            legend=dict(orientation="h", yanchor="top", y=-0.22, xanchor="center", x=0.5),
+            margin=dict(t=15, b=65, l=10, r=10)
         )
         st.subheader("Withdrawal Rate", help="This chart displays the percentage of your current net worth consumed by expenses and taxes each year.")
         st.plotly_chart(fig_wr, width='stretch')
@@ -581,7 +625,8 @@ if True:
             yaxis_title="Asset Value (CHF)",
             yaxis=dict(tickformat=",.0f"),
             hovermode="x",
-            margin=dict(t=15, b=40)
+            legend=dict(orientation="h", yanchor="top", y=-0.22, xanchor="center", x=0.5),
+            margin=dict(t=15, b=65, l=10, r=10)
         )
         st.subheader("Asset Allocation Development", help="This stacked chart visualizes the median nominal balance of all asset categories (taxable liquid investments, Pillar 2, and Pillar 3a) over time, showing how your net worth breakdown glides and rebalances throughout retirement.")
         st.plotly_chart(fig_alloc, width='stretch')
