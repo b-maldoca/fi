@@ -234,14 +234,14 @@ elif spending_strategy == "Vanguard Dynamic":
     vanguard_floor_pct = st.sidebar.number_input("Max Annual Cut / Floor (%)", value=5.0, step=0.5, format="%.1f", help="Maximum allowable reduction in spending compared to prior year's inflation-adjusted spending (Vanguard default: 5.0%).") / 100.0
     vanguard_ceiling_pct = st.sidebar.number_input("Max Annual Raise / Ceiling (%)", value=5.0, step=0.5, format="%.1f", help="Maximum allowable increase in spending compared to prior year's inflation-adjusted spending (Vanguard default: 5.0%).") / 100.0
 
-st.sidebar.subheader("Economics Parameters")
+st.sidebar.subheader("Income & Yield")
 monthly_ahv = st.sidebar.number_input("Expected Monthly AHV Pension from age 65 (CHF)", value=2000, step=100, help="The monthly AHV pension you expect to receive starting at age 65 (in today's CHF, adjusted annually for CPI inflation in the simulation).")
 dividend_yield = st.sidebar.number_input("Dividend Yield (%)", value=1.5, step=0.1, format="%.1f", help="Expected annual dividend yield of the portfolio.") / 100.0
-inflation_mean = st.sidebar.number_input("Inflation Mean (%)", value=2.5, step=0.1, format="%.1f", help="Expected average annual inflation rate.") / 100.0
-inflation_std = st.sidebar.number_input("Inflation Volatility (%)", value=1.0, step=0.1, format="%.1f", help="Expected volatility of inflation.") / 100.0
 
-st.sidebar.subheader("Simulation Parameters")
-st.sidebar.caption("Note: Returns must be Nominal (unadjusted for inflation) and in CHF terms. E.g., historic US Stock returns are ~9.5% in USD, but ~7.0% in CHF due to currency drag.")
+st.sidebar.subheader("Monte Carlo Parameters")
+st.sidebar.caption("Note: Returns and inflation must be Nominal (unadjusted for inflation) and in CHF terms. E.g., historic US Stock returns are ~9.5% in USD, but ~7.0% in CHF due to currency drag.")
+inflation_mean = st.sidebar.number_input("Inflation Mean (%)", value=2.5, step=0.1, format="%.1f", help="Expected average annual inflation rate for Monte Carlo.") / 100.0
+inflation_std = st.sidebar.number_input("Inflation Volatility (%)", value=1.0, step=0.1, format="%.1f", help="Expected volatility of inflation for Monte Carlo.") / 100.0
 ret_us = st.sidebar.number_input("US Stocks Nominal Mean (%)", value=7.0, step=0.1, format="%.1f", help="Expected nominal mean return for US Stocks in CHF. Note: Historic S&P500 returns are ~9.5% in USD, but ~7.0% in CHF due to the appreciating Franc.") / 100.0
 ret_non_us = st.sidebar.number_input("Non-US Stocks Nominal Mean (%)", value=6.0, step=0.1, format="%.1f", help="Expected nominal mean return for Non-US Stocks in CHF terms.") / 100.0
 ret_cash = st.sidebar.number_input("CHF Cash Nominal Mean (%)", value=1.0, step=0.1, format="%.1f", help="Expected nominal mean return for CHF Cash.") / 100.0
@@ -354,7 +354,12 @@ if True:
         history_hist = run_simulation(config_hist, hist_return_matrix, hist_inflation_matrix)
         
     def render_results(history, config, num_runs, title, inflation_matrix, success_pct):
-        st.header(title)
+        header_tooltips = {
+            "Historic Backtesting": "Replays exact contiguous historical sequences (e.g. 1928–1978, 1929–1979) from ~100 years of historical Swiss-adjusted market data. This preserves real-world macroeconomic sequence, asset correlation, and market cycle autocorrelation.",
+            "Historic Bootstrapping": "Creates thousands of distinct retirement scenarios by randomly drawing annual return and inflation instances with replacement from 100 years of historical data. This stress-tests sequence-of-returns risk across synthetic pasts while preserving empirical return distribution characteristics.",
+            "Monte Carlo": "Generates thousands of stochastic future paths using parametric lognormal distributions based on user-configured nominal means, standard deviations, and inflation parameters."
+        }
+        st.header(title, help=header_tooltips.get(title))
         net_worth_history = history['net_worth']
         
         final_net_worth = net_worth_history[-1, :]
