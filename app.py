@@ -55,6 +55,21 @@ st.markdown("""
         padding-top: 1.25rem !important;
     }
 
+    /* Minimize only empty space at the very top of the sidebar above the Configuration header */
+    div[data-testid="stSidebarHeader"] {
+        min-height: 0px !important;
+        height: 0px !important;
+        padding: 0px !important;
+    }
+    section[data-testid="stSidebar"] div.block-container {
+        padding-top: 0.25rem !important;
+    }
+    section[data-testid="stSidebar"] h2:first-of-type,
+    section[data-testid="stSidebar"] [data-testid="stHeadingWithActionElements"]:first-child {
+        margin-top: 0rem !important;
+        padding-top: 0rem !important;
+    }
+
     /* Condense the sidebar vertical spacing without overlapping */
     section[data-testid="stSidebar"] [data-testid="stVerticalBlock"] {
         gap: 0.6rem !important;
