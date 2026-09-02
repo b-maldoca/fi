@@ -68,6 +68,18 @@ class SimConfig:
         if self.initial_pillar_3a_accounts is None:
             self.initial_pillar_3a_accounts = []
             
+        if self.initial_liquid_wealth < 0.0 or self.initial_pillar_2 < 0.0 or any(a < 0.0 for a in self.initial_pillar_3a_accounts):
+            raise ValueError("Initial asset balances cannot be negative.")
+
+        if self.annual_base_expenses < 0.0 or self.monthly_ahv_pension < 0.0 or self.dividend_yield < 0.0:
+            raise ValueError("Annual base expenses, AHV pension, and dividend yield cannot be negative.")
+
+        if self.cantonal_multiplier < 0.0 or self.municipal_multiplier < 0.0:
+            raise ValueError("Tax multipliers cannot be negative.")
+
+        if self.rebalance_threshold < 0.0 or self.dynamic_expense_floor_pct < 0.0 or self.dynamic_expense_ceiling_pct < 0.0:
+            raise ValueError("Rebalance threshold and dynamic expense floor/ceiling percentages cannot be negative.")
+
         allocs = [self.alloc_us_stocks, self.alloc_non_us_stocks, self.alloc_chf_cash, self.alloc_gold, self.alloc_bitcoin]
         if any(a < 0.0 for a in allocs):
             raise ValueError(f"Asset allocations cannot be negative. Current: {allocs}")
@@ -330,7 +342,7 @@ def run_simulation(config: SimConfig, return_matrix: np.ndarray, inflation_matri
         do_rebalance &= is_solvent
             
         if config.enable_smart_selling:
-            current_p3a = sum(p3a for p3a in pillar_3a) if len(pillar_3a) > 0 else 0
+            current_p3a = sum(pillar_3a) if pillar_3a else np.zeros(num_runs)
             current_nw = np.sum(liquid_assets, axis=1) + pillar_2 + current_p3a
             inflation_adjusted_initial_nw = initial_net_worth * inflation_factors
             is_downturn = current_nw < inflation_adjusted_initial_nw

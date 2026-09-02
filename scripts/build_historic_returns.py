@@ -179,23 +179,19 @@ def get_historic_inflation_matrix(duration_years: int) -> np.ndarray:
     return matrix
 
 
-def generate_bootstrapped_returns(
+def generate_bootstrapped_data(
     num_runs: int,
     duration_years: int,
     seed: int = 42
-) -> np.ndarray:
+) -> tuple[np.ndarray, np.ndarray]:
     """
-    Generates a matrix of shape (num_runs, duration_months, 5) using historical bootstrapping 
-    (sampling annual return blocks with replacement from empirical Swiss-adjusted market history).
+    Jointly generates bootstrapped return matrix and inflation matrix from historical data.
+    Ensures returns and inflation for each simulation run are sampled using the exact same random year sequence.
     
-    Jointly samples US Equities, Non-US Equities, and Swiss CPI to preserve cross-asset correlation.
-    
-    Asset Classes:
-    0: US Stocks (Sampled empirical S&P 500 CHF returns)
-    1: Non-US Stocks (Sampled empirical MSCI ex-US CHF returns)
-    2: CHF Cash (1% annual nominal return)
-    3: Gold (Synthetic uncorrelated, 6% mean, 15% vol)
-    4: Bitcoin (Synthetic uncorrelated, 10% mean, 60% vol)
+    Returns:
+        tuple (return_matrix, inflation_matrix)
+        return_matrix shape: (num_runs, duration_years * 12, 5)
+        inflation_matrix shape: (num_runs, duration_years)
     """
     total_years = len(HISTORIC_RETURNS_US_CHF)
     if duration_years <= 0 or num_runs <= 0:
@@ -203,12 +199,13 @@ def generate_bootstrapped_returns(
         
     rng = np.random.default_rng(seed)
     duration_months = duration_years * 12
-    matrix = np.zeros((num_runs, duration_months, 5))
+    return_matrix = np.zeros((num_runs, duration_months, 5))
     
-    # Sample random historical years with replacement: shape (num_runs, duration_years)
+    # Jointly sample random historical years with replacement
     random_indices = rng.integers(0, total_years, size=(num_runs, duration_years))
     sampled_annual_us = HISTORIC_RETURNS_US_CHF[random_indices]
     sampled_annual_non_us = HISTORIC_RETURNS_NON_US_CHF[random_indices]
+    sampled_inflation = HISTORIC_SWISS_INFLATION[random_indices]
     
     # Convert annual returns to monthly returns
     safe_base_us = np.maximum(0.0, 1.0 + sampled_annual_us)
@@ -219,17 +216,30 @@ def generate_bootstrapped_returns(
     sampled_monthly_non_us = safe_base_non_us**(1/12) - 1.0
     sampled_monthly_non_us_expanded = np.repeat(sampled_monthly_non_us, 12, axis=1)
     
-    matrix[:, :, 0] = sampled_monthly_us_expanded
-    matrix[:, :, 1] = sampled_monthly_non_us_expanded
-    matrix[:, :, 2] = 0.01 / 12 # 1% annual nominal
+    return_matrix[:, :, 0] = sampled_monthly_us_expanded
+    return_matrix[:, :, 1] = sampled_monthly_non_us_expanded
+    return_matrix[:, :, 2] = 0.01 / 12 # 1% annual nominal
     
     # Synthetic Gold & Bitcoin monthly returns per run
     for i in range(num_runs):
         rng_asset = np.random.default_rng(seed + i + 1000)
-        matrix[i, :, 3] = rng_asset.normal(0.06 / 12, 0.15 / np.sqrt(12), duration_months)
-        matrix[i, :, 4] = rng_asset.normal(0.10 / 12, 0.60 / np.sqrt(12), duration_months)
+        return_matrix[i, :, 3] = rng_asset.normal(0.06 / 12, 0.15 / np.sqrt(12), duration_months)
+        return_matrix[i, :, 4] = rng_asset.normal(0.10 / 12, 0.60 / np.sqrt(12), duration_months)
         
-    return matrix
+    return return_matrix, sampled_inflation
+
+
+def generate_bootstrapped_returns(
+    num_runs: int,
+    duration_years: int,
+    seed: int = 42
+) -> np.ndarray:
+    """
+    Generates a matrix of shape (num_runs, duration_months, 5) using historical bootstrapping 
+    (sampling annual return blocks with replacement from empirical Swiss-adjusted market history).
+    """
+    ret_matrix, _ = generate_bootstrapped_data(num_runs, duration_years, seed=seed)
+    return ret_matrix
 
 
 def generate_bootstrapped_inflation(
@@ -241,13 +251,8 @@ def generate_bootstrapped_inflation(
     Generates an inflation matrix of shape (num_runs, duration_years) by bootstrapping 
     empirical Swiss CPI inflation rates using the same random seed alignment as asset returns.
     """
-    total_years = len(HISTORIC_SWISS_INFLATION)
-    if duration_years <= 0 or num_runs <= 0:
-        raise ValueError(f"num_runs ({{num_runs}}) and duration_years ({{duration_years}}) must be positive integers.")
-        
-    rng = np.random.default_rng(seed)
-    random_indices = rng.integers(0, total_years, size=(num_runs, duration_years))
-    return HISTORIC_SWISS_INFLATION[random_indices]
+    _, inf_matrix = generate_bootstrapped_data(num_runs, duration_years, seed=seed)
+    return inf_matrix
 '''
 
 with open(SRC_FILE, 'w') as f:

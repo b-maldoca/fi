@@ -8,6 +8,7 @@ from simulation_engine import SimConfig, run_simulation, get_target_weights, est
 from historic_returns import (
     get_historic_return_matrix,
     get_historic_inflation_matrix,
+    generate_bootstrapped_data,
     generate_bootstrapped_returns,
     generate_bootstrapped_inflation,
     HISTORIC_RETURNS,
@@ -1478,6 +1479,63 @@ def test_trace_labeling_bootstrapping_vs_backtesting():
             assert len(traces) == 100
             assert traces[0] == "Run 1"
             assert traces[99] == "Run 100"
+
+
+def test_generate_bootstrapped_data_joint_alignment():
+    num_runs = 50
+    duration_years = 20
+    ret_matrix, inf_matrix = generate_bootstrapped_data(num_runs, duration_years, seed=123)
+    
+    assert ret_matrix.shape == (50, 240, 5)
+    assert inf_matrix.shape == (50, 20)
+    assert not np.isnan(ret_matrix).any()
+    assert not np.isnan(inf_matrix).any()
+    
+    # Check consistency with individual wrappers
+    ret_ind = generate_bootstrapped_returns(num_runs, duration_years, seed=123)
+    inf_ind = generate_bootstrapped_inflation(num_runs, duration_years, seed=123)
+    assert np.array_equal(ret_matrix, ret_ind)
+    assert np.array_equal(inf_matrix, inf_ind)
+
+
+def test_sim_config_validation_extended_negative_inputs():
+    import pytest
+    base_args = dict(
+        num_runs=10, duration_years=5, inflation_mean=0.02, inflation_std=0.01,
+        start_age=40, dividend_yield=0.015, alloc_us_stocks=1.0
+    )
+    
+    # Negative multipliers
+    with pytest.raises(ValueError, match="Tax multipliers cannot be negative"):
+        SimConfig(**base_args, cantonal_multiplier=-0.1)
+    with pytest.raises(ValueError, match="Tax multipliers cannot be negative"):
+        SimConfig(**base_args, municipal_multiplier=-0.5)
+        
+    # Negative expenses and income
+    with pytest.raises(ValueError, match="cannot be negative"):
+        SimConfig(**base_args, annual_base_expenses=-1000.0)
+    with pytest.raises(ValueError, match="cannot be negative"):
+        SimConfig(**base_args, monthly_ahv_pension=-500.0)
+    with pytest.raises(ValueError, match="cannot be negative"):
+        args = dict(base_args)
+        args['dividend_yield'] = -0.01
+        SimConfig(**args)
+        
+    # Negative assets
+    with pytest.raises(ValueError, match="Initial asset balances cannot be negative"):
+        SimConfig(**base_args, initial_liquid_wealth=-10_000.0)
+    with pytest.raises(ValueError, match="Initial asset balances cannot be negative"):
+        SimConfig(**base_args, initial_pillar_2=-50_000.0)
+    with pytest.raises(ValueError, match="Initial asset balances cannot be negative"):
+        SimConfig(**base_args, initial_pillar_3a_accounts=[10_000.0, -500.0])
+        
+    # Negative threshold and dynamic spending bounds
+    with pytest.raises(ValueError, match="cannot be negative"):
+        SimConfig(**base_args, rebalance_threshold=-0.05)
+    with pytest.raises(ValueError, match="cannot be negative"):
+        SimConfig(**base_args, dynamic_expense_floor_pct=-0.1)
+    with pytest.raises(ValueError, match="cannot be negative"):
+        SimConfig(**base_args, dynamic_expense_ceiling_pct=-0.2)
 
 
 

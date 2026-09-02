@@ -18,6 +18,7 @@ from simulation_engine import SimConfig, run_simulation, estimate_year_0_taxes
 from historic_returns import (
     get_historic_return_matrix,
     get_historic_inflation_matrix,
+    generate_bootstrapped_data,
     generate_bootstrapped_returns,
     generate_bootstrapped_inflation,
     HISTORIC_YEARS
@@ -332,12 +333,7 @@ if True:
     )
     mc_inflation_matrix = rng.normal(inflation_mean, inflation_std, (config_mc.num_runs, config_mc.duration_years))
     
-    boot_return_matrix = generate_bootstrapped_returns(
-        num_runs=config_boot.num_runs,
-        duration_years=config_boot.duration_years,
-        seed=42
-    )
-    boot_inflation_matrix = generate_bootstrapped_inflation(
+    boot_return_matrix, boot_inflation_matrix = generate_bootstrapped_data(
         num_runs=config_boot.num_runs,
         duration_years=config_boot.duration_years,
         seed=42

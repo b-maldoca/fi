@@ -1,4 +1,4 @@
-# Product Requirement Document (PRD): Swiss Early Retirement Financial Simulator (Zurich)
+# Product Requirement Document (PRD): Zurich Early Retirement Simulator
 
 ## 1. Executive Summary
 The goal of this project is to build a financial simulation tool designed for individuals based in Switzerland who wish to plan for early retirement (FIRE - Financial Independence, Retire Early). 

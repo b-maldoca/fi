@@ -1,7 +1,7 @@
-# Design Document: Swiss Early Retirement Simulator (Phase 1)
+# Design Document: Zurich Early Retirement Simulator (Phase 1)
 
 ## 1. Overview
-This document outlines the technical design for Phase 1 of the Swiss Early Retirement Simulator. Phase 1 focuses exclusively on the **post-retirement decumulation phase** for a single individual with no dependents living in Canton Zurich. 
+This document outlines the technical design for Phase 1 of the Zurich Early Retirement Simulator. Phase 1 focuses exclusively on the **post-retirement decumulation phase** for a single individual with no dependents living in Canton Zurich. 
 
 The system will ingest initial asset balances, apply historic or Monte Carlo investment returns in CHF, compute complex Swiss tax obligations (including non-worker AHV contributions and capital withdrawal taxes), and visualize the resulting net worth trajectories.
 
@@ -121,15 +121,15 @@ class SimConfig:
 *   `initial_net_worth`: Float scalar starting net worth
 
 ## 5. UI Layout (Streamlit)
-*   **Sidebar**: All inputs (Demographics, Initial Balances, Asset Allocation, Target Allocations, Rebalancing Strategies, Economics & Spending Models, Simulation Parameters, Success Criteria, Zurich Tax Multipliers).
-*   **Main Panel**: Displays results across three side-by-side columns for direct comparative analysis: **Historic Backtesting**, **Historic Bootstrapping (Sampling with Replacement)**, and **Monte Carlo**. Each column contains:
+*   **Sidebar**: All inputs categorized into 8 dedicated sections: **Demographics**, **Success Criteria**, **Initial Assets (CHF)**, **Target Asset Allocation (%)**, **Spending Strategy**, **Income & Yield**, **Monte Carlo Parameters**, and **Zurich Tax Location**.
+*   **Main Panel**: Displays results across three side-by-side columns for direct comparative analysis: **Historic Backtesting**, **Historic Bootstrapping (Sampling with Replacement)**, and **Monte Carlo**. Each column contains mouse-over header tooltips and:
     *   **TL;DR Status**: Displays 'BROKE', 'RICH', or 'DEAD' based on median final net worth vs 3x inflation-adjusted initial net worth.
     *   **Metrics**: Probability of Success (based on selected success criteria), Avg Years Below Start NW, Median Ending Net Worth (Real & Nominal), Median Total Withdrawals (Real & Nominal), Pre-AHV Outflow (< Age 65), and Post-65 Outflow (Age 65+).
-    *   **Net Worth Trajectory Chart** (Plotly): Faint lines for individual runs (capped at 100 for Monte Carlo), bold lines for 5th, 25th, 50th, 75th, 95th percentiles.
-    *   **Income vs Required Cash Chart** (Plotly): Stacked bar chart showing median Dividends, AHV Pension, and Capital Sold, with a reference line for Total Cash Needed (Expenses + Taxes).
-    *   **Withdrawal Rate Chart** (Plotly): Percentile lines for the withdrawal rate over time (dynamically capped at 25% max).
-    *   **Asset Allocation Development Chart** (Plotly): Stacked area chart showing the median nominal balance of all asset categories (US Stocks, Non-US Stocks, CHF Cash, Gold, Bitcoin, Pillar 2, and Pillar 3a) over time to visualize portfolio glidepaths, rebalancing, and account liquidations.
-    *   **Expenses & Taxes Chart** (Plotly): Stacked bar chart showing median Expenses and Taxes paid over time.
+    *   **Net Worth Trajectory Chart** (Plotly): Faint lines for individual runs (capped at 100 for Monte Carlo and Bootstrapping), bold lines for 5th, 25th, 50th, 75th, 95th percentiles with horizontal bottom legend.
+    *   **Income vs Required Cash Chart** (Plotly): Stacked bar chart showing median Dividends, AHV Pension, and Capital Sold, with a reference line for Total Cash Needed (Expenses + Taxes) and bottom legend.
+    *   **Annual Withdrawal Breakdown Chart** (Plotly): Stacked bar chart showing median living expenses and taxes paid over time with bottom legend.
+    *   **Withdrawal Rate Chart** (Plotly): Percentile lines for the withdrawal rate over time (dynamically capped at 25% max) with bottom legend.
+    *   **Asset Allocation Development Chart** (Plotly): Stacked area chart showing the median nominal balance of all asset categories (US Stocks, Non-US Stocks, CHF Cash, Gold, Bitcoin, Pillar 2, and Pillar 3a) over time to visualize portfolio glidepaths, rebalancing, and account liquidations with bottom legend.
     *   **Run Analysis Tables**: Interactive tables of top 10 best and worst runs/cohorts based on final net worth (showing Final NW (Real), Final NW (Nom), and Min NW (Nominal) values).
 
 ## 6. Implementation Plan & Milestones
