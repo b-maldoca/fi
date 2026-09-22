@@ -2,6 +2,10 @@ import numpy as np
 from dataclasses import dataclass
 from tax_engine import calculate_income_tax, calculate_wealth_tax, calculate_capital_withdrawal_tax, calculate_ahv_non_worker
 
+VALID_SPENDING_STRATEGIES = {"Static", "Dynamic (Floor & Ceiling)", "Vanguard Dynamic"}
+VALID_REBALANCE_STRATEGIES = {"Cash Tent", "Monthly", "Quarterly", "Yearly", "Threshold", "Never"}
+
+
 @dataclass
 class SimConfig:
     num_runs: int
@@ -36,7 +40,7 @@ class SimConfig:
     alloc_gold: float = 0.0
     alloc_bitcoin: float = 0.0
     
-    # Rebalance strategy: 'never', 'yearly', 'monthly', 'threshold'
+    # Rebalance strategy: 'Cash Tent', 'Monthly', 'Quarterly', 'Yearly', 'Threshold', 'Never'
     rebalance_strategy: str = "Yearly"
     rebalance_threshold: float = 0.0
     enable_smart_selling: bool = True
@@ -52,6 +56,9 @@ class SimConfig:
     # Cash Tent Strategy (Pfau Glidepath)
     tent_duration_years: int = 7
 
+    # Random Seed for reproducible stochastic simulation
+    seed: int = 42
+
     def __post_init__(self):
         if self.num_runs <= 0 or self.duration_years <= 0:
             raise ValueError(f"num_runs ({self.num_runs}) and duration_years ({self.duration_years}) must be positive integers.")
@@ -61,6 +68,12 @@ class SimConfig:
 
         if self.tent_duration_years < 0:
             raise ValueError(f"tent_duration_years ({self.tent_duration_years}) cannot be negative.")
+
+        if self.inflation_std < 0.0:
+            raise ValueError(f"inflation_std ({self.inflation_std}) cannot be negative.")
+
+        if self.seed < 0:
+            raise ValueError(f"seed ({self.seed}) cannot be negative.")
             
         if self.vanguard_floor_pct < 0.0 or self.vanguard_ceiling_pct < 0.0 or self.vanguard_target_rate < 0.0:
             raise ValueError("Vanguard Dynamic Spending parameters cannot be negative.")
@@ -92,21 +105,46 @@ class SimConfig:
         if self.enable_dynamic_expenses and self.spending_strategy == "Static":
             self.spending_strategy = "Dynamic (Floor & Ceiling)"
 
+        if self.spending_strategy not in VALID_SPENDING_STRATEGIES:
+            raise ValueError(f"Invalid spending_strategy '{self.spending_strategy}'. Must be one of {sorted(VALID_SPENDING_STRATEGIES)}.")
 
-def estimate_year_0_taxes(config: SimConfig) -> float:
-    """Estimates Year 0 total taxes (income, wealth, AHV non-worker) for initial Cash Tent calculation."""
+        if self.rebalance_strategy not in VALID_REBALANCE_STRATEGIES:
+            raise ValueError(f"Invalid rebalance_strategy '{self.rebalance_strategy}'. Must be one of {sorted(VALID_REBALANCE_STRATEGIES)}.")
+
+
+def _get_year_0_liquid_wealth(config: SimConfig) -> float:
+    """
+    Computes Year 0 initial liquid wealth including any immediate Month 0 pension liquidations
+    (all Pillar 2 + Pillar 3a at age >= 65, or the first eligible Pillar 3a account at ages 60-64)
+    net of immediate Capital Withdrawal Tax.
+    """
     init_wealth = config.initial_liquid_wealth
+    total_pension_liq = 0.0
+
     if config.start_age >= 65:
         p2 = config.initial_pillar_2
         p3a = sum(config.initial_pillar_3a_accounts) if config.initial_pillar_3a_accounts else 0.0
         total_pension_liq = p2 + p3a
-        if total_pension_liq > 0:
-            cap_tax = float(np.asarray(calculate_capital_withdrawal_tax(
-                np.array([total_pension_liq]),
-                config.cantonal_multiplier,
-                config.municipal_multiplier
-            )).flatten()[0])
-            init_wealth += max(0.0, total_pension_liq - cap_tax)
+    elif 60 <= config.start_age < 65 and config.initial_pillar_3a_accounts:
+        for i, acc in enumerate(config.initial_pillar_3a_accounts):
+            if config.start_age >= 60 + i and acc > 0.0:
+                total_pension_liq = acc
+                break
+
+    if total_pension_liq > 0.0:
+        cap_tax = float(calculate_capital_withdrawal_tax(
+            total_pension_liq,
+            config.cantonal_multiplier,
+            config.municipal_multiplier
+        ))
+        init_wealth += max(0.0, total_pension_liq - cap_tax)
+
+    return init_wealth
+
+
+def estimate_year_0_taxes(config: SimConfig) -> float:
+    """Estimates Year 0 total taxes (income, wealth, AHV non-worker) for initial Cash Tent and TWR calculation."""
+    init_wealth = _get_year_0_liquid_wealth(config)
 
     equities = max(0.0, init_wealth * (config.alloc_us_stocks + config.alloc_non_us_stocks))
     dividends = equities * config.dividend_yield
@@ -115,12 +153,12 @@ def estimate_year_0_taxes(config: SimConfig) -> float:
     annual_ahv = 12 * config.monthly_ahv_pension if config.start_age >= 65 else 0.0
     
     taxable_income = dividends + interest + annual_ahv
-    income_tax = float(np.asarray(calculate_income_tax(np.array([taxable_income]), config.cantonal_multiplier, config.municipal_multiplier)).flatten()[0])
+    income_tax = float(calculate_income_tax(taxable_income, config.cantonal_multiplier, config.municipal_multiplier))
     
     taxable_wealth = max(0.0, init_wealth - config.annual_base_expenses)
-    wealth_tax = float(np.asarray(calculate_wealth_tax(np.array([taxable_wealth]), config.cantonal_multiplier, config.municipal_multiplier)).flatten()[0])
+    wealth_tax = float(calculate_wealth_tax(taxable_wealth, config.cantonal_multiplier, config.municipal_multiplier))
     
-    ahv_contrib = float(np.asarray(calculate_ahv_non_worker(taxable_wealth)).flatten()[0]) if config.start_age < 65 else 0.0
+    ahv_contrib = float(calculate_ahv_non_worker(taxable_wealth)) if config.start_age < 65 else 0.0
     
     return income_tax + wealth_tax + ahv_contrib
 
@@ -147,18 +185,7 @@ def get_target_weights(config: SimConfig, year: int) -> np.ndarray:
     if T <= 0 or year >= T:
         return base_weights
         
-    init_wealth = config.initial_liquid_wealth
-    if config.start_age >= 65:
-        p2 = config.initial_pillar_2
-        p3a = sum(config.initial_pillar_3a_accounts) if config.initial_pillar_3a_accounts else 0.0
-        total_pension_liq = p2 + p3a
-        if total_pension_liq > 0:
-            cap_tax = float(np.asarray(calculate_capital_withdrawal_tax(
-                np.array([total_pension_liq]),
-                config.cantonal_multiplier,
-                config.municipal_multiplier
-            )).flatten()[0])
-            init_wealth += max(0.0, total_pension_liq - cap_tax)
+    init_wealth = _get_year_0_liquid_wealth(config)
 
     if init_wealth <= 0:
         return base_weights
@@ -216,6 +243,7 @@ def run_simulation(config: SimConfig, return_matrix: np.ndarray, inflation_matri
     history_below_watermark = np.zeros((duration_months // 12, num_runs), dtype=bool)
     
     inflation_factors = np.ones(num_runs)
+    rng_inf = np.random.default_rng(config.seed + 10_000)
     vanguard_prev_expenses = np.full(num_runs, config.annual_base_expenses, dtype=float)
     vanguard_prev_inflation = np.ones(num_runs, dtype=float)
     taxable_liquidation_amount = np.zeros(num_runs)
@@ -233,8 +261,8 @@ def run_simulation(config: SimConfig, return_matrix: np.ndarray, inflation_matri
             if inflation_matrix is not None:
                 inflation = inflation_matrix[:, year]
             else:
-                inflation = np.random.normal(config.inflation_mean, config.inflation_std, num_runs)
-            inflation_factors *= (1 + inflation)
+                inflation = rng_inf.normal(config.inflation_mean, config.inflation_std, num_runs)
+            inflation_factors *= np.maximum(0.01, 1.0 + inflation)
             taxable_liquidation_amount.fill(0)
             capital_withdrawal_tax_this_year.fill(0)
             
@@ -493,6 +521,17 @@ def generate_monte_carlo_returns(
     seed: int = 42
 ) -> np.ndarray:
     """Generates monthly returns using a lognormal model to prevent negative asset prices."""
+    if num_runs <= 0:
+        raise ValueError(f"num_runs must be positive, got {num_runs}")
+    if duration_years <= 0:
+        raise ValueError(f"duration_years must be positive, got {duration_years}")
+    if seed < 0:
+        raise ValueError(f"seed must be non-negative, got {seed}")
+    if any(r <= -1.0 for r in (ret_us, ret_non_us, ret_cash, ret_gold, ret_btc)):
+        raise ValueError("Expected annual returns must be greater than -100% (-1.0)")
+    if any(v < 0.0 for v in (vol_eq, vol_gold, vol_btc)):
+        raise ValueError("Volatilities cannot be negative")
+
     rng = np.random.default_rng(seed)
     duration_months = duration_years * 12
     matrix = np.zeros((num_runs, duration_months, 5))
@@ -511,4 +550,31 @@ def generate_monte_carlo_returns(
     matrix[:, :, 4] = get_monthly_returns(ret_btc, vol_btc)
     
     return matrix
+
+
+def generate_monte_carlo_inflation(
+    num_runs: int,
+    duration_years: int,
+    inflation_mean: float = 0.015,
+    inflation_std: float = 0.01,
+    seed: int = 42
+) -> np.ndarray:
+    """Generates independent annual inflation draws for Monte Carlo simulations.
+
+    Uses a dedicated RNG stream offset (`seed + 10_000`) so inflation draws
+    do not collide with the standard normal sequence used for US Stock returns
+    in `generate_monte_carlo_returns`.
+    """
+    if num_runs <= 0:
+        raise ValueError(f"num_runs must be positive, got {num_runs}")
+    if duration_years <= 0:
+        raise ValueError(f"duration_years must be positive, got {duration_years}")
+    if inflation_std < 0.0:
+        raise ValueError(f"inflation_std cannot be negative, got {inflation_std}")
+    if seed < 0:
+        raise ValueError(f"seed must be non-negative, got {seed}")
+
+    rng = np.random.default_rng(seed + 10_000)
+    inflation_matrix = rng.normal(inflation_mean, inflation_std, (num_runs, duration_years))
+    return np.maximum(-0.99, inflation_matrix)
 

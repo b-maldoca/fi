@@ -664,24 +664,39 @@ HISTORIC_USD_CHF_FX = np.array([
 HISTORIC_RETURNS = HISTORIC_RETURNS_US_CHF
 
 
-def get_historic_return_matrix(duration_years: int) -> np.ndarray:
+def _generate_lognormal_monthly_returns(
+    rng: np.random.Generator,
+    ann_ret: float,
+    ann_vol: float,
+    shape: tuple
+) -> np.ndarray:
+    """Generates monthly returns using a lognormal model with Ito drift correction."""
+    drift = np.log(1.0 + ann_ret) - 0.5 * (ann_vol ** 2)
+    log_ret = rng.normal(drift / 12.0, ann_vol / np.sqrt(12.0), shape)
+    return np.exp(log_ret) - 1.0
+
+
+def get_historic_return_matrix(duration_years: int, seed: int = 42) -> np.ndarray:
     """
     Returns a return matrix of shape (num_runs, duration_months, 5) for 5 asset classes:
     0: US Stocks (Empirical S&P 500 in CHF)
     1: Non-US Stocks (Empirical MSCI ex-US in CHF)
-    2: CHF Cash (1% nominal return)
-    3: Gold (Synthetic uncorrelated, 6% mean, 15% vol)
-    4: Bitcoin (Synthetic uncorrelated, 10% mean, 60% vol)
+    2: CHF Cash (1% nominal return, geometric monthly rate)
+    3: Gold (Synthetic lognormal uncorrelated, 6% mean, 15% vol)
+    4: Bitcoin (Synthetic lognormal uncorrelated, 10% mean, 60% vol)
     """
     total_years = len(HISTORIC_RETURNS_US_CHF)
     if duration_years <= 0:
         raise ValueError(f"Duration must be a positive integer, got {duration_years}.")
     if duration_years > total_years:
         raise ValueError(f"Duration {duration_years} exceeds available historic data ({total_years} years).")
+    if seed < 0:
+        raise ValueError(f"seed ({seed}) must be a non-negative integer.")
         
     num_runs = total_years - duration_years + 1
     duration_months = duration_years * 12
     matrix = np.zeros((num_runs, duration_months, 5))
+    cash_monthly = (1.0 + 0.01)**(1.0 / 12.0) - 1.0
     
     for i in range(num_runs):
         annual_us_chf = HISTORIC_RETURNS_US_CHF[i : i + duration_years]
@@ -689,23 +704,21 @@ def get_historic_return_matrix(duration_years: int) -> np.ndarray:
         
         # Approximate monthly returns by taking the 12th root of (1 + annual return)
         safe_base_us = np.maximum(0.0, 1.0 + annual_us_chf)
-        monthly_us = safe_base_us**(1/12) - 1.0
+        monthly_us = safe_base_us**(1.0 / 12.0) - 1.0
         monthly_us_expanded = np.repeat(monthly_us, 12)
         
         safe_base_non_us = np.maximum(0.0, 1.0 + annual_non_us_chf)
-        monthly_non_us = safe_base_non_us**(1/12) - 1.0
+        monthly_non_us = safe_base_non_us**(1.0 / 12.0) - 1.0
         monthly_non_us_expanded = np.repeat(monthly_non_us, 12)
         
         matrix[i, :, 0] = monthly_us_expanded        # US Stocks (CHF)
         matrix[i, :, 1] = monthly_non_us_expanded    # Non-US Stocks (CHF)
-        matrix[i, :, 2] = 0.01 / 12                  # CHF Cash (1% nominal APY)
+        matrix[i, :, 2] = cash_monthly               # CHF Cash (1% nominal APY)
         
-        # Synthetic Gold (Uncorrelated, 6% mean, 15% vol)
-        rng = np.random.default_rng(i)
-        matrix[i, :, 3] = rng.normal(0.06 / 12, 0.15 / np.sqrt(12), duration_months)
-        
-        # Synthetic Bitcoin (Uncorrelated, 10% mean, 60% vol)
-        matrix[i, :, 4] = rng.normal(0.10 / 12, 0.60 / np.sqrt(12), duration_months)
+        # Synthetic Gold & Bitcoin (Lognormal with Ito drift correction)
+        rng = np.random.default_rng(seed + i)
+        matrix[i, :, 3] = _generate_lognormal_monthly_returns(rng, 0.06, 0.15, duration_months)
+        matrix[i, :, 4] = _generate_lognormal_monthly_returns(rng, 0.10, 0.60, duration_months)
         
     return matrix
 
@@ -747,6 +760,8 @@ def generate_bootstrapped_data(
     total_years = len(HISTORIC_RETURNS_US_CHF)
     if duration_years <= 0 or num_runs <= 0:
         raise ValueError(f"num_runs ({num_runs}) and duration_years ({duration_years}) must be positive integers.")
+    if seed < 0:
+        raise ValueError(f"seed ({seed}) must be a non-negative integer.")
         
     rng = np.random.default_rng(seed)
     duration_months = duration_years * 12
@@ -760,22 +775,20 @@ def generate_bootstrapped_data(
     
     # Convert annual returns to monthly returns
     safe_base_us = np.maximum(0.0, 1.0 + sampled_annual_us)
-    sampled_monthly_us = safe_base_us**(1/12) - 1.0
+    sampled_monthly_us = safe_base_us**(1.0 / 12.0) - 1.0
     sampled_monthly_us_expanded = np.repeat(sampled_monthly_us, 12, axis=1)
     
     safe_base_non_us = np.maximum(0.0, 1.0 + sampled_annual_non_us)
-    sampled_monthly_non_us = safe_base_non_us**(1/12) - 1.0
+    sampled_monthly_non_us = safe_base_non_us**(1.0 / 12.0) - 1.0
     sampled_monthly_non_us_expanded = np.repeat(sampled_monthly_non_us, 12, axis=1)
     
     return_matrix[:, :, 0] = sampled_monthly_us_expanded
     return_matrix[:, :, 1] = sampled_monthly_non_us_expanded
-    return_matrix[:, :, 2] = 0.01 / 12 # 1% annual nominal
+    return_matrix[:, :, 2] = (1.0 + 0.01)**(1.0 / 12.0) - 1.0 # 1% annual nominal
     
-    # Synthetic Gold & Bitcoin monthly returns per run
-    for i in range(num_runs):
-        rng_asset = np.random.default_rng(seed + i + 1000)
-        return_matrix[i, :, 3] = rng_asset.normal(0.06 / 12, 0.15 / np.sqrt(12), duration_months)
-        return_matrix[i, :, 4] = rng_asset.normal(0.10 / 12, 0.60 / np.sqrt(12), duration_months)
+    # Vectorized synthetic Gold & Bitcoin monthly returns (lognormal with Ito drift correction)
+    return_matrix[:, :, 3] = _generate_lognormal_monthly_returns(rng, 0.06, 0.15, (num_runs, duration_months))
+    return_matrix[:, :, 4] = _generate_lognormal_monthly_returns(rng, 0.10, 0.60, (num_runs, duration_months))
         
     return return_matrix, sampled_inflation
 

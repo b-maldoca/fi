@@ -81,14 +81,14 @@ The application must allow the user to input the following parameters:
 *   **Spending Strategy Selector**: Configurable spending behavior with three selectable models:
     *   **Static Spending**: Base expenses grow strictly with CPI inflation.
     *   **Dynamic Spending (Floor & Ceiling)**: Expenses drop to a configurable floor (e.g. 85% of base) when total net worth is below the starting watermark, and expand to a ceiling (e.g. 115% of base) when above.
-    *   **Vanguard Dynamic Spending**: Annual spending is recalculated each year as a target percentage of total portfolio net worth (e.g. 3.5%), bounded by a maximum annual cut (floor, e.g. -5.0%) and maximum annual raise (ceiling, e.g. +5.0%) relative to prior year's inflation-adjusted spending. The Target Withdrawal Rate (TWR) represents total annual portfolio outflows (net living expenses + estimated taxes) and is bi-directionally synchronized in the UI with Annual Base Expenses.
+    *   **Vanguard Dynamic Spending**: Annual net living expenses are recalculated each year as a target percentage of total portfolio net worth, bounded by a maximum annual cut (floor, e.g. -5.0%) and maximum annual raise (ceiling, e.g. +5.0%) relative to prior year's inflation-adjusted spending. The UI's Target Withdrawal Rate (TWR) represents total annual portfolio outflows (net living expenses + estimated taxes) and is bi-directionally synchronized with Annual Base Expenses using live user tax/yield inputs, while the underlying simulation engine scales net living expenses by `Annual Base Expenses / Starting Net Worth` so taxes are never double-counted.
 *   **Income & Yield**:
     *   Expected **Monthly** Pillar 1 (AHV) Pension from age 65 (CHF).
     *   Expected Annual **Dividend Yield (%)** on equity holdings (US & Non-US Stocks).
 *   **Monte Carlo & Simulation Parameters**:
     *   Nominal Mean Returns (%) and Volatilities (%) for asset classes, plus Inflation Mean (%) and Inflation Volatility (%) for Monte Carlo mode.
     *   Number of Monte Carlo Runs (`mc_num_runs`) and Number of Bootstrapping Runs (`boot_num_runs`).
-    *   **Random Seed** (`random_seed`, default `42`) for reproducible Monte Carlo and Historic Bootstrapping simulation paths.
+    *   **Random Seed** (`random_seed`, default `42`) for reproducible Monte Carlo, Historic Bootstrapping, and synthetic Gold/Bitcoin simulation paths.
 
 
 ---
@@ -131,9 +131,9 @@ The application supports three distinct return simulation engines utilizing empi
     *   **Non-US Equities (USD)**: MSCI EAFE / World ex-US Total Returns proxy (1871–2025).
     *   **USD/CHF Exchange Rates**: Historical monthly FX rates (1913–2019 via *The Poor Swiss*, 2020–2025 via Swiss National Bank SNB).
     *   **Swiss Inflation (CPI)**: Historical Swiss Consumer Price Index (1921–2023 via *The Poor Swiss* / Swiss Federal Statistical Office FSO/BFS, 2024–2025 via FSO).
-*   **Historic Backtesting Mode**: Replays contiguous historical **nominal** return and inflation sequences (1922–2025 in CHF, 104 years). Preserves historical sequence, macroeconomic autocorrelation, and historical Swiss inflation, generating $N = \text{total\_years} - \text{duration\_years} + 1$ overlapping cohorts.
-*   **Historic Bootstrapping (Sampling) Mode**: Jointly samples annual return and inflation blocks from the historical dataset with replacement across $N$ simulation iterations seeded by `random_seed`. Preserves cross-asset and inflation correlations while stress-testing sequence-of-returns risk beyond contiguous records.
-*   **Parametric Monte Carlo Mode**: Stochastic simulation seeded by `random_seed` using user-provided **nominal** asset class means ($\mu$) and standard deviations ($\sigma$) via lognormal returns (with Ito drift correction) and normally distributed annual inflation.
+*   **Historic Backtesting Mode**: Replays contiguous historical **nominal** return and inflation sequences (1922–2025 in CHF, 104 years). Preserves historical sequence, macroeconomic autocorrelation, and historical Swiss inflation, generating $N = \text{total\_years} - \text{duration\_years} + 1$ overlapping cohorts, paired with exact 1% geometric APY for CHF Cash and Ito-corrected lognormal synthetic Gold/Bitcoin returns.
+*   **Historic Bootstrapping (Sampling) Mode**: Jointly samples annual return and inflation blocks from the historical dataset with replacement across $N$ simulation iterations seeded by `random_seed`, paired with exact 1% geometric APY for CHF Cash and vectorized Ito-corrected lognormal synthetic Gold/Bitcoin returns. Preserves cross-asset and inflation correlations while stress-testing sequence-of-returns risk beyond contiguous records.
+*   **Parametric Monte Carlo Mode**: Stochastic simulation seeded by `random_seed` using user-provided **nominal** asset class means ($\mu$) and standard deviations ($\sigma$) via lognormal returns (with Ito drift correction) and an independent normally distributed annual inflation stream (`seed + 10_000`).
 *   Model inflation in CHF explicitly by increasing base retirement expenses and AHV pension payouts annually. This separates nominal asset growth from the rising cost of living.
 
 

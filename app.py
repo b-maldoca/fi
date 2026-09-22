@@ -1,27 +1,32 @@
-import sys
-import os
-import streamlit as st
-import numpy as np
-import plotly.graph_objects as go
-
 import importlib
+import os
+import sys
+
+import numpy as np
+import pandas as pd
+import plotly.graph_objects as go
+import streamlit as st
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), 'src')))
 
-import simulation_engine
 import historic_returns
+import simulation_engine
 
 importlib.reload(simulation_engine)
 importlib.reload(historic_returns)
 
-from simulation_engine import SimConfig, run_simulation, estimate_year_0_taxes
 from historic_returns import (
-    get_historic_return_matrix,
-    get_historic_inflation_matrix,
+    HISTORIC_YEARS,
     generate_bootstrapped_data,
-    generate_bootstrapped_returns,
-    generate_bootstrapped_inflation,
-    HISTORIC_YEARS
+    get_historic_inflation_matrix,
+    get_historic_return_matrix,
+)
+from simulation_engine import (
+    SimConfig,
+    estimate_year_0_taxes,
+    generate_monte_carlo_inflation,
+    generate_monte_carlo_returns,
+    run_simulation,
 )
 
 st.set_page_config(page_title="Zurich Early Retirement Simulator", layout="wide")
@@ -107,7 +112,6 @@ success_pct = st.sidebar.number_input(
     help="The percentage of inflation-adjusted starting net worth you want to preserve at the end of the simulation. 0.0% means you just want to avoid going broke (survival)."
 )
 
-
 # 2. Initial Assets
 st.sidebar.subheader("Initial Assets (CHF)")
 initial_liquid_wealth = st.sidebar.number_input("Taxable Liquid Wealth (CHF)", value=2_450_000, step=50_000, help="Your easily accessible taxable investments (stocks, bonds, cash). Do not include your primary residence.")
@@ -160,16 +164,21 @@ spending_strategy = st.sidebar.selectbox(
 
 # Bi-directional synchronization for Vanguard Dynamic Spending
 total_start_nw = initial_liquid_wealth + initial_pillar_2 + sum(pillar_3a_accounts)
+cantonal_multiplier = 0.95  # Zurich Cantonal Steuerfuss for 2026
+
 
 def get_year0_taxes(exp: float) -> float:
     try:
+        live_div_yield = float(st.session_state.get("dividend_yield_pct", 1.5)) / 100.0
+        live_ahv = float(st.session_state.get("monthly_ahv_input", 2000))
+        live_muni_mult = float(st.session_state.get("municipal_multiplier_pct", 119.0)) / 100.0
         temp_config = SimConfig(
             num_runs=1,
             duration_years=1,
             inflation_mean=0.025,
             inflation_std=0.01,
-            start_age=start_age,
-            dividend_yield=0.015,
+            start_age=int(start_age),
+            dividend_yield=live_div_yield,
             initial_liquid_wealth=initial_liquid_wealth,
             initial_pillar_2=initial_pillar_2,
             initial_pillar_3a_accounts=pillar_3a_accounts,
@@ -181,23 +190,41 @@ def get_year0_taxes(exp: float) -> float:
             rebalance_strategy='Never',
             rebalance_threshold=0.0,
             annual_base_expenses=exp,
-            monthly_ahv_pension=2000,
-            cantonal_multiplier=0.95,
-            municipal_multiplier=1.19
+            monthly_ahv_pension=live_ahv,
+            cantonal_multiplier=cantonal_multiplier,
+            municipal_multiplier=live_muni_mult
         )
         return estimate_year_0_taxes(temp_config)
     except Exception:
         return 0.0
 
+
 if 'annual_expenses' not in st.session_state:
     st.session_state['annual_expenses'] = 85_000
 
-if 'vanguard_target_rate_pct' not in st.session_state:
+_vanguard_sync_sig = (
+    int(start_age),
+    float(initial_liquid_wealth),
+    float(initial_pillar_2),
+    tuple(float(x) for x in pillar_3a_accounts),
+    round(float(alloc_us), 2),
+    round(float(alloc_non_us), 2),
+    round(float(alloc_cash), 2),
+    round(float(alloc_gold), 2),
+    round(float(alloc_btc), 2),
+    round(float(st.session_state.get("dividend_yield_pct", 1.5)), 2),
+    round(float(st.session_state.get("monthly_ahv_input", 2000)), 2),
+    round(float(st.session_state.get("municipal_multiplier_pct", 119.0)), 2),
+)
+
+if 'vanguard_target_rate_pct' not in st.session_state or st.session_state.get('_last_vanguard_sync_sig') != _vanguard_sync_sig:
+    st.session_state['_last_vanguard_sync_sig'] = _vanguard_sync_sig
     if total_start_nw > 0:
         est_tax = get_year0_taxes(float(st.session_state['annual_expenses']))
         st.session_state['vanguard_target_rate_pct'] = round(((st.session_state['annual_expenses'] + est_tax) / total_start_nw) * 100.0, 2)
     else:
         st.session_state['vanguard_target_rate_pct'] = 3.5
+
 
 def on_expenses_change():
     nw = total_start_nw
@@ -206,6 +233,7 @@ def on_expenses_change():
         est_tax = get_year0_taxes(exp)
         total_outflow = exp + est_tax
         st.session_state['vanguard_target_rate_pct'] = round((total_outflow / nw) * 100.0, 2)
+
 
 def on_twr_change():
     nw = total_start_nw
@@ -219,6 +247,7 @@ def on_twr_change():
             living_exp = max(0.0, target_total_outflow - est_tax)
         st.session_state['annual_expenses'] = int(round(living_exp, -2))
 
+
 annual_expenses = float(st.sidebar.number_input(
     "Annual Base Expenses (CHF)",
     key="annual_expenses",
@@ -230,7 +259,7 @@ annual_expenses = float(st.sidebar.number_input(
 
 dynamic_expense_floor_pct = 100.0
 dynamic_expense_ceiling_pct = 100.0
-vanguard_target_rate = st.session_state['vanguard_target_rate_pct'] / 100.0
+vanguard_target_rate = (annual_expenses / total_start_nw) if total_start_nw > 0 else (st.session_state['vanguard_target_rate_pct'] / 100.0)
 vanguard_floor_pct = 0.050
 vanguard_ceiling_pct = 0.050
 
@@ -239,471 +268,470 @@ if spending_strategy == "Dynamic (Floor & Ceiling)":
     dynamic_expense_ceiling_pct = st.sidebar.number_input("Expanded Expense Ceiling (%)", value=115.0, step=1.0, format="%.1f", help="The percentage of your base expenses you will spend when your net worth is above the watermark.")
 elif spending_strategy == "Vanguard Dynamic":
     twr_pct = st.sidebar.number_input(
-        "Target Withdrawal Rate (%)", 
+        "Target Withdrawal Rate (%)",
         key="vanguard_target_rate_pct",
-        step=0.1, 
-        format="%.2f", 
+        step=0.1,
+        format="%.2f",
         on_change=on_twr_change,
         help="Target annual total withdrawal rate (covering both net living expenses and estimated taxes) as a % of total portfolio net worth. Bi-directionally synchronized with Annual Base Expenses (CHF)."
     )
-    vanguard_target_rate = twr_pct / 100.0
+    # Convert tax-inclusive UI withdrawal rate into net living expense rate of net worth for SimConfig
+    vanguard_target_rate = (annual_expenses / total_start_nw) if total_start_nw > 0 else (twr_pct / 100.0)
     vanguard_floor_pct = st.sidebar.number_input("Max Annual Cut / Floor (%)", value=5.0, step=0.5, format="%.1f", help="Maximum allowable reduction in spending compared to prior year's inflation-adjusted spending (Vanguard default: 5.0%).") / 100.0
     vanguard_ceiling_pct = st.sidebar.number_input("Max Annual Raise / Ceiling (%)", value=5.0, step=0.5, format="%.1f", help="Maximum allowable increase in spending compared to prior year's inflation-adjusted spending (Vanguard default: 5.0%).") / 100.0
 
 st.sidebar.subheader("Income & Yield")
-monthly_ahv = st.sidebar.number_input("Expected Monthly AHV Pension from age 65 (CHF)", value=2000, step=100, help="The monthly AHV pension you expect to receive starting at age 65 (in today's CHF, adjusted annually for CPI inflation in the simulation).")
-dividend_yield = st.sidebar.number_input("Dividend Yield (%)", value=1.5, step=0.1, format="%.1f", help="Expected annual dividend yield of the portfolio.") / 100.0
+monthly_ahv = st.sidebar.number_input("Expected Monthly AHV Pension from age 65 (CHF)", value=2000, step=100, key="monthly_ahv_input", help="The monthly AHV pension you expect to receive starting at age 65 (in today's CHF, adjusted annually for CPI inflation in the simulation).")
+dividend_yield = st.sidebar.number_input("Dividend Yield (%)", value=1.5, step=0.1, format="%.1f", key="dividend_yield_pct", help="Expected annual dividend yield of the portfolio.") / 100.0
 
 st.sidebar.subheader("Monte Carlo Parameters")
 st.sidebar.caption("Note: Returns and inflation must be Nominal (unadjusted for inflation) and in CHF terms. E.g., historic US Stock returns are ~9.5% in USD, but ~7.0% in CHF due to currency drag.")
 inflation_mean = st.sidebar.number_input("Inflation Mean (%)", value=2.5, step=0.1, format="%.1f", help="Expected average annual inflation rate for Monte Carlo.") / 100.0
-inflation_std = st.sidebar.number_input("Inflation Volatility (%)", value=1.0, step=0.1, format="%.1f", help="Expected volatility of inflation for Monte Carlo.") / 100.0
+inflation_std = st.sidebar.number_input("Inflation Volatility (%)", value=1.0, min_value=0.0, step=0.1, format="%.1f", help="Expected volatility of inflation for Monte Carlo.") / 100.0
 ret_us = st.sidebar.number_input("US Stocks Nominal Mean (%)", value=7.0, step=0.1, format="%.1f", help="Expected nominal mean return for US Stocks in CHF. Note: Historic S&P500 returns are ~9.5% in USD, but ~7.0% in CHF due to the appreciating Franc.") / 100.0
 ret_non_us = st.sidebar.number_input("Non-US Stocks Nominal Mean (%)", value=6.0, step=0.1, format="%.1f", help="Expected nominal mean return for Non-US Stocks in CHF terms.") / 100.0
 ret_cash = st.sidebar.number_input("CHF Cash Nominal Mean (%)", value=1.0, step=0.1, format="%.1f", help="Expected nominal mean return for CHF Cash.") / 100.0
 ret_gold = st.sidebar.number_input("Gold Nominal Mean (%)", value=6.0, step=0.1, format="%.1f", help="Expected nominal mean return for Gold in CHF terms.") / 100.0
 ret_btc = st.sidebar.number_input("Bitcoin Nominal Mean (%)", value=10.0, step=0.1, format="%.1f", help="Expected nominal mean return for Bitcoin in CHF terms.") / 100.0
 
-vol_eq = st.sidebar.number_input("Equities Volatility (%)", value=15.0, step=0.1, format="%.1f", help="Expected volatility for Stocks.") / 100.0
-vol_gold = st.sidebar.number_input("Gold Volatility (%)", value=15.0, step=0.1, format="%.1f", help="Expected volatility for Gold.") / 100.0
-vol_btc = st.sidebar.number_input("Bitcoin Volatility (%)", value=60.0, step=0.1, format="%.1f", help="Expected volatility for Bitcoin.") / 100.0
+vol_eq = st.sidebar.number_input("Equities Volatility (%)", value=15.0, min_value=0.0, step=0.1, format="%.1f", help="Expected volatility for Stocks.") / 100.0
+vol_gold = st.sidebar.number_input("Gold Volatility (%)", value=15.0, min_value=0.0, step=0.1, format="%.1f", help="Expected volatility for Gold.") / 100.0
+vol_btc = st.sidebar.number_input("Bitcoin Volatility (%)", value=60.0, min_value=0.0, step=0.1, format="%.1f", help="Expected volatility for Bitcoin.") / 100.0
 
 mc_num_runs = int(st.sidebar.number_input("Number of Monte Carlo Runs", value=1000, min_value=100, max_value=10000, step=100, help="How many distinct future paths to simulate."))
 boot_num_runs = int(st.sidebar.number_input("Number of Bootstrapping Runs", value=1000, min_value=100, max_value=10000, step=100, help="How many empirical sampling paths (with replacement) to simulate."))
-random_seed = int(st.sidebar.number_input("Random Seed", value=42, min_value=0, step=1, help="Random seed for reproducible Monte Carlo and Bootstrapping simulation paths."))
+random_seed = int(st.sidebar.number_input("Random Seed", value=42, min_value=0, step=1, help="Random seed for reproducible Monte Carlo, Bootstrapping, and synthetic asset simulation paths."))
 
 try:
-    dummy = get_historic_return_matrix(int(duration))
+    dummy = get_historic_return_matrix(int(duration), seed=random_seed)
     hist_num_runs = dummy.shape[0]
     st.sidebar.info(f"Using {len(HISTORIC_YEARS)}-year historic Swiss market data ({HISTORIC_YEARS[0]}–{HISTORIC_YEARS[-1]}). Available contiguous cohorts: {hist_num_runs}")
 except ValueError as e:
     st.sidebar.error(str(e))
     hist_num_runs = 0
 
-
-
 # 6. Tax Location
 st.sidebar.subheader("Zurich Tax Location")
-cantonal_multiplier = 0.95 # Zurich Cantonal Steuerfuss for 2026
-municipal_multiplier = st.sidebar.number_input("Municipal Multiplier (Steuerfuss, %)", value=119.0, step=0.1, format="%.1f", help="Your municipal tax multiplier (Steuerfuss) in Zurich (e.g. 119% for City of Zurich).") / 100.0
+municipal_multiplier = st.sidebar.number_input("Municipal Multiplier (Steuerfuss, %)", value=119.0, step=0.1, format="%.1f", key="municipal_multiplier_pct", help="Your municipal tax multiplier (Steuerfuss) in Zurich (e.g. 119% for City of Zurich).") / 100.0
+
+if hist_num_runs == 0:
+    st.error("Cannot run simulation. Duration is too long for the available historic data.")
+    st.stop()
 
 
-
-if True:
-    if hist_num_runs == 0:
-        st.error("Cannot run simulation. Duration is too long for the available historic data.")
-        st.stop()
-
-    def create_config(num_runs):
-        return SimConfig(
-            num_runs=num_runs,
-            duration_years=int(duration),
-            inflation_mean=inflation_mean,
-            inflation_std=inflation_std,
-            start_age=int(start_age),
-            dividend_yield=dividend_yield,
-            spending_strategy=spending_strategy,
-            enable_dynamic_expenses=(spending_strategy == "Dynamic (Floor & Ceiling)"),
-            dynamic_expense_floor_pct=dynamic_expense_floor_pct / 100.0,
-            dynamic_expense_ceiling_pct=dynamic_expense_ceiling_pct / 100.0,
-            vanguard_target_rate=vanguard_target_rate,
-            vanguard_floor_pct=vanguard_floor_pct,
-            vanguard_ceiling_pct=vanguard_ceiling_pct,
-            initial_liquid_wealth=initial_liquid_wealth,
-            initial_pillar_2=initial_pillar_2,
-            initial_pillar_3a_accounts=pillar_3a_accounts,
-            alloc_us_stocks=alloc_us / 100.0,
-            alloc_non_us_stocks=alloc_non_us / 100.0,
-            alloc_chf_cash=alloc_cash / 100.0,
-            alloc_gold=alloc_gold / 100.0,
-            alloc_bitcoin=alloc_btc / 100.0,
-            rebalance_strategy=rebalance_strategy,
-            rebalance_threshold=rebalance_threshold,
-            enable_smart_selling=enable_smart_selling,
-            annual_base_expenses=annual_expenses,
-            monthly_ahv_pension=monthly_ahv,
-            cantonal_multiplier=cantonal_multiplier,
-            municipal_multiplier=municipal_multiplier,
-            tent_duration_years=tent_duration_years
-        )
-    
-    config_mc = create_config(mc_num_runs)
-    config_boot = create_config(boot_num_runs)
-    config_hist = create_config(hist_num_runs)
-    
-    from simulation_engine import generate_monte_carlo_returns
-    rng = np.random.default_rng(random_seed)
-    
-    mc_return_matrix = generate_monte_carlo_returns(
-        num_runs=config_mc.num_runs,
-        duration_years=config_mc.duration_years,
-        ret_us=ret_us,
-        ret_non_us=ret_non_us,
-        ret_cash=ret_cash,
-        ret_gold=ret_gold,
-        ret_btc=ret_btc,
-        vol_eq=vol_eq,
-        vol_gold=vol_gold,
-        vol_btc=vol_btc,
+def create_config(num_runs: int) -> SimConfig:
+    return SimConfig(
+        num_runs=num_runs,
+        duration_years=int(duration),
+        inflation_mean=inflation_mean,
+        inflation_std=inflation_std,
+        start_age=int(start_age),
+        dividend_yield=dividend_yield,
+        spending_strategy=spending_strategy,
+        enable_dynamic_expenses=(spending_strategy == "Dynamic (Floor & Ceiling)"),
+        dynamic_expense_floor_pct=dynamic_expense_floor_pct / 100.0,
+        dynamic_expense_ceiling_pct=dynamic_expense_ceiling_pct / 100.0,
+        vanguard_target_rate=vanguard_target_rate,
+        vanguard_floor_pct=vanguard_floor_pct,
+        vanguard_ceiling_pct=vanguard_ceiling_pct,
+        initial_liquid_wealth=initial_liquid_wealth,
+        initial_pillar_2=initial_pillar_2,
+        initial_pillar_3a_accounts=pillar_3a_accounts,
+        alloc_us_stocks=alloc_us / 100.0,
+        alloc_non_us_stocks=alloc_non_us / 100.0,
+        alloc_chf_cash=alloc_cash / 100.0,
+        alloc_gold=alloc_gold / 100.0,
+        alloc_bitcoin=alloc_btc / 100.0,
+        rebalance_strategy=rebalance_strategy,
+        rebalance_threshold=rebalance_threshold,
+        enable_smart_selling=enable_smart_selling,
+        annual_base_expenses=annual_expenses,
+        monthly_ahv_pension=monthly_ahv,
+        cantonal_multiplier=cantonal_multiplier,
+        municipal_multiplier=municipal_multiplier,
+        tent_duration_years=tent_duration_years,
         seed=random_seed
     )
-    mc_inflation_matrix = rng.normal(inflation_mean, inflation_std, (config_mc.num_runs, config_mc.duration_years))
-    
-    boot_return_matrix, boot_inflation_matrix = generate_bootstrapped_data(
-        num_runs=config_boot.num_runs,
-        duration_years=config_boot.duration_years,
-        seed=random_seed
+
+
+config_mc = create_config(mc_num_runs)
+config_boot = create_config(boot_num_runs)
+config_hist = create_config(hist_num_runs)
+
+mc_return_matrix = generate_monte_carlo_returns(
+    num_runs=config_mc.num_runs,
+    duration_years=config_mc.duration_years,
+    ret_us=ret_us,
+    ret_non_us=ret_non_us,
+    ret_cash=ret_cash,
+    ret_gold=ret_gold,
+    ret_btc=ret_btc,
+    vol_eq=vol_eq,
+    vol_gold=vol_gold,
+    vol_btc=vol_btc,
+    seed=random_seed
+)
+mc_inflation_matrix = generate_monte_carlo_inflation(
+    num_runs=config_mc.num_runs,
+    duration_years=config_mc.duration_years,
+    inflation_mean=inflation_mean,
+    inflation_std=inflation_std,
+    seed=random_seed
+)
+
+boot_return_matrix, boot_inflation_matrix = generate_bootstrapped_data(
+    num_runs=config_boot.num_runs,
+    duration_years=config_boot.duration_years,
+    seed=random_seed
+)
+
+hist_return_matrix = get_historic_return_matrix(config_hist.duration_years, seed=random_seed)
+hist_inflation_matrix = get_historic_inflation_matrix(config_hist.duration_years)
+
+with st.spinner('Running Monte Carlo simulations...'):
+    history_mc = run_simulation(config_mc, mc_return_matrix, mc_inflation_matrix)
+with st.spinner('Running Bootstrapping simulations...'):
+    history_boot = run_simulation(config_boot, boot_return_matrix, boot_inflation_matrix)
+with st.spinner('Running Historic Backtesting simulations...'):
+    history_hist = run_simulation(config_hist, hist_return_matrix, hist_inflation_matrix)
+
+
+def render_results(history, config, num_runs, title, inflation_matrix, success_pct):
+    header_tooltips = {
+        "Historic Backtesting": "Replays exact contiguous historical sequences (e.g. 1928–1978, 1929–1979) from ~100 years of historical Swiss-adjusted market data. This preserves real-world macroeconomic sequence, asset correlation, and market cycle autocorrelation.",
+        "Historic Bootstrapping": "Creates thousands of distinct retirement scenarios by randomly drawing annual return and inflation instances with replacement from 100 years of historical data. This stress-tests sequence-of-returns risk across synthetic pasts while preserving empirical return distribution characteristics.",
+        "Monte Carlo": "Generates thousands of stochastic future paths using parametric lognormal distributions based on user-configured nominal means, standard deviations, and inflation parameters."
+    }
+    st.header(title, help=header_tooltips.get(title))
+    net_worth_history = history['net_worth']
+
+    final_net_worth = net_worth_history[-1, :]
+    initial_nw = history['initial_net_worth']
+
+    safe_inflation_steps = np.maximum(0.01, 1.0 + inflation_matrix)
+    run_final_inflation_factor = np.prod(safe_inflation_steps, axis=1)
+    run_inf_adj_start_nw = initial_nw * run_final_inflation_factor
+    target_ending_nw = (success_pct / 100.0) * run_inf_adj_start_nw
+    success_mask = final_net_worth > target_ending_nw
+
+    if success_pct == 0.0:
+        tooltip_text = "Success is defined as ending net worth > 0 CHF (not going broke)."
+    else:
+        tooltip_text = f"Success is defined as ending net worth > {success_pct}% of the inflation-adjusted starting net worth."
+
+    success_rate = np.mean(success_mask) * 100
+    median_final = np.median(final_net_worth)
+
+    final_nw_inf_adj = final_net_worth / run_final_inflation_factor
+    median_final_inf_adj = np.median(final_nw_inf_adj)
+
+    cum_inflation = np.cumprod(safe_inflation_steps, axis=1)
+    median_cum_inflation = np.median(cum_inflation, axis=0)
+    inf_adj_start_nw_trajectory = initial_nw * median_cum_inflation
+    st.markdown(f"**Nominal Starting NW:** {initial_nw:,.0f} CHF")
+
+    rich_threshold = initial_nw * median_cum_inflation[-1] * 3.0
+
+    if median_final <= 0:
+        tldr_status = "🛑 **BROKE**"
+    elif median_final >= rich_threshold:
+        tldr_status = "🚀 **RICH**"
+    else:
+        tldr_status = "🪦 **DEAD**"
+
+    st.markdown(f"### {tldr_status}")
+
+    # Row 1: Success Rate & Watermark Metric
+    col_r1_1, col_r1_2 = st.columns(2)
+    col_r1_1.metric("Probability of Success", f"{success_rate:.1f}%", help=tooltip_text)
+
+    avg_years_below_watermark = np.mean(np.sum(history['below_watermark'], axis=0))
+    pct_years_below_watermark = (avg_years_below_watermark / config.duration_years) * 100.0
+    col_r1_2.metric("Avg Years Below Start NW", f"{avg_years_below_watermark:.1f} ({pct_years_below_watermark:.1f}%)", help="Average number of years per simulation where the portfolio drops below the inflation-adjusted starting net worth. If the Dynamic Expense Floor feature is enabled, this is exactly equal to the number of times the expenses are reduced.")
+
+    total_outflows_per_run = np.sum(history['expenses_paid'] + history['taxes_paid'], axis=0)
+    median_total_withdrawals = np.median(total_outflows_per_run)
+
+    total_outflows_real_per_run = np.sum((history['expenses_paid'] + history['taxes_paid']) / cum_inflation.T, axis=0)
+    median_total_withdrawals_real = np.median(total_outflows_real_per_run)
+
+    # Pre-65 (<65) vs Post-65 (>=65) breakdown
+    sim_ages = np.arange(config.start_age, config.start_age + config.duration_years)
+    pre_65_mask = sim_ages < 65
+    post_65_mask = sim_ages >= 65
+
+    if np.any(pre_65_mask):
+        pre_65_outflows = np.sum(history['expenses_paid'][pre_65_mask, :] + history['taxes_paid'][pre_65_mask, :], axis=0)
+        median_pre_65_nominal = np.median(pre_65_outflows)
+        pre_65_outflows_real = np.sum((history['expenses_paid'][pre_65_mask, :] + history['taxes_paid'][pre_65_mask, :]) / cum_inflation.T[pre_65_mask, :], axis=0)
+        median_pre_65_real = np.median(pre_65_outflows_real)
+    else:
+        median_pre_65_nominal = 0.0
+        median_pre_65_real = 0.0
+
+    if np.any(post_65_mask):
+        post_65_outflows = np.sum(history['expenses_paid'][post_65_mask, :] + history['taxes_paid'][post_65_mask, :], axis=0)
+        median_post_65_nominal = np.median(post_65_outflows)
+        post_65_outflows_real = np.sum((history['expenses_paid'][post_65_mask, :] + history['taxes_paid'][post_65_mask, :]) / cum_inflation.T[post_65_mask, :], axis=0)
+        median_post_65_real = np.median(post_65_outflows_real)
+    else:
+        median_post_65_nominal = 0.0
+        median_post_65_real = 0.0
+
+    # Row 2: Median Ending NW (Real vs Nominal)
+    col_r2_1, col_r2_2 = st.columns(2)
+    col_r2_1.metric("Median Ending NW (Real)", f"{median_final_inf_adj:,.0f} CHF")
+    col_r2_2.metric("Median Ending NW (Nominal)", f"{median_final:,.0f} CHF")
+
+    # Row 3: Median Total Cumulative Withdrawals (Real vs Nominal)
+    col_r3_1, col_r3_2 = st.columns(2)
+    col_r3_1.metric("Median Total Withdrawals (Real)", f"{median_total_withdrawals_real:,.0f} CHF", help="Total cumulative real purchasing power spent on living expenses and taxes over the full simulation period.")
+    col_r3_2.metric("Median Total Withdrawals (Nominal)", f"{median_total_withdrawals:,.0f} CHF", help="Total cumulative nominal cash spent on living expenses and taxes over the full simulation period.")
+
+    # Row 4: Pre-AHV (<65) vs Post-65 (>=65) Outflows
+    col_r4_1, col_r4_2 = st.columns(2)
+    pre_65_years_cnt = int(np.sum(pre_65_mask))
+    post_65_years_cnt = int(np.sum(post_65_mask))
+    col_r4_1.metric(
+        f"Pre-AHV Outflow (< Age 65, {pre_65_years_cnt}y)",
+        f"{median_pre_65_real:,.0f} CHF",
+        help=f"Median total money required to cover living expenses and taxes during the early retirement gap before age 65 ({pre_65_years_cnt} years). Nominal: {median_pre_65_nominal:,.0f} CHF."
     )
-    
-    hist_return_matrix = get_historic_return_matrix(config_hist.duration_years)
-    hist_inflation_matrix = get_historic_inflation_matrix(config_hist.duration_years)
-    
-    with st.spinner('Running Monte Carlo simulations...'):
-        history_mc = run_simulation(config_mc, mc_return_matrix, mc_inflation_matrix)
-    with st.spinner('Running Bootstrapping simulations...'):
-        history_boot = run_simulation(config_boot, boot_return_matrix, boot_inflation_matrix)
-    with st.spinner('Running Historic Backtesting simulations...'):
-        history_hist = run_simulation(config_hist, hist_return_matrix, hist_inflation_matrix)
-        
-    def render_results(history, config, num_runs, title, inflation_matrix, success_pct):
-        header_tooltips = {
-            "Historic Backtesting": "Replays exact contiguous historical sequences (e.g. 1928–1978, 1929–1979) from ~100 years of historical Swiss-adjusted market data. This preserves real-world macroeconomic sequence, asset correlation, and market cycle autocorrelation.",
-            "Historic Bootstrapping": "Creates thousands of distinct retirement scenarios by randomly drawing annual return and inflation instances with replacement from 100 years of historical data. This stress-tests sequence-of-returns risk across synthetic pasts while preserving empirical return distribution characteristics.",
-            "Monte Carlo": "Generates thousands of stochastic future paths using parametric lognormal distributions based on user-configured nominal means, standard deviations, and inflation parameters."
-        }
-        st.header(title, help=header_tooltips.get(title))
-        net_worth_history = history['net_worth']
-        
-        final_net_worth = net_worth_history[-1, :]
-        initial_nw = history['initial_net_worth']
-        
-        run_final_inflation_factor = np.prod(1 + inflation_matrix, axis=1)
-        run_inf_adj_start_nw = initial_nw * run_final_inflation_factor
-        target_ending_nw = (success_pct / 100.0) * run_inf_adj_start_nw
-        success_mask = final_net_worth > target_ending_nw
-        
-        if success_pct == 0.0:
-            tooltip_text = "Success is defined as ending net worth > 0 CHF (not going broke)."
+    col_r4_2.metric(
+        f"Post-65 Outflow (Age 65+, {post_65_years_cnt}y)",
+        f"{median_post_65_real:,.0f} CHF",
+        help=f"Median total money required to cover living expenses and taxes from age 65 through end-of-life ({post_65_years_cnt} years). Nominal: {median_post_65_nominal:,.0f} CHF."
+    )
+
+    # Plotly Chart
+    years = np.arange(config.start_age + 1, config.start_age + config.duration_years + 1)
+    fig = go.Figure()
+
+    percentiles = [5, 25, 50, 75, 95]
+    colors = ['crimson', 'orange', 'forestgreen', 'royalblue', 'purple']
+
+    simulation_years = np.arange(1, config.duration_years + 1)
+
+    is_historic_backtest = "Historic Backtesting" in title or "Historic Returns" in title
+    max_traces_to_plot = int(num_runs) if is_historic_backtest else min(100, int(num_runs))
+    for i in range(max_traces_to_plot):
+        if is_historic_backtest:
+            start_year = int(HISTORIC_YEARS[i])
+            end_year = start_year + config.duration_years - 1
+            trace_name = f"Cohort: {start_year} - {end_year}"
+            custom_text = [f"Calendar Year: {start_year + y - 1}" for y in simulation_years]
         else:
-            tooltip_text = f"Success is defined as ending net worth > {success_pct}% of the inflation-adjusted starting net worth."
-            
-        success_rate = np.mean(success_mask) * 100
-        median_final = np.median(final_net_worth)
-        
-        final_nw_inf_adj = final_net_worth / run_final_inflation_factor
-        median_final_inf_adj = np.median(final_nw_inf_adj)
-        
-        cum_inflation = np.cumprod(1 + inflation_matrix, axis=1)
-        median_cum_inflation = np.median(cum_inflation, axis=0)
-        inf_adj_start_nw_trajectory = initial_nw * median_cum_inflation
-        st.markdown(f"**Nominal Starting NW:** {initial_nw:,.0f} CHF")
-        
-        rich_threshold = initial_nw * median_cum_inflation[-1] * 3.0
-        
-        if median_final <= 0:
-            tldr_status = "🛑 **BROKE**"
-        elif median_final >= rich_threshold:
-            tldr_status = "🚀 **RICH**"
-        else:
-            tldr_status = "🪦 **DEAD**"
-            
-        st.markdown(f"### {tldr_status}")
-        
-        # Row 1: Success Rate & Watermark Metric
-        col_r1_1, col_r1_2 = st.columns(2)
-        col_r1_1.metric("Probability of Success", f"{success_rate:.1f}%", help=tooltip_text)
-        
-        avg_years_below_watermark = np.mean(np.sum(history['below_watermark'], axis=0))
-        pct_years_below_watermark = (avg_years_below_watermark / config.duration_years) * 100.0
-        col_r1_2.metric("Avg Years Below Start NW", f"{avg_years_below_watermark:.1f} ({pct_years_below_watermark:.1f}%)", help="Average number of years per simulation where the portfolio drops below the inflation-adjusted starting net worth. If the Dynamic Expense Floor feature is enabled, this is exactly equal to the number of times the expenses are reduced.")
-        
-        total_outflows_per_run = np.sum(history['expenses_paid'] + history['taxes_paid'], axis=0)
-        median_total_withdrawals = np.median(total_outflows_per_run)
-        
-        total_outflows_real_per_run = np.sum((history['expenses_paid'] + history['taxes_paid']) / cum_inflation.T, axis=0)
-        median_total_withdrawals_real = np.median(total_outflows_real_per_run)
+            trace_name = f"Run {i+1}"
+            custom_text = [f"Year N: {y}" for y in simulation_years]
 
-        # Pre-65 (<65) vs Post-65 (>=65) breakdown
-        # Year index y in 0..duration_years-1 represents the retirement year where age is start_age + y
-        sim_ages = np.arange(config.start_age, config.start_age + config.duration_years)
-        pre_65_mask = sim_ages < 65
-        post_65_mask = sim_ages >= 65
-
-        if np.any(pre_65_mask):
-            pre_65_outflows = np.sum(history['expenses_paid'][pre_65_mask, :] + history['taxes_paid'][pre_65_mask, :], axis=0)
-            median_pre_65_nominal = np.median(pre_65_outflows)
-            pre_65_outflows_real = np.sum((history['expenses_paid'][pre_65_mask, :] + history['taxes_paid'][pre_65_mask, :]) / cum_inflation.T[pre_65_mask, :], axis=0)
-            median_pre_65_real = np.median(pre_65_outflows_real)
-        else:
-            median_pre_65_nominal = 0.0
-            median_pre_65_real = 0.0
-
-        if np.any(post_65_mask):
-            post_65_outflows = np.sum(history['expenses_paid'][post_65_mask, :] + history['taxes_paid'][post_65_mask, :], axis=0)
-            median_post_65_nominal = np.median(post_65_outflows)
-            post_65_outflows_real = np.sum((history['expenses_paid'][post_65_mask, :] + history['taxes_paid'][post_65_mask, :]) / cum_inflation.T[post_65_mask, :], axis=0)
-            median_post_65_real = np.median(post_65_outflows_real)
-        else:
-            median_post_65_nominal = 0.0
-            median_post_65_real = 0.0
-        
-        # Row 2: Median Ending NW (Real vs Nominal)
-        col_r2_1, col_r2_2 = st.columns(2)
-        col_r2_1.metric("Median Ending NW (Real)", f"{median_final_inf_adj:,.0f} CHF")
-        col_r2_2.metric("Median Ending NW (Nominal)", f"{median_final:,.0f} CHF")
-
-        # Row 3: Median Total Cumulative Withdrawals (Real vs Nominal)
-        col_r3_1, col_r3_2 = st.columns(2)
-        col_r3_1.metric("Median Total Withdrawals (Real)", f"{median_total_withdrawals_real:,.0f} CHF", help="Total cumulative real purchasing power spent on living expenses and taxes over the full simulation period.")
-        col_r3_2.metric("Median Total Withdrawals (Nominal)", f"{median_total_withdrawals:,.0f} CHF", help="Total cumulative nominal cash spent on living expenses and taxes over the full simulation period.")
-
-        # Row 4: Pre-AHV (<65) vs Post-65 (>=65) Outflows
-        col_r4_1, col_r4_2 = st.columns(2)
-        pre_65_years_cnt = int(np.sum(pre_65_mask))
-        post_65_years_cnt = int(np.sum(post_65_mask))
-        col_r4_1.metric(
-            f"Pre-AHV Outflow (< Age 65, {pre_65_years_cnt}y)", 
-            f"{median_pre_65_real:,.0f} CHF", 
-            help=f"Median total money required to cover living expenses and taxes during the early retirement gap before age 65 ({pre_65_years_cnt} years). Nominal: {median_pre_65_nominal:,.0f} CHF."
-        )
-        col_r4_2.metric(
-            f"Post-65 Outflow (Age 65+, {post_65_years_cnt}y)", 
-            f"{median_post_65_real:,.0f} CHF", 
-            help=f"Median total money required to cover living expenses and taxes from age 65 through end-of-life ({post_65_years_cnt} years). Nominal: {median_post_65_nominal:,.0f} CHF."
-        )
-        
-        # Plotly Chart
-        years = np.arange(config.start_age + 1, config.start_age + config.duration_years + 1)
-        fig = go.Figure()
-        
-        percentiles = [5, 25, 50, 75, 95]
-        colors = ['crimson', 'orange', 'forestgreen', 'royalblue', 'purple']
-        
-        simulation_years = np.arange(1, config.duration_years + 1)
-        
-        is_historic_backtest = "Historic Backtesting" in title or "Historic Returns" in title
-        max_traces_to_plot = int(num_runs) if is_historic_backtest else min(100, int(num_runs))
-        for i in range(max_traces_to_plot):
-            if is_historic_backtest:
-                start_year = int(HISTORIC_YEARS[i])
-                end_year = start_year + config.duration_years - 1
-                trace_name = f"Cohort: {start_year} - {end_year}"
-                custom_text = [f"Calendar Year: {start_year + y - 1}" for y in simulation_years]
-            else:
-                trace_name = f"Run {i+1}"
-                custom_text = [f"Year N: {y}" for y in simulation_years]
-                
-            fig.add_trace(go.Scattergl(
-                x=years, 
-                y=net_worth_history[:, i],
-                customdata=custom_text,
-                mode='lines', 
-                line=dict(color='#555555', width=0.5), 
-                opacity=0.25, 
-                showlegend=False, 
-                hovertemplate="<b>" + trace_name + "</b><br>%{customdata} (Age: %{x})<br>Net Worth: %{y:,.0f} CHF<extra></extra>",
-                name=trace_name
-            ))
-            
-        for p, c in zip(percentiles, colors):
-            p_vals = np.percentile(net_worth_history, p, axis=1)
-            custom_text_pct = [f"Year N: {y}" for y in simulation_years]
-            fig.add_trace(go.Scatter(
-                x=years, 
-                y=p_vals,
-                customdata=custom_text_pct,
-                mode='lines', 
-                name=f'{p}th Pct', 
-                line=dict(color=c, width=3 if p != 50 else 5),
-                hovertemplate="<b>" + f"{p}th Percentile" + "</b><br>%{customdata} (Age: %{x})<br>Net Worth: %{y:,.0f} CHF<extra></extra>"
-            ))
-        
-        # Add Inflation-Adjusted Starting Net Worth Reference Line
-        fig.add_trace(go.Scatter(
-            x=years, 
-            y=inf_adj_start_nw_trajectory, 
-            mode='lines', 
-            name='Inflation-Adj Start NW', 
-            line=dict(color='black', width=2, dash='dash'),
-            hovertemplate="<b>Inflation-Adj Start NW</b><br>Age: %{x}<br>Value: %{y:,.0f} CHF<extra></extra>"
+        fig.add_trace(go.Scattergl(
+            x=years,
+            y=net_worth_history[:, i],
+            customdata=custom_text,
+            mode='lines',
+            line=dict(color='#555555', width=0.5),
+            opacity=0.25,
+            showlegend=False,
+            hovertemplate="<b>" + trace_name + "</b><br>%{customdata} (Age: %{x})<br>Net Worth: %{y:,.0f} CHF<extra></extra>",
+            name=trace_name
         ))
-            
-        fig.update_layout(
-            xaxis_title="Age", 
-            yaxis_title="Net Worth (CHF)", 
-            yaxis=dict(tickformat=",.0f"), 
-            hovermode="closest", 
-            legend=dict(orientation="h", yanchor="top", y=-0.22, xanchor="center", x=0.5),
-            margin=dict(t=15, b=65, l=10, r=10)
-        )
-        st.subheader("Net Worth Trajectory", help="This chart displays the value of your assets over time.")
-        st.plotly_chart(fig, width='stretch')
 
-        # Income Breakdown Chart
-        median_divs = np.median(history['income_dividends'], axis=1)
-        median_ahv = np.median(history['income_ahv'], axis=1)
-        median_expenses = np.median(history['expenses_paid'], axis=1)
-        median_taxes = np.median(history['taxes_paid'], axis=1)
-        
-        capital_sold = np.maximum(0, median_expenses + median_taxes - median_divs - median_ahv)
-        
-        fig_income = go.Figure()
-        fig_income.add_trace(go.Bar(x=years, y=median_divs, name='Dividends', marker_color='blue'))
-        fig_income.add_trace(go.Bar(x=years, y=median_ahv, name='AHV Pension', marker_color='orange'))
-        fig_income.add_trace(go.Bar(x=years, y=capital_sold, name='Capital Sold', marker_color='red'))
-        
-        fig_income.add_trace(go.Scatter(x=years, y=median_expenses + median_taxes, mode='lines', name='Total Cash Needed', line=dict(color='black', width=2, dash='dash')))
-        
-        fig_income.update_layout(
-            xaxis_title="Age", 
-            yaxis_title="Amount (CHF)", 
-            barmode='stack', 
-            yaxis=dict(tickformat=",.0f"), 
-            hovermode="x", 
-            legend=dict(orientation="h", yanchor="top", y=-0.22, xanchor="center", x=0.5),
-            margin=dict(t=15, b=65, l=10, r=10)
-        )
-        st.subheader("Income vs Required Cash", help="This chart displays the median cash flows across all simulated portfolio paths for each year.")
-        st.plotly_chart(fig_income, width='stretch')
+    for p, c in zip(percentiles, colors):
+        p_vals = np.percentile(net_worth_history, p, axis=1)
+        custom_text_pct = [f"Year N: {y}" for y in simulation_years]
+        fig.add_trace(go.Scatter(
+            x=years,
+            y=p_vals,
+            customdata=custom_text_pct,
+            mode='lines',
+            name=f'{p}th Pct',
+            line=dict(color=c, width=3 if p != 50 else 5),
+            hovertemplate="<b>" + f"{p}th Percentile" + "</b><br>%{customdata} (Age: %{x})<br>Net Worth: %{y:,.0f} CHF<extra></extra>"
+        ))
 
-        # Annual Withdrawal Breakdown Chart
-        fig_withdrawal = go.Figure(data=[
-            go.Bar(name='Living Expenses', x=years, y=median_expenses, marker_color='royalblue'),
-            go.Bar(name='Taxes Paid', x=years, y=median_taxes, marker_color='crimson')
-        ])
-        fig_withdrawal.update_layout(
-            barmode='stack', 
-            xaxis_title="Age", 
-            yaxis_title="Annual Withdrawal (CHF)", 
-            yaxis=dict(tickformat=",.0f"), 
-            hovermode="x", 
-            legend=dict(orientation="h", yanchor="top", y=-0.22, xanchor="center", x=0.5),
-            margin=dict(t=15, b=65, l=10, r=10)
-        )
-        st.subheader("Annual Withdrawal Breakdown", help="This stacked chart displays the median annual withdrawals (living expenses and taxes paid) across all simulated portfolio paths over time.")
-        st.plotly_chart(fig_withdrawal, width='stretch')
+    # Add Inflation-Adjusted Starting Net Worth Reference Line
+    fig.add_trace(go.Scatter(
+        x=years,
+        y=inf_adj_start_nw_trajectory,
+        mode='lines',
+        name='Inflation-Adj Start NW',
+        line=dict(color='black', width=2, dash='dash'),
+        hovertemplate="<b>Inflation-Adj Start NW</b><br>Age: %{x}<br>Value: %{y:,.0f} CHF<extra></extra>"
+    ))
 
-        # Withdrawal Rate Chart (relative to beginning-of-year portfolio value)
-        safe_start_nw = np.maximum(net_worth_history + history['expenses_paid'] + history['taxes_paid'], 1.0)
-        withdrawal_rate_history = ((history['expenses_paid'] + history['taxes_paid']) / safe_start_nw) * 100.0
-        
-        fig_wr = go.Figure()
-        max_p_val = 5.0
-        for p, c in zip(percentiles, colors):
-            p_vals = np.percentile(withdrawal_rate_history, p, axis=1)
-            # Cap values for visualization purposes when net worth approaches zero
-            p_vals = np.minimum(p_vals, 100.0) 
-            max_p_val = max(max_p_val, float(np.max(p_vals)))
-            fig_wr.add_trace(go.Scatter(x=years, y=p_vals, mode='lines', name=f'{p}th Pct', line=dict(color=c, width=3 if p != 50 else 5)))
-            
-        y_upper = min(25.0, max_p_val * 1.15)
-        fig_wr.update_layout(
-            xaxis_title="Age", 
-            yaxis_title="Withdrawal Rate (%)", 
-            yaxis=dict(tickformat=".1f", range=[0, y_upper]), 
-            hovermode="x",
-            legend=dict(orientation="h", yanchor="top", y=-0.22, xanchor="center", x=0.5),
-            margin=dict(t=15, b=65, l=10, r=10)
-        )
-        st.subheader("Withdrawal Rate", help="This chart displays the percentage of your current net worth consumed by expenses and taxes each year.")
-        st.plotly_chart(fig_wr, width='stretch')
+    fig.update_layout(
+        xaxis_title="Age",
+        yaxis_title="Net Worth (CHF)",
+        yaxis=dict(tickformat=",.0f"),
+        hovermode="closest",
+        legend=dict(orientation="h", yanchor="top", y=-0.22, xanchor="center", x=0.5),
+        margin=dict(t=15, b=65, l=10, r=10)
+    )
+    st.subheader("Net Worth Trajectory", help="This chart displays the value of your assets over time.")
+    st.plotly_chart(fig, width='stretch')
 
-        # Asset Allocation Development Chart (Liquid Assets + Pillar 2 + Pillar 3a)
-        median_assets_by_class = np.median(history['liquid_assets_by_class'], axis=1) # shape: (years, 5)
-        median_p2 = np.median(history['pillar_2'], axis=1) if 'pillar_2' in history else np.zeros(len(years))
-        median_p3a = np.median(history['pillar_3a'], axis=1) if 'pillar_3a' in history else np.zeros(len(years))
+    # Income Breakdown Chart
+    median_divs = np.median(history['income_dividends'], axis=1)
+    median_ahv = np.median(history['income_ahv'], axis=1)
+    median_expenses = np.median(history['expenses_paid'], axis=1)
+    median_taxes = np.median(history['taxes_paid'], axis=1)
 
-        fig_alloc = go.Figure()
-        
-        all_series = [
-            ('CHF Cash', median_assets_by_class[:, 2], 'forestgreen'),
-            ('US Stocks', median_assets_by_class[:, 0], 'royalblue'),
-            ('Non-US Stocks', median_assets_by_class[:, 1], 'darkcyan'),
-            ('Gold', median_assets_by_class[:, 3], 'gold'),
-            ('Bitcoin', median_assets_by_class[:, 4], 'purple'),
-            ('Pillar 3a', median_p3a, 'mediumpurple'),
-            ('Pillar 2', median_p2, 'darkorange'),
-        ]
+    capital_sold = np.maximum(0, median_expenses + median_taxes - median_divs - median_ahv)
 
-        for name, values, color in all_series:
-            if np.max(values) > 0:
-                fig_alloc.add_trace(go.Scatter(
-                    x=years,
-                    y=values,
-                    mode='lines',
-                    name=name,
-                    stackgroup='one',
-                    line=dict(width=0.5),
-                    marker=dict(color=color)
-                ))
+    fig_income = go.Figure()
+    fig_income.add_trace(go.Bar(x=years, y=median_divs, name='Dividends', marker_color='blue'))
+    fig_income.add_trace(go.Bar(x=years, y=median_ahv, name='AHV Pension', marker_color='orange'))
+    fig_income.add_trace(go.Bar(x=years, y=capital_sold, name='Capital Sold', marker_color='red'))
 
-        fig_alloc.update_layout(
-            xaxis_title="Age",
-            yaxis_title="Asset Value (CHF)",
-            yaxis=dict(tickformat=",.0f"),
-            hovermode="x",
-            legend=dict(orientation="h", yanchor="top", y=-0.22, xanchor="center", x=0.5),
-            margin=dict(t=15, b=65, l=10, r=10)
-        )
-        st.subheader("Asset Allocation Development", help="This stacked chart visualizes the median nominal balance of all asset categories (taxable liquid investments, Pillar 2, and Pillar 3a) over time, showing how your net worth breakdown glides and rebalances throughout retirement.")
-        st.plotly_chart(fig_alloc, width='stretch')
+    fig_income.add_trace(go.Scatter(x=years, y=median_expenses + median_taxes, mode='lines', name='Total Cash Needed', line=dict(color='black', width=2, dash='dash')))
 
-        is_historic_backtest = "Historic Backtesting" in title or "Historic Returns" in title
-        analysis_name = "Cohort Analysis" if is_historic_backtest else "Run Analysis"
-        id_col_name = "Cohort" if is_historic_backtest else "Run"
-        
-        st.subheader(analysis_name, help=f"Best and worst paths based on the final net worth.")
-        import pandas as pd
-        
-        final_nw = net_worth_history[-1, :]
-        min_nw = np.min(net_worth_history, axis=0)
-        years_below = np.sum(history['below_watermark'], axis=0)
-        
-        # Find best and worst indices efficiently
-        sorted_indices = np.argsort(final_nw)
-        worst_indices = sorted_indices[:10]
-        best_indices = sorted_indices[::-1][:10]
-        
-        def build_df(indices):
-            data = []
-            for idx in indices:
-                idx = int(idx)
-                if is_historic_backtest:
-                    cohort_year = int(HISTORIC_YEARS[idx])
-                    run_id = f"{cohort_year} - {cohort_year + config.duration_years - 1}"
-                else:
-                    run_id = f"Run {idx + 1}"
-                data.append({
-                    id_col_name: run_id,
-                    "Final NW (Real)": final_nw_inf_adj[idx],
-                    "Final NW (Nom)": final_nw[idx],
-                    "Min NW (Nom)": min_nw[idx],
-                    "Yrs Below": int(years_below[idx])
-                })
-            return pd.DataFrame(data)
-            
-        st.markdown(f"##### Top 10 Best {id_col_name}s" if is_historic_backtest else "##### Top 10 Best Runs")
-        df_best = build_df(best_indices)
-        st.dataframe(df_best.style.format({
-            "Final NW (Real)": "{:,.0f}",
-            "Final NW (Nom)": "{:,.0f}",
-            "Min NW (Nom)": "{:,.0f}"
-        }), hide_index=True, width='stretch')
-        
-        st.markdown(f"##### Top 10 Worst {id_col_name}s" if is_historic_backtest else "##### Top 10 Worst Runs")
-        df_worst = build_df(worst_indices)
-        st.dataframe(df_worst.style.format({
-            "Final NW (Real)": "{:,.0f}",
-            "Final NW (Nom)": "{:,.0f}",
-            "Min NW (Nom)": "{:,.0f}"
-        }), hide_index=True, width='stretch')
-            
-    col_hist, col_boot, col_mc = st.columns(3)
-    with col_hist:
-        render_results(history_hist, config_hist, hist_num_runs, "Historic Backtesting", hist_inflation_matrix, success_pct)
-    with col_boot:
-        render_results(history_boot, config_boot, boot_num_runs, "Historic Bootstrapping", boot_inflation_matrix, success_pct)
-    with col_mc:
-        render_results(history_mc, config_mc, mc_num_runs, "Monte Carlo", mc_inflation_matrix, success_pct)
-else:
-    st.info("Configure parameters in the sidebar and click 'Run Simulation'.")
+    fig_income.update_layout(
+        xaxis_title="Age",
+        yaxis_title="Amount (CHF)",
+        barmode='stack',
+        yaxis=dict(tickformat=",.0f"),
+        hovermode="x",
+        legend=dict(orientation="h", yanchor="top", y=-0.22, xanchor="center", x=0.5),
+        margin=dict(t=15, b=65, l=10, r=10)
+    )
+    st.subheader("Income vs Required Cash", help="This chart displays the median cash flows across all simulated portfolio paths for each year.")
+    st.plotly_chart(fig_income, width='stretch')
+
+    # Annual Withdrawal Breakdown Chart
+    fig_withdrawal = go.Figure(data=[
+        go.Bar(name='Living Expenses', x=years, y=median_expenses, marker_color='royalblue'),
+        go.Bar(name='Taxes Paid', x=years, y=median_taxes, marker_color='crimson')
+    ])
+    fig_withdrawal.update_layout(
+        barmode='stack',
+        xaxis_title="Age",
+        yaxis_title="Annual Withdrawal (CHF)",
+        yaxis=dict(tickformat=",.0f"),
+        hovermode="x",
+        legend=dict(orientation="h", yanchor="top", y=-0.22, xanchor="center", x=0.5),
+        margin=dict(t=15, b=65, l=10, r=10)
+    )
+    st.subheader("Annual Withdrawal Breakdown", help="This stacked chart displays the median annual withdrawals (living expenses and taxes paid) across all simulated portfolio paths over time.")
+    st.plotly_chart(fig_withdrawal, width='stretch')
+
+    # Withdrawal Rate Chart (relative to beginning-of-year portfolio value)
+    safe_start_nw = np.maximum(net_worth_history + history['expenses_paid'] + history['taxes_paid'], 1.0)
+    withdrawal_rate_history = ((history['expenses_paid'] + history['taxes_paid']) / safe_start_nw) * 100.0
+
+    fig_wr = go.Figure()
+    max_p_val = 5.0
+    for p, c in zip(percentiles, colors):
+        p_vals = np.percentile(withdrawal_rate_history, p, axis=1)
+        # Cap values for visualization purposes when net worth approaches zero
+        p_vals = np.minimum(p_vals, 100.0)
+        max_p_val = max(max_p_val, float(np.max(p_vals)))
+        fig_wr.add_trace(go.Scatter(x=years, y=p_vals, mode='lines', name=f'{p}th Pct', line=dict(color=c, width=3 if p != 50 else 5)))
+
+    y_upper = min(25.0, max_p_val * 1.15)
+    fig_wr.update_layout(
+        xaxis_title="Age",
+        yaxis_title="Withdrawal Rate (%)",
+        yaxis=dict(tickformat=".1f", range=[0, y_upper]),
+        hovermode="x",
+        legend=dict(orientation="h", yanchor="top", y=-0.22, xanchor="center", x=0.5),
+        margin=dict(t=15, b=65, l=10, r=10)
+    )
+    st.subheader("Withdrawal Rate", help="This chart displays the percentage of your current net worth consumed by expenses and taxes each year.")
+    st.plotly_chart(fig_wr, width='stretch')
+
+    # Asset Allocation Development Chart (Liquid Assets + Pillar 2 + Pillar 3a)
+    median_assets_by_class = np.median(history['liquid_assets_by_class'], axis=1)  # shape: (years, 5)
+    median_p2 = np.median(history['pillar_2'], axis=1) if 'pillar_2' in history else np.zeros(len(years))
+    median_p3a = np.median(history['pillar_3a'], axis=1) if 'pillar_3a' in history else np.zeros(len(years))
+
+    fig_alloc = go.Figure()
+
+    all_series = [
+        ('CHF Cash', median_assets_by_class[:, 2], 'forestgreen'),
+        ('US Stocks', median_assets_by_class[:, 0], 'royalblue'),
+        ('Non-US Stocks', median_assets_by_class[:, 1], 'darkcyan'),
+        ('Gold', median_assets_by_class[:, 3], 'gold'),
+        ('Bitcoin', median_assets_by_class[:, 4], 'purple'),
+        ('Pillar 3a', median_p3a, 'mediumpurple'),
+        ('Pillar 2', median_p2, 'darkorange'),
+    ]
+
+    for name, values, color in all_series:
+        if np.max(values) > 0:
+            fig_alloc.add_trace(go.Scatter(
+                x=years,
+                y=values,
+                mode='lines',
+                name=name,
+                stackgroup='one',
+                line=dict(width=0.5),
+                marker=dict(color=color)
+            ))
+
+    fig_alloc.update_layout(
+        xaxis_title="Age",
+        yaxis_title="Asset Value (CHF)",
+        yaxis=dict(tickformat=",.0f"),
+        hovermode="x",
+        legend=dict(orientation="h", yanchor="top", y=-0.22, xanchor="center", x=0.5),
+        margin=dict(t=15, b=65, l=10, r=10)
+    )
+    st.subheader("Asset Allocation Development", help="This stacked chart visualizes the median nominal balance of all asset categories (taxable liquid investments, Pillar 2, and Pillar 3a) over time, showing how your net worth breakdown glides and rebalances throughout retirement.")
+    st.plotly_chart(fig_alloc, width='stretch')
+
+    analysis_name = "Cohort Analysis" if is_historic_backtest else "Run Analysis"
+    id_col_name = "Cohort" if is_historic_backtest else "Run"
+
+    st.subheader(analysis_name, help="Best and worst paths based on the final net worth.")
+
+    final_nw = net_worth_history[-1, :]
+    min_nw = np.min(net_worth_history, axis=0)
+    years_below = np.sum(history['below_watermark'], axis=0)
+
+    # Find best and worst indices efficiently
+    sorted_indices = np.argsort(final_nw)
+    worst_indices = sorted_indices[:10]
+    best_indices = sorted_indices[::-1][:10]
+
+    def build_df(indices):
+        data = []
+        for idx in indices:
+            idx = int(idx)
+            if is_historic_backtest:
+                cohort_year = int(HISTORIC_YEARS[idx])
+                run_id = f"{cohort_year} - {cohort_year + config.duration_years - 1}"
+            else:
+                run_id = f"Run {idx + 1}"
+            data.append({
+                id_col_name: run_id,
+                "Final NW (Real)": final_nw_inf_adj[idx],
+                "Final NW (Nom)": final_nw[idx],
+                "Min NW (Nom)": min_nw[idx],
+                "Yrs Below": int(years_below[idx])
+            })
+        return pd.DataFrame(data)
+
+    st.markdown(f"##### Top 10 Best {id_col_name}s" if is_historic_backtest else "##### Top 10 Best Runs")
+    df_best = build_df(best_indices)
+    st.dataframe(df_best.style.format({
+        "Final NW (Real)": "{:,.0f}",
+        "Final NW (Nom)": "{:,.0f}",
+        "Min NW (Nom)": "{:,.0f}"
+    }), hide_index=True, width='stretch')
+
+    st.markdown(f"##### Top 10 Worst {id_col_name}s" if is_historic_backtest else "##### Top 10 Worst Runs")
+    df_worst = build_df(worst_indices)
+    st.dataframe(df_worst.style.format({
+        "Final NW (Real)": "{:,.0f}",
+        "Final NW (Nom)": "{:,.0f}",
+        "Min NW (Nom)": "{:,.0f}"
+    }), hide_index=True, width='stretch')
+
+
+col_hist, col_boot, col_mc = st.columns(3)
+with col_hist:
+    render_results(history_hist, config_hist, hist_num_runs, "Historic Backtesting", hist_inflation_matrix, success_pct)
+with col_boot:
+    render_results(history_boot, config_boot, boot_num_runs, "Historic Bootstrapping", boot_inflation_matrix, success_pct)
+with col_mc:
+    render_results(history_mc, config_mc, mc_num_runs, "Monte Carlo", mc_inflation_matrix, success_pct)

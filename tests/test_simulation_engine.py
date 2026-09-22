@@ -1129,8 +1129,8 @@ def test_historic_returns_matrix_valid():
     matrix = get_historic_return_matrix(50)
     expected_runs = len(HISTORIC_RETURNS) - 50 + 1
     assert matrix.shape == (expected_runs, 50 * 12, 5)
-    # Check that cash return is 1% annual nominal
-    assert np.allclose(matrix[:, :, 2], 0.01 / 12)
+    # Check that cash return is 1% annual nominal geometric monthly rate
+    assert np.allclose(matrix[:, :, 2], (1.01)**(1.0 / 12.0) - 1.0)
 
 
 def test_historic_returns_matrix_invalid():
@@ -1218,8 +1218,8 @@ def test_generate_bootstrapped_returns_shape_and_values():
     matrix = generate_bootstrapped_returns(num_runs=50, duration_years=30, seed=123)
     assert matrix.shape == (50, 360, 5)
     assert not np.isnan(matrix).any()
-    # Check cash return is 1% annual nominal
-    assert np.allclose(matrix[:, :, 2], 0.01 / 12)
+    # Check cash return is 1% annual nominal geometric monthly rate
+    assert np.allclose(matrix[:, :, 2], (1.01)**(1.0 / 12.0) - 1.0)
     # Check US and Non-US equities have valid return ranges
     assert np.all(matrix[:, :, 0] > -1.0)
     assert np.all(matrix[:, :, 1] > -1.0)
@@ -1572,3 +1572,247 @@ def test_seed_reproducibility_and_variation():
     # Monte Carlo variation with different seed
     mc_ret3 = generate_monte_carlo_returns(**mc_args, seed=999)
     assert not np.array_equal(mc_ret1, mc_ret3)
+
+
+def test_monte_carlo_inflation_rng_independence_and_validation():
+    import pytest
+    from simulation_engine import generate_monte_carlo_inflation, generate_monte_carlo_returns
+
+    num_runs = 200
+    duration_years = 20
+    seed = 42
+
+    mc_ret = generate_monte_carlo_returns(
+        num_runs=num_runs,
+        duration_years=duration_years,
+        ret_us=0.07,
+        ret_non_us=0.06,
+        ret_cash=0.01,
+        ret_gold=0.06,
+        ret_btc=0.10,
+        vol_eq=0.15,
+        vol_gold=0.15,
+        vol_btc=0.60,
+        seed=seed
+    )
+    mc_inf = generate_monte_carlo_inflation(
+        num_runs=num_runs,
+        duration_years=duration_years,
+        inflation_mean=0.025,
+        inflation_std=0.01,
+        seed=seed
+    )
+
+    assert mc_inf.shape == (num_runs, duration_years)
+    # Reconstruct standard normal Z variates from US Stock month 0..19 and compare with inflation Z variates
+    drift_us = np.log(1 + 0.07) - 0.5 * 0.15**2
+    us_log_ret = np.log(mc_ret[:, :duration_years, 0] + 1.0)
+    z_us = (us_log_ret - drift_us / 12.0) / (0.15 / np.sqrt(12.0))
+    z_inf = (mc_inf - 0.025) / 0.01
+
+    # Correlation must NOT be 1.0 (which occurred when both used default_rng(seed) without stream offset)
+    corr = np.corrcoef(z_us.flatten(), z_inf.flatten())[0, 1]
+    assert abs(corr) < 0.2
+
+    # Validation checks
+    with pytest.raises(ValueError, match="num_runs must be positive"):
+        generate_monte_carlo_inflation(0, 10)
+    with pytest.raises(ValueError, match="duration_years must be positive"):
+        generate_monte_carlo_inflation(10, 0)
+    with pytest.raises(ValueError, match="inflation_std cannot be negative"):
+        generate_monte_carlo_inflation(10, 10, inflation_std=-0.01)
+    with pytest.raises(ValueError, match="seed must be non-negative"):
+        generate_monte_carlo_inflation(10, 10, seed=-1)
+    with pytest.raises(ValueError, match="Volatilities cannot be negative"):
+        generate_monte_carlo_returns(10, 10, 0.07, 0.06, 0.01, 0.06, 0.10, -0.15, 0.15, 0.60)
+    with pytest.raises(ValueError, match="Expected annual returns must be greater than -100%"):
+        generate_monte_carlo_returns(10, 10, -1.0, 0.06, 0.01, 0.06, 0.10, 0.15, 0.15, 0.60)
+
+
+def test_year_0_liquid_wealth_and_taxes_at_age_60_to_64():
+    from simulation_engine import _get_year_0_liquid_wealth, estimate_year_0_taxes, get_target_weights
+    from tax_engine import calculate_capital_withdrawal_tax
+
+    # At start_age=62, the first eligible Pillar 3a account (60 + 0 <= 62) is liquidated in Year 0 Month 0
+    config_with_3a = SimConfig(
+        num_runs=1,
+        duration_years=5,
+        inflation_mean=0.0,
+        inflation_std=0.0,
+        start_age=62,
+        dividend_yield=0.015,
+        initial_liquid_wealth=500_000.0,
+        initial_pillar_2=200_000.0,
+        initial_pillar_3a_accounts=[50_000.0, 50_000.0],
+        alloc_us_stocks=0.60,
+        alloc_non_us_stocks=0.20,
+        alloc_chf_cash=0.20,
+        alloc_gold=0.0,
+        alloc_bitcoin=0.0,
+        rebalance_strategy="Cash Tent",
+        rebalance_threshold=0.0,
+        annual_base_expenses=40_000.0,
+        monthly_ahv_pension=2000.0,
+        cantonal_multiplier=0.95,
+        municipal_multiplier=1.19,
+        tent_duration_years=5
+    )
+    config_no_3a = SimConfig(
+        num_runs=1,
+        duration_years=5,
+        inflation_mean=0.0,
+        inflation_std=0.0,
+        start_age=62,
+        dividend_yield=0.015,
+        initial_liquid_wealth=500_000.0,
+        initial_pillar_2=200_000.0,
+        initial_pillar_3a_accounts=[],
+        alloc_us_stocks=0.60,
+        alloc_non_us_stocks=0.20,
+        alloc_chf_cash=0.20,
+        alloc_gold=0.0,
+        alloc_bitcoin=0.0,
+        rebalance_strategy="Cash Tent",
+        rebalance_threshold=0.0,
+        annual_base_expenses=40_000.0,
+        monthly_ahv_pension=2000.0,
+        cantonal_multiplier=0.95,
+        municipal_multiplier=1.19,
+        tent_duration_years=5
+    )
+
+    cap_tax_50k = float(calculate_capital_withdrawal_tax(50_000.0, 0.95, 1.19))
+    assert np.isclose(_get_year_0_liquid_wealth(config_with_3a), 500_000.0 + 50_000.0 - cap_tax_50k)
+
+    tax_with_3a = estimate_year_0_taxes(config_with_3a)
+    tax_no_3a = estimate_year_0_taxes(config_no_3a)
+    # Ongoing Year 0 taxes (income, wealth, AHV) are higher with the liquidated 3a account added to liquid wealth
+    assert tax_with_3a > tax_no_3a
+
+    # Verify Cash Tent target weights account for the higher Year 0 liquid wealth
+    w0 = get_target_weights(config_with_3a, 0)
+    assert np.isclose(np.sum(w0), 1.0)
+
+    # Verify estimate_year_0_taxes + capital_withdrawal_tax matches actual run_simulation Year 0 taxes_paid under base weights
+    config_yearly = SimConfig(
+        **{**config_with_3a.__dict__, "rebalance_strategy": "Yearly"}
+    )
+    return_matrix = np.zeros((1, 60, 5))
+    inflation_matrix = np.zeros((1, 5))
+    history = run_simulation(config_yearly, return_matrix, inflation_matrix)
+    assert np.isclose(tax_with_3a + cap_tax_50k, history['taxes_paid'][0, 0], rtol=1e-5)
+
+
+def test_sim_config_strategy_and_seed_validation():
+    import pytest
+    base_args = dict(
+        num_runs=5, duration_years=5, inflation_mean=0.02, inflation_std=0.01,
+        start_age=40, dividend_yield=0.015, alloc_us_stocks=1.0
+    )
+    with pytest.raises(ValueError, match="Invalid spending_strategy"):
+        SimConfig(**base_args, spending_strategy="InvalidStrategy")
+    with pytest.raises(ValueError, match="Invalid rebalance_strategy"):
+        SimConfig(**base_args, rebalance_strategy="BiWeekly")
+    with pytest.raises(ValueError, match="inflation_std.*cannot be negative"):
+        args = dict(base_args)
+        args["inflation_std"] = -0.01
+        SimConfig(**args)
+    with pytest.raises(ValueError, match="seed.*cannot be negative"):
+        SimConfig(**base_args, seed=-5)
+
+
+def test_run_simulation_deterministic_fallback_inflation_and_deflation_clamp():
+    config1 = SimConfig(
+        num_runs=5,
+        duration_years=3,
+        inflation_mean=0.02,
+        inflation_std=0.015,
+        start_age=45,
+        dividend_yield=0.01,
+        alloc_us_stocks=1.0,
+        annual_base_expenses=50_000.0,
+        seed=77
+    )
+    config2 = SimConfig(
+        num_runs=5,
+        duration_years=3,
+        inflation_mean=0.02,
+        inflation_std=0.015,
+        start_age=45,
+        dividend_yield=0.01,
+        alloc_us_stocks=1.0,
+        annual_base_expenses=50_000.0,
+        seed=77
+    )
+    return_matrix = np.zeros((5, 36, 5))
+    # When inflation_matrix is None, run_simulation must be 100% deterministic via config.seed
+    h1 = run_simulation(config1, return_matrix, inflation_matrix=None)
+    h2 = run_simulation(config2, return_matrix, inflation_matrix=None)
+    assert np.array_equal(h1['net_worth'], h2['net_worth'])
+    assert np.array_equal(h1['expenses_paid'], h2['expenses_paid'])
+
+    # Extreme deflation (-150% inflation) must be clamped so inflation_factors stay strictly positive (> 0)
+    extreme_deflation = np.full((5, 3), -1.50)
+    h_defl = run_simulation(config1, return_matrix, inflation_matrix=extreme_deflation)
+    assert np.all(h_defl['expenses_paid'] > 0.0)
+
+
+def test_historic_and_bootstrapped_lognormal_bounds_and_seeds():
+    # Synthetic Gold (idx 3) and Bitcoin (idx 4) must use lognormal returns (> -1.0) and respect seed
+    hist_m1 = get_historic_return_matrix(10, seed=42)
+    hist_m2 = get_historic_return_matrix(10, seed=42)
+    hist_m3 = get_historic_return_matrix(10, seed=99)
+
+    assert np.array_equal(hist_m1, hist_m2)
+    assert not np.array_equal(hist_m1[:, :, 4], hist_m3[:, :, 4])
+    assert np.all(hist_m1 > -1.0)
+
+    boot_ret, _ = generate_bootstrapped_data(200, 30, seed=42)
+    assert np.all(boot_ret > -1.0)
+    # Cash monthly return (idx 2) must equal exact geometric 1% APY: (1.01)**(1/12) - 1
+    expected_cash_monthly = (1.01)**(1.0 / 12.0) - 1.0
+    assert np.allclose(hist_m1[:, :, 2], expected_cash_monthly)
+    assert np.allclose(boot_ret[:, :, 2], expected_cash_monthly)
+
+
+def test_vanguard_dynamic_net_target_rate_no_tax_double_counting():
+    from simulation_engine import estimate_year_0_taxes
+
+    # Verify that setting vanguard_target_rate = annual_base_expenses / initial_net_worth
+    # produces Year 0 living expenses equal to annual_base_expenses (85,000 CHF)
+    # and total outflow equal to 85,000 + Year 0 taxes (no tax double-counting)
+    total_nw = 3_000_000.0
+    base_exp = 85_000.0
+    config = SimConfig(
+        num_runs=1,
+        duration_years=2,
+        inflation_mean=0.0,
+        inflation_std=0.0,
+        start_age=40,
+        dividend_yield=0.015,
+        spending_strategy="Vanguard Dynamic",
+        vanguard_target_rate=base_exp / total_nw,
+        vanguard_floor_pct=0.05,
+        vanguard_ceiling_pct=0.05,
+        initial_liquid_wealth=2_450_000.0,
+        initial_pillar_2=450_000.0,
+        initial_pillar_3a_accounts=[20_000.0] * 5,
+        alloc_us_stocks=0.50,
+        alloc_non_us_stocks=0.30,
+        alloc_chf_cash=0.10,
+        alloc_gold=0.03,
+        alloc_bitcoin=0.07,
+        rebalance_strategy="Never",
+        rebalance_threshold=0.0,
+        annual_base_expenses=base_exp,
+        monthly_ahv_pension=2000.0,
+        cantonal_multiplier=0.95,
+        municipal_multiplier=1.19
+    )
+    return_matrix = np.zeros((1, 24, 5))
+    inflation_matrix = np.zeros((1, 2))
+    history = run_simulation(config, return_matrix, inflation_matrix)
+
+    assert np.isclose(history['expenses_paid'][0, 0], base_exp)
+    est_tax = estimate_year_0_taxes(config)
+    assert np.isclose(history['taxes_paid'][0, 0], est_tax, rtol=1e-3)

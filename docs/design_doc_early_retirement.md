@@ -19,7 +19,7 @@ The system is divided into four primary modules:
 
 ### 3.1. User State & Configuration (Input Layer)
 A centralized data structure (`SimConfig`) representing the simulation parameters, enforcing strict mathematical validation in `__post_init__`:
-*   **Validation Rules**: `num_runs > 0`, `duration_years > 0`, `start_age >= 0`, `tent_duration_years >= 0`, individual asset allocations $\ge 0.0$ and $\sum \text{allocations} = 1.0$, non-negative initial asset balances (`initial_liquid_wealth`, `initial_pillar_2`, `initial_pillar_3a_accounts`), non-negative expenses/income/yields (`annual_base_expenses`, `monthly_ahv_pension`, `dividend_yield`), non-negative tax multipliers (`cantonal_multiplier`, `municipal_multiplier`), non-negative rebalancing thresholds, and non-negative spending strategy parameters (`vanguard_target_rate`, `vanguard_floor_pct`, `vanguard_ceiling_pct`, `dynamic_expense_floor_pct`, `dynamic_expense_ceiling_pct`).
+*   **Validation Rules**: `num_runs > 0`, `duration_years > 0`, `start_age >= 0`, `tent_duration_years >= 0`, `inflation_std >= 0.0`, `seed >= 0`, `spending_strategy in VALID_SPENDING_STRATEGIES`, `rebalance_strategy in VALID_REBALANCE_STRATEGIES`, individual asset allocations $\ge 0.0$ and $\sum \text{allocations} = 1.0$, non-negative initial asset balances (`initial_liquid_wealth`, `initial_pillar_2`, `initial_pillar_3a_accounts`), non-negative expenses/income/yields (`annual_base_expenses`, `monthly_ahv_pension`, `dividend_yield`), non-negative tax multipliers (`cantonal_multiplier`, `municipal_multiplier`), non-negative rebalancing thresholds, and non-negative spending strategy parameters (`vanguard_target_rate`, `vanguard_floor_pct`, `vanguard_ceiling_pct`, `dynamic_expense_floor_pct`, `dynamic_expense_ceiling_pct`).
 *   **Demographics**: Retirement age (`start_age`), simulation duration (`duration_years`).
 *   **Economics & Taxes**: Inflation mean & volatility (for Monte Carlo), dividend yield, cantonal tax multiplier (`0.95` for Canton Zurich 2026), and municipal tax multiplier (Steuerfuss, e.g., `1.19` for Zurich City).
 *   **Assets**: Taxable Liquid Wealth, Pillar 2 (`Freizügigkeitskonto`), Pillar 3a balances (stored as a list up to 5 accounts to support staggered withdrawals).
@@ -48,7 +48,7 @@ The engine (`run_simulation` in `src/simulation_engine.py`) executes a **monthly
 
 **Monthly Tick Execution Order:**
 1. **Annual Inflation Update (Month 0 of each year)**:
-    * Updates cumulative `inflation_factors *= (1 + inflation)` using `inflation_matrix[:, year]` (or sampling `normal(inflation_mean, inflation_std)` if `inflation_matrix` is `None`).
+    * Updates cumulative `inflation_factors *= np.maximum(0.01, 1.0 + inflation)` using `inflation_matrix[:, year]` (or sampling from a deterministic `np.random.default_rng(config.seed + 10_000)` stream if `inflation_matrix` is `None`). Clamping `1.0 + inflation >= 0.01` prevents division-by-zero or sign inversion under extreme synthetic deflation draws.
 2. **Pension Liquidations & Immediate Capital Withdrawal Tax (Month 0 of each year)**:
     * **Age < 65**: Staggered liquidation of Pillar 3a accounts at ages `60 + i` (`60, 61, 62, 63, 64` for up to 5 accounts, at most 1 account liquidated per year).
     * **Age $\ge 65$**: All remaining Pillar 3a accounts and the Pillar 2 (`Freizügigkeitskonto`) account are liquidated (if starting retirement at age $\ge 65$, this occurs immediately in Year 0 Month 0).
@@ -62,13 +62,13 @@ The engine (`run_simulation` in `src/simulation_engine.py`) executes a **monthly
 5. **Rebalancing Check (Monthly / Quarterly / Threshold / Month 11 for Yearly & Cash Tent)**:
     * Triggered every month (`Monthly`), at quarter-end (`Quarterly`, `month_of_year % 3 == 2`), at year-end (`Yearly` and `Cash Tent`, `month_of_year == 11`), or whenever max absolute weight drift exceeds `rebalance_threshold` (`Threshold`).
     * Only solvent portfolios (`total_liquid_val > 0`) are rebalanced.
-    * **Cash Tent (`get_target_weights`)**: Peak target cash weight at Year 0 is computed as `min(1.0, tent_duration_years * (annual_base_expenses + estimate_year_0_taxes(config)) / init_wealth)` (incorporating net Pillar 2/3a liquidations if `start_age >= 65`), and glides linearly down to `alloc_chf_cash` over `tent_duration_years` (default: 7 years).
+    * **Cash Tent (`get_target_weights` & `_get_year_0_liquid_wealth`)**: Peak target cash weight at Year 0 is computed as `min(1.0, tent_duration_years * (annual_base_expenses + estimate_year_0_taxes(config)) / init_wealth)` (incorporating net Pillar 2/3a liquidations via `_get_year_0_liquid_wealth` for both `start_age >= 65` and `60 <= start_age < 65`), and glides linearly down to `alloc_chf_cash` over `tent_duration_years` (default: 7 years).
     * **Smart Cash Buffer**: If `enable_smart_selling` is enabled, rebalancing is skipped for any run currently in a market downturn (`current_nw < initial_net_worth * inflation_factors`).
 6. **Annual Taxation, Spending & Outflow Deduction (Month 11 of each year)**:
     * **Spending Evaluation**:
         * **Static**: `current_expenses = annual_base_expenses * inflation_factors`.
         * **Dynamic (Floor & Ceiling)**: Scales inflation-adjusted base expenses by `dynamic_expense_floor_pct` when net worth is below the inflation-adjusted starting watermark, and by `dynamic_expense_ceiling_pct` when above.
-        * **Vanguard Dynamic**: Recalculates target spending as `vanguard_target_rate * max(0, current_nw_before_expenses)`, clamped between `(1 - vanguard_floor_pct)` and `(1 + vanguard_ceiling_pct)` of the prior year's inflation-adjusted spending. In `app.py`, Target Withdrawal Rate ($\text{TWR}$) is bi-directionally synchronized with Year 0 Annual Base Expenses ($E_0$) via fixed-point iteration solving $E_0 + \text{Taxes}_0(E_0) = \text{TWR} \times \text{NetWorth}_0$.
+        * **Vanguard Dynamic**: Recalculates target net living expenses as `vanguard_target_rate * max(0, current_nw_before_expenses)`, clamped between `(1 - vanguard_floor_pct)` and `(1 + vanguard_ceiling_pct)` of the prior year's inflation-adjusted living expenses. In `app.py`, the UI's tax-inclusive Target Withdrawal Rate ($\text{TWR}$) is bi-directionally synchronized with Year 0 Annual Base Expenses ($E_0$) via fixed-point iteration solving $E_0 + \text{Taxes}_0(E_0) = \text{TWR} \times \text{NetWorth}_0$ using live user tax/yield inputs, and converted to the net living expense rate `vanguard_target_rate = E_0 / NetWorth_0` for `SimConfig` so taxes are never double-counted.
     * **Tax Assessment**: Computes annual `income_tax` on `dividends` (`(US Stocks + Non-US Stocks) * dividend_yield`) + `interest` (`CHF Cash * 0.01`) + `annual_ahv_received`, plus `wealth_tax` and `ahv_contrib` (for `current_age < 65`) on `taxable_wealth = max(0, total_liquid_end - current_expenses)`.
     * **Asset Selling**: Deducts `deficit = current_expenses + total_taxes`. If `enable_smart_selling` is enabled and the run is in a downturn, positive CHF Cash is spent down first before selling other positive assets proportionally to their current holdings. Otherwise, all positive liquid assets are sold proportionally to their current holdings; any unpaid deficit beyond total liquid assets becomes negative CHF Cash.
 
@@ -79,9 +79,9 @@ The system provides three complementary return simulation engines powered by emp
     *   `ex_us_stocks.csv`: MSCI EAFE / World ex-US Total Returns proxy (1871–2025).
     *   `usd_chf.csv`: Historical monthly USD/CHF exchange rates (1913–2019 via *The Poor Swiss*, extended through 2025 via the Swiss National Bank).
     *   `ch_inflation.csv`: Historical Swiss Consumer Price Index (1921–2023 via *The Poor Swiss* / Swiss Federal Statistical Office, extended through 2025 via FSO).
-*   **Historic Backtesting Mode (`get_historic_return_matrix`, `get_historic_inflation_matrix`)**: Ingests contiguous Swiss-adjusted historical equity returns and Swiss CPI inflation sequences (1922–2025 in CHF, 104 years). Produces $N = \text{total\_years} - \text{duration\_years} + 1$ overlapping cohorts. Uses empirical CHF returns for US and Non-US Stocks, 1% nominal APY for CHF Cash, and synthetic normal returns for Gold (`6%` mean, `15%` vol) and Bitcoin (`10%` mean, `60%` vol).
-*   **Historic Bootstrapping Mode (`generate_bootstrapped_data`)**: Generates $N$ simulation runs of length `duration_years` seeded by `random_seed` by jointly sampling random historical calendar years with replacement for US Equities (CHF), Non-US Equities (CHF), and Swiss CPI inflation, paired with 1% nominal APY for CHF Cash and synthetic Gold/Bitcoin returns.
-*   **Parametric Monte Carlo Mode (`generate_monte_carlo_returns`)**: Generates a matrix of `shape=(num_runs, duration_months, 5)` seeded by `random_seed` using a lognormal model with Ito drift correction ($\text{drift} = \ln(1 + R) - 0.5\sigma^2$) for US Stocks, Non-US Stocks, Gold, and Bitcoin, constant geometric monthly return $(1 + R_{\text{cash}})^{1/12} - 1$ for CHF Cash, and normally distributed annual inflation `rng.normal(inflation_mean, inflation_std)`.
+*   **Historic Backtesting Mode (`get_historic_return_matrix`, `get_historic_inflation_matrix`)**: Ingests contiguous Swiss-adjusted historical equity returns and Swiss CPI inflation sequences (1922–2025 in CHF, 104 years). Produces $N = \text{total\_years} - \text{duration\_years} + 1$ overlapping cohorts. Uses empirical CHF returns for US and Non-US Stocks, exact 1% geometric nominal APY (`(1.01)**(1/12) - 1`) for CHF Cash, and Ito-corrected lognormal monthly returns (`seed=random_seed`) for Gold (`6%` mean, `15%` vol) and Bitcoin (`10%` mean, `60%` vol).
+*   **Historic Bootstrapping Mode (`generate_bootstrapped_data`)**: Generates $N$ simulation runs of length `duration_years` seeded by `random_seed` by jointly sampling random historical calendar years with replacement for US Equities (CHF), Non-US Equities (CHF), and Swiss CPI inflation, paired with exact 1% geometric nominal APY for CHF Cash and vectorized Ito-corrected lognormal Gold/Bitcoin returns.
+*   **Parametric Monte Carlo Mode (`generate_monte_carlo_returns`, `generate_monte_carlo_inflation`)**: Generates an asset return matrix of `shape=(num_runs, duration_months, 5)` seeded by `random_seed` using a lognormal model with Ito drift correction ($\text{drift} = \ln(1 + R) - 0.5\sigma^2$) for US Stocks, Non-US Stocks, Gold, and Bitcoin, constant geometric monthly return $(1 + R_{\text{cash}})^{1/12} - 1$ for CHF Cash, and independent normally distributed annual inflation `generate_monte_carlo_inflation` seeded at `random_seed + 10_000` (preventing RNG stream collisions with US Stock return draws).
 
 ## 4. Data Models
 
@@ -117,6 +117,7 @@ class SimConfig:
     cantonal_multiplier: float = 0.0
     municipal_multiplier: float = 0.0
     tent_duration_years: int = 7
+    seed: int = 42
 ```
 
 **Simulation Output Dictionary:**
