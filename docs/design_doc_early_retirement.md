@@ -18,47 +18,59 @@ To prioritize rapid development, rich interactive visualizations, and local data
 The system is divided into four primary modules:
 
 ### 3.1. User State & Configuration (Input Layer)
-A centralized data structure (`SimConfig`) representing the simulation parameters, enforcing strict mathematical validation:
-*   **Validation Rules**: `num_runs > 0`, `duration_years > 0`, `start_age >= 0`, `tent_duration_years >= 0`, individual asset allocations $\ge 0.0$ and $\sum \text{allocations} = 1.0$, and non-negative spending parameters.
-*   **Demographics**: Age, target duration.
-*   **Economics**: Inflation rate, municipal tax multiplier (Steuerfuss).
-*   **Assets**: Taxable Brokerage, Cash, Pillar 2 (Freizügigkeitskonto), Pillar 3a balances (stored as an array to support staggered withdrawals).
-*   **Expenses & Income**: Annual base expenses, Expected **Monthly** Pillar 1 (AHV) Pension.
-*   **Simulation Config**: Mode (Historic vs. Monte Carlo), Num Runs, Success Criteria (Survival vs. Capital Preservation).
+A centralized data structure (`SimConfig`) representing the simulation parameters, enforcing strict mathematical validation in `__post_init__`:
+*   **Validation Rules**: `num_runs > 0`, `duration_years > 0`, `start_age >= 0`, `tent_duration_years >= 0`, individual asset allocations $\ge 0.0$ and $\sum \text{allocations} = 1.0$, non-negative initial asset balances (`initial_liquid_wealth`, `initial_pillar_2`, `initial_pillar_3a_accounts`), non-negative expenses/income/yields (`annual_base_expenses`, `monthly_ahv_pension`, `dividend_yield`), non-negative tax multipliers (`cantonal_multiplier`, `municipal_multiplier`), non-negative rebalancing thresholds, and non-negative spending strategy parameters (`vanguard_target_rate`, `vanguard_floor_pct`, `vanguard_ceiling_pct`, `dynamic_expense_floor_pct`, `dynamic_expense_ceiling_pct`).
+*   **Demographics**: Retirement age (`start_age`), simulation duration (`duration_years`).
+*   **Economics & Taxes**: Inflation mean & volatility (for Monte Carlo), dividend yield, cantonal tax multiplier (`0.95` for Canton Zurich 2026), and municipal tax multiplier (Steuerfuss, e.g., `1.19` for Zurich City).
+*   **Assets**: Taxable Liquid Wealth, Pillar 2 (`Freizügigkeitskonto`), Pillar 3a balances (stored as a list up to 5 accounts to support staggered withdrawals).
+*   **Expenses & Income**: Annual base expenses, Spending Strategy (`Static`, `Dynamic (Floor & Ceiling)`, `Vanguard Dynamic`), and Expected **Monthly** Pillar 1 (AHV) Pension from age 65.
+*   **Simulation Config**: Simulation Mode (`Historic Backtesting`, `Historic Bootstrapping`, `Monte Carlo`), Number of Runs (`mc_num_runs`, `boot_num_runs`), **Random Seed** (`random_seed`, default `42`), and Success Criteria (`success_pct` of inflation-adjusted starting net worth).
 
 ### 3.2. Tax & Pension Engine
-This is a stateless utility module responsible for all Swiss-specific calculations for a given year. All functions are vectorized, support both scalar and array inputs, and safely clamp negative inputs to zero.
+This is a stateless utility module (`src/tax_engine.py`) responsible for all Swiss-specific tax and social security calculations for a given year. All functions are vectorized, support both scalar and N-dimensional array inputs while preserving return type and shape, and safely clamp negative inputs to zero.
 
-*   **Income Tax (`calculate_income_tax(taxable_income, steuerfuss)`)**: 
+*   **Income Tax (`calculate_income_tax(taxable_income, cantonal_multiplier=1.0, municipal_multiplier=1.19)`)**:
     *   Applies Federal progressive brackets (Single tariff).
-    *   Applies Zurich Cantonal progressive brackets (Single tariff) multiplied by the Cantonal multiplier (100%) + Municipal `steuerfuss` (e.g., 119% for Zurich City).
-*   **Wealth Tax (`calculate_wealth_tax(taxable_wealth, steuerfuss)`)**: 
-    *   Applies Zurich Cantonal wealth tax brackets.
-*   **Capital Withdrawal Tax (`calculate_capital_withdrawal_tax(amount, steuerfuss)`)**: 
-    *   Applied when Pillar 2 or Pillar 3a accounts are liquidated. Uses the separate capital withdrawal tax rate (typically 1/5th or 1/10th of standard rate, depending on the canton's formula).
-*   **AHV Non-Worker Contributions (`calculate_ahv_non_worker(wealth, imputed_pension_income=0)`)**: 
-    *   Calculated based on the official 2025 AHV tables: `determining_wealth = wealth + 20 * imputed_pension_income`. Contribution is 530 CHF for wealth < 350k CHF. For wealth between 350k and 1.75M CHF, it adds 106 CHF for every 50k CHF step above 300k CHF. For wealth above 1.75M CHF, it adds 159 CHF for every 50k CHF step above 1.75M CHF. Capped at 26,500 CHF/year (2025 limits). Supports both scalar and N-dimensional array inputs while strictly preserving return type and shape.
-    *   *Note: The tax brackets and AHV contribution thresholds are modeled as nominal constants (fixed at 2026 values) throughout the simulation, which is a conservative assumption.*
+    *   Applies Zurich Cantonal progressive base brackets (Single tariff) multiplied by `cantonal_multiplier + municipal_multiplier` (e.g., `0.95 + 1.19 = 2.14` in `app.py` for Zurich City 2026).
+*   **Wealth Tax (`calculate_wealth_tax(taxable_wealth, cantonal_multiplier=1.0, municipal_multiplier=1.19)`)**:
+    *   Applies Zurich Cantonal progressive base wealth tax brackets multiplied by `cantonal_multiplier + municipal_multiplier`. Assessed on year-end liquid wealth after deducting the current year's living expenses (`max(0, total_liquid_end - current_expenses)`).
+*   **Capital Withdrawal Tax (`calculate_capital_withdrawal_tax(amount, cantonal_multiplier=1.0, municipal_multiplier=1.19)`)**:
+    *   Applied immediately at source when Pillar 2 or Pillar 3a accounts are liquidated. Uses the separate progressive capital withdrawal tax approximation: Federal at `1/5` of the standard Federal tariff, plus Zurich Cantonal base at `1/10` of the standard Zurich tariff multiplied by `cantonal_multiplier + municipal_multiplier`.
+*   **AHV Non-Worker Contributions (`calculate_ahv_non_worker(wealth, imputed_pension_income=0)`)**:
+    *   Calculated for early retirees (`current_age < 65`) based on the official 2025 AHV tables: `determining_wealth = wealth + 20 * imputed_pension_income` (where `wealth` is `taxable_wealth`). Contribution is 530 CHF for wealth < 350k CHF. For wealth between 350k and 1.75M CHF, it adds 106 CHF for every 50k CHF step above 300k CHF. For wealth above 1.75M CHF, it adds 159 CHF for every 50k CHF step above 1.75M CHF. Capped at 26,500 CHF/year (2025 limits).
+    *   *Note: The tax brackets and AHV contribution thresholds are modeled as nominal constants throughout the simulation, which is a conservative assumption.*
 *   **Pillar 1 AHV Pension Payments**:
-    *   Starting at age 65, the user receives an annual AHV pension. The expected pension value input by the user (in today's CHF) is adjusted for cumulative CPI inflation from the start of the simulation (e.g. if the simulation starts at age 45, it compounds inflation for 20 years before the first payout at age 65).
-    *   Once payouts start, they are adjusted annually based on the simulated CPI inflation of that year. This is treated as taxable income and reduces the required capital liquidation to meet annual expenses. If the pension exceeds expenses, the surplus is reinvested.
+    *   Starting at age 65, the user receives a monthly AHV pension (`monthly_ahv_pension * inflation_factors`), added directly to CHF Cash each month. The input value (in today's CHF) compounds with annual CPI inflation from Year 0 (including all years prior to age 65).
+    *   Annual AHV payouts (`12 * monthly_ahv_pension * inflation_factors`) are included in annual taxable income.
 
 ### 3.3. Simulation Engine (The Core Loop)
-The engine executes a **monthly tick** for `N` runs simultaneously using NumPy arrays. It tracks multi-asset portfolios (US Stocks, Non-US Stocks, CHF Cash, Gold, Bitcoin) via N-dimensional arrays. It handles automatic rebalancing logic based on user configuration (Never, Monthly, Quarterly, Yearly, Threshold, Cash Tent), guards depleted or bankrupt portfolios against rebalancing into risk assets, and applies taxes at the end of each simulated year.
+The engine (`run_simulation` in `src/simulation_engine.py`) executes a **monthly tick** (`m in range(duration_years * 12)`) for `num_runs` paths simultaneously using NumPy arrays across 5 liquid asset classes (`0: US Stocks`, `1: Non-US Stocks`, `2: CHF Cash`, `3: Gold`, `4: Bitcoin`).
 
-**Monthly Tick Logic:**
-1. **Monthly Tick**: The simulation loop operates on a `duration_years * 12` timescale.
-2. **Growth & Drift**: At the start of each month, the 5 asset classes (US Stocks, Non-US Stocks, Cash, Gold, Bitcoin) grow by their respective monthly returns. Pillar 2 and Pillar 3a accounts also grow monthly, assumed to be 100% invested in equities proportional to the user's US/Non-US target allocation.
-3. **Pillar 1 (AHV) Pension (Monthly Check)**: Starting at age 65, the monthly AHV pension is added directly to the CHF Cash asset class each month, adjusted annually for CPI inflation (simplifying the official Swiss mixed index/Mischindex mechanism).
-4. **Rebalancing (Monthly Check)**: If the rebalance strategy is 'Monthly', or if 'Quarterly' and it is the end of a quarter, or if 'Threshold' is breached, or if it's the 12th month of the year and the strategy is 'Yearly' or 'Cash Tent', the asset weights are mathematically reset to the target allocation. Under 'Cash Tent' (Pfau Rising Equity Glide Path), target cash allocation starts at a peak calculated as `tent_duration_years * (annual_base_expenses + estimated_year_0_taxes)` (capped at 100% of initial liquid wealth, accounting for immediate Pillar 2/3a liquidations at age $\ge 65$) at retirement (Year 0), assuming the tent is already built up, and linearly glides down over `tent_duration_years` (default: 7 years) to the base cash allocation, allowing non-cash asset target weights to rise over time.
-    * **Smart Cash Buffer**: If enabled, rebalancing is disabled during market downturns (net worth < inflation-adjusted starting net worth).
-5. **Liquidation**: Age-triggered accounts (Pillar 3a at 60-64, Pillar 2 at 65) are liquidated in their respective months and moved into the taxable liquid wealth pool according to the target allocation. If starting at age $\ge 65$, all Pillar 2 and Pillar 3a accounts are liquidated immediately in Year 0 Month 0, subject to progressive Capital Withdrawal Tax. Year 0 tax estimates and initial Cash Tent weights also incorporate these immediate post-liquidation assets.
-6. **Annual Taxation & Spending Models**: Every 12 months, annual spending is evaluated based on the selected **Spending Strategy**:
-    *   **Static**: $E_t = \text{base\_expenses} \times \text{inflation\_factor}_t$.
-    *   **Dynamic (Floor & Ceiling)**: Expenses drop to `dynamic_expense_floor_pct` of base when net worth is below the starting watermark, and expand to `dynamic_expense_ceiling_pct` when above.
-    *   **Vanguard Dynamic**: Total annual outflow (living expenses + taxes) is recalculated annually as $E_t^{\text{target}} = \text{vanguard\_target\_rate} \times \text{NetWorth}_t$, bounded by a floor $(1 - \text{vanguard\_floor\_pct})$ and ceiling $(1 + \text{vanguard\_ceiling\_pct})$ relative to prior year's inflation-adjusted spending. In the UI, Target Withdrawal Rate ($\text{TWR}$) is bi-directionally synchronized with Annual Base Expenses ($E_0$) via $E_0 + \text{Taxes}_0 \leftrightarrow \text{TWR} \times \text{NetWorth}_0$.
-7. **Outflows**: Annual expenses and taxes are applied (divided monthly or lumped annually). Deductions are made by selling assets proportionally to their target allocation.
-    * **Smart Cash Buffer**: If enabled and the portfolio is in a downturn, expenses are paid out of the CHF Cash allocation first, protecting equities from being sold at depressed prices.
+**Monthly Tick Execution Order:**
+1. **Annual Inflation Update (Month 0 of each year)**:
+    * Updates cumulative `inflation_factors *= (1 + inflation)` using `inflation_matrix[:, year]` (or sampling `normal(inflation_mean, inflation_std)` if `inflation_matrix` is `None`).
+2. **Pension Liquidations & Immediate Capital Withdrawal Tax (Month 0 of each year)**:
+    * **Age < 65**: Staggered liquidation of Pillar 3a accounts at ages `60 + i` (`60, 61, 62, 63, 64` for up to 5 accounts, at most 1 account liquidated per year).
+    * **Age $\ge 65$**: All remaining Pillar 3a accounts and the Pillar 2 (`Freizügigkeitskonto`) account are liquidated (if starting retirement at age $\ge 65$, this occurs immediately in Year 0 Month 0).
+    * **At-Source Tax Deduction**: `calculate_capital_withdrawal_tax` is computed on the total pension liquidation for the year and deducted immediately at source; net proceeds are invested into `liquid_assets` proportionally to `current_target_weights`.
+3. **Market Returns & Bankruptcy Handling (Every Month)**:
+    * Remaining Pillar 2 and Pillar 3a balances grow by 100% equity monthly returns weighted by the user's US vs. Non-US stock target allocation (or 50/50 if target equity weight is zero).
+    * **Bankruptcy Check**: If total liquid wealth is negative (`total_liquid < 0`), all negative debt is consolidated into CHF Cash (index 2) and other liquid asset classes are zeroed.
+    * Positive liquid asset balances earn their respective monthly market returns (`return_matrix[:, m, :]`); negative balances incur a 5% APY debt interest penalty (`(1.05)**(1/12) - 1`).
+4. **Monthly AHV Pension Addition (Every Month if `current_age >= 65`)**:
+    * Adds `monthly_ahv_pension * inflation_factors` directly to `liquid_assets[:, 2]` (CHF Cash).
+5. **Rebalancing Check (Monthly / Quarterly / Threshold / Month 11 for Yearly & Cash Tent)**:
+    * Triggered every month (`Monthly`), at quarter-end (`Quarterly`, `month_of_year % 3 == 2`), at year-end (`Yearly` and `Cash Tent`, `month_of_year == 11`), or whenever max absolute weight drift exceeds `rebalance_threshold` (`Threshold`).
+    * Only solvent portfolios (`total_liquid_val > 0`) are rebalanced.
+    * **Cash Tent (`get_target_weights`)**: Peak target cash weight at Year 0 is computed as `min(1.0, tent_duration_years * (annual_base_expenses + estimate_year_0_taxes(config)) / init_wealth)` (incorporating net Pillar 2/3a liquidations if `start_age >= 65`), and glides linearly down to `alloc_chf_cash` over `tent_duration_years` (default: 7 years).
+    * **Smart Cash Buffer**: If `enable_smart_selling` is enabled, rebalancing is skipped for any run currently in a market downturn (`current_nw < initial_net_worth * inflation_factors`).
+6. **Annual Taxation, Spending & Outflow Deduction (Month 11 of each year)**:
+    * **Spending Evaluation**:
+        * **Static**: `current_expenses = annual_base_expenses * inflation_factors`.
+        * **Dynamic (Floor & Ceiling)**: Scales inflation-adjusted base expenses by `dynamic_expense_floor_pct` when net worth is below the inflation-adjusted starting watermark, and by `dynamic_expense_ceiling_pct` when above.
+        * **Vanguard Dynamic**: Recalculates target spending as `vanguard_target_rate * max(0, current_nw_before_expenses)`, clamped between `(1 - vanguard_floor_pct)` and `(1 + vanguard_ceiling_pct)` of the prior year's inflation-adjusted spending. In `app.py`, Target Withdrawal Rate ($\text{TWR}$) is bi-directionally synchronized with Year 0 Annual Base Expenses ($E_0$) via fixed-point iteration solving $E_0 + \text{Taxes}_0(E_0) = \text{TWR} \times \text{NetWorth}_0$.
+    * **Tax Assessment**: Computes annual `income_tax` on `dividends` (`(US Stocks + Non-US Stocks) * dividend_yield`) + `interest` (`CHF Cash * 0.01`) + `annual_ahv_received`, plus `wealth_tax` and `ahv_contrib` (for `current_age < 65`) on `taxable_wealth = max(0, total_liquid_end - current_expenses)`.
+    * **Asset Selling**: Deducts `deficit = current_expenses + total_taxes`. If `enable_smart_selling` is enabled and the run is in a downturn, positive CHF Cash is spent down first before selling other positive assets proportionally to their current holdings. Otherwise, all positive liquid assets are sold proportionally to their current holdings; any unpaid deficit beyond total liquid assets becomes negative CHF Cash.
 
 ### 3.4. Return Generators & Data Provenance
 The system provides three complementary return simulation engines powered by empirical datasets from Baptiste Wicht (*The Poor Swiss*), hosted at [wichtounet/swr-calculator](https://github.com/wichtounet/swr-calculator) (and documented at [The Poor Swiss](https://thepoorswiss.com)):
@@ -67,9 +79,9 @@ The system provides three complementary return simulation engines powered by emp
     *   `ex_us_stocks.csv`: MSCI EAFE / World ex-US Total Returns proxy (1871–2025).
     *   `usd_chf.csv`: Historical monthly USD/CHF exchange rates (1913–2019 via *The Poor Swiss*, extended through 2025 via the Swiss National Bank).
     *   `ch_inflation.csv`: Historical Swiss Consumer Price Index (1921–2023 via *The Poor Swiss* / Swiss Federal Statistical Office, extended through 2025 via FSO).
-*   **Historic Backtesting Mode**: Ingests contiguous Swiss-adjusted historical returns and Swiss CPI inflation sequences (1922–2025 in CHF). Preserves historical sequence, cross-asset correlation, and macroeconomic autocorrelation. Produces $N = \text{total\_years} - \text{duration\_years} + 1$ overlapping cohorts.
-*   **Historic Bootstrapping (Sampling with Replacement) Mode**: Generates $N$ simulation runs (e.g., 10,000) of length `duration_years` by drawing random annual return and inflation instances with replacement. Jointly samples US Equities, Non-US Equities, and Swiss CPI to preserve cross-asset correlation while stress-testing thousands of alternative sequences of returns.
-*   **Parametric Monte Carlo Mode**: Generates a matrix of `shape=(num_runs, duration_months, 5)` using `numpy.random.lognormal` based on user-provided **Nominal** Means ($\mu$) and Standard Deviations ($\sigma$) for individual asset classes, along with normally distributed inflation applied separately to expenses.
+*   **Historic Backtesting Mode (`get_historic_return_matrix`, `get_historic_inflation_matrix`)**: Ingests contiguous Swiss-adjusted historical equity returns and Swiss CPI inflation sequences (1922–2025 in CHF, 104 years). Produces $N = \text{total\_years} - \text{duration\_years} + 1$ overlapping cohorts. Uses empirical CHF returns for US and Non-US Stocks, 1% nominal APY for CHF Cash, and synthetic normal returns for Gold (`6%` mean, `15%` vol) and Bitcoin (`10%` mean, `60%` vol).
+*   **Historic Bootstrapping Mode (`generate_bootstrapped_data`)**: Generates $N$ simulation runs of length `duration_years` seeded by `random_seed` by jointly sampling random historical calendar years with replacement for US Equities (CHF), Non-US Equities (CHF), and Swiss CPI inflation, paired with 1% nominal APY for CHF Cash and synthetic Gold/Bitcoin returns.
+*   **Parametric Monte Carlo Mode (`generate_monte_carlo_returns`)**: Generates a matrix of `shape=(num_runs, duration_months, 5)` seeded by `random_seed` using a lognormal model with Ito drift correction ($\text{drift} = \ln(1 + R) - 0.5\sigma^2$) for US Stocks, Non-US Stocks, Gold, and Bitcoin, constant geometric monthly return $(1 + R_{\text{cash}})^{1/12} - 1$ for CHF Cash, and normally distributed annual inflation `rng.normal(inflation_mean, inflation_std)`.
 
 ## 4. Data Models
 
@@ -82,7 +94,7 @@ class SimConfig:
     inflation_std: float
     start_age: int
     dividend_yield: float
-    spending_strategy: str = "Vanguard Dynamic" # "Static", "Dynamic (Floor & Ceiling)", "Vanguard Dynamic"
+    spending_strategy: str = "Static" # "Static", "Dynamic (Floor & Ceiling)", "Vanguard Dynamic" (UI default: "Vanguard Dynamic")
     enable_dynamic_expenses: bool = False
     dynamic_expense_floor_pct: float = 1.0
     dynamic_expense_ceiling_pct: float = 1.0
@@ -97,7 +109,7 @@ class SimConfig:
     alloc_chf_cash: float = 0.0
     alloc_gold: float = 0.0
     alloc_bitcoin: float = 0.0
-    rebalance_strategy: str = "Cash Tent" # "Cash Tent", "Monthly", "Quarterly", "Yearly", "Threshold", "Never"
+    rebalance_strategy: str = "Yearly" # "Cash Tent", "Monthly", "Quarterly", "Yearly", "Threshold", "Never" (UI default: "Cash Tent")
     rebalance_threshold: float = 0.0
     enable_smart_selling: bool = True
     annual_base_expenses: float = 0.0
@@ -113,7 +125,7 @@ class SimConfig:
 *   `liquid_assets_by_class`: Annual asset class breakdown `shape=(duration_years, num_runs, 5)`
 *   `pillar_2`: Annual Pillar 2 balance `shape=(duration_years, num_runs)`
 *   `pillar_3a`: Annual total Pillar 3a balance `shape=(duration_years, num_runs)`
-*   `taxes_paid`: Annual taxes paid `shape=(duration_years, num_runs)`
+*   `taxes_paid`: Annual taxes paid (income + wealth + AHV non-worker + capital withdrawal tax) `shape=(duration_years, num_runs)`
 *   `expenses_paid`: Annual living expenses paid `shape=(duration_years, num_runs)`
 *   `income_dividends`: Annual dividend income `shape=(duration_years, num_runs)`
 *   `income_ahv`: Annual AHV pension received `shape=(duration_years, num_runs)`
@@ -121,21 +133,21 @@ class SimConfig:
 *   `initial_net_worth`: Float scalar starting net worth
 
 ## 5. UI Layout (Streamlit)
-*   **Sidebar**: All inputs categorized into 8 dedicated sections: **Demographics**, **Success Criteria**, **Initial Assets (CHF)**, **Target Asset Allocation (%)**, **Spending Strategy**, **Income & Yield**, **Monte Carlo Parameters**, and **Zurich Tax Location**.
-*   **Main Panel**: Displays results across three side-by-side columns for direct comparative analysis: **Historic Backtesting**, **Historic Bootstrapping (Sampling with Replacement)**, and **Monte Carlo**. Each column contains mouse-over header tooltips and:
+*   **Sidebar**: All inputs categorized into 10 dedicated sections: **Demographics**, **Success Criteria**, **Initial Assets (CHF)**, **Target Asset Allocation (%)**, **Rebalancing Strategy**, **Withdrawal Strategy**, **Spending Strategy**, **Income & Yield**, **Monte Carlo Parameters** (including run counts and **Random Seed**), and **Zurich Tax Location**.
+*   **Main Panel**: Displays results across three side-by-side columns for direct comparative analysis: **Historic Backtesting**, **Historic Bootstrapping**, and **Monte Carlo**. Each column contains mouse-over header tooltips and:
     *   **TL;DR Status**: Displays 'BROKE', 'RICH', or 'DEAD' based on median final net worth vs 3x inflation-adjusted initial net worth.
     *   **Metrics**: Probability of Success (based on selected success criteria), Avg Years Below Start NW, Median Ending Net Worth (Real & Nominal), Median Total Withdrawals (Real & Nominal), Pre-AHV Outflow (< Age 65), and Post-65 Outflow (Age 65+).
-    *   **Net Worth Trajectory Chart** (Plotly): Faint lines for individual runs (capped at 100 for Monte Carlo and Bootstrapping), bold lines for 5th, 25th, 50th, 75th, 95th percentiles with horizontal bottom legend.
-    *   **Income vs Required Cash Chart** (Plotly): Stacked bar chart showing median Dividends, AHV Pension, and Capital Sold, with a reference line for Total Cash Needed (Expenses + Taxes) and bottom legend.
+    *   **Net Worth Trajectory Chart** (Plotly): Faint lines for individual runs (all cohorts for Historic Backtesting; capped at 100 runs for Monte Carlo and Bootstrapping), bold lines for 5th, 25th, 50th, 75th, 95th percentiles, and dashed reference line for Inflation-Adj Start NW with horizontal bottom legend.
+    *   **Income vs Required Cash Chart** (Plotly): Stacked bar chart showing median Dividends, AHV Pension, and Capital Sold, with a dashed reference line for Total Cash Needed (Expenses + Taxes) and bottom legend.
     *   **Annual Withdrawal Breakdown Chart** (Plotly): Stacked bar chart showing median living expenses and taxes paid over time with bottom legend.
     *   **Withdrawal Rate Chart** (Plotly): Percentile lines for the withdrawal rate over time (dynamically capped at 25% max) with bottom legend.
-    *   **Asset Allocation Development Chart** (Plotly): Stacked area chart showing the median nominal balance of all asset categories (US Stocks, Non-US Stocks, CHF Cash, Gold, Bitcoin, Pillar 2, and Pillar 3a) over time to visualize portfolio glidepaths, rebalancing, and account liquidations with bottom legend.
-    *   **Run Analysis Tables**: Interactive tables of top 10 best and worst runs/cohorts based on final net worth (showing Final NW (Real), Final NW (Nom), and Min NW (Nominal) values).
+    *   **Asset Allocation Development Chart** (Plotly): Stacked area chart showing the median nominal balance of all asset categories (CHF Cash, US Stocks, Non-US Stocks, Gold, Bitcoin, Pillar 3a, and Pillar 2) over time to visualize portfolio glidepaths, rebalancing, and account liquidations with bottom legend.
+    *   **Cohort / Run Analysis Tables**: Interactive tables of Top 10 Best and Worst cohorts/runs based on final net worth, displaying `Cohort`/`Run`, `Final NW (Real)`, `Final NW (Nom)`, `Min NW (Nom)`, and `Yrs Below` (years below the inflation-adjusted starting net worth watermark).
 
 ## 6. Implementation Plan & Milestones
-1.  **Setup**: Initialize Git repo, basic project structure, and `requirements.txt` (Streamlit, Pandas, NumPy, Plotly).
-2.  **Tax Engine**: Implement and unit test the Zurich/Federal tax brackets and AHV non-worker logic. *This is the most mathematically rigorous step.*
-3.  **Simulation Loop**: Build the vectorized simulation engine.
-4.  **UI Integration**: Build the Streamlit frontend and connect the engine.
-5.  **Return Data**: Integrate a basic historic dataset and the Monte Carlo generator.
+1.  **Setup**: Initialize Git repo, project structure, and `requirements.txt` (Streamlit, Pandas, NumPy, Plotly, Pytest).
+2.  **Tax Engine**: Implement and unit test the Zurich/Federal tax brackets and AHV non-worker logic.
+3.  **Simulation Loop**: Build the vectorized monthly simulation engine with Cash Tent, Smart Cash Buffer, and dynamic spending rules.
+4.  **UI Integration**: Build the 3-column comparative Streamlit frontend and connect the simulation engine.
+5.  **Return Data**: Integrate the 1922–2025 historical Swiss dataset, bootstrapper, and lognormal Monte Carlo generator.
 

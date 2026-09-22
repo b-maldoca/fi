@@ -1538,7 +1538,37 @@ def test_sim_config_validation_extended_negative_inputs():
         SimConfig(**base_args, dynamic_expense_ceiling_pct=-0.2)
 
 
+def test_seed_reproducibility_and_variation():
+    from simulation_engine import generate_monte_carlo_returns
 
+    # 1. Bootstrapping reproducibility with same seed
+    b_ret1, b_inf1 = generate_bootstrapped_data(num_runs=20, duration_years=10, seed=42)
+    b_ret2, b_inf2 = generate_bootstrapped_data(num_runs=20, duration_years=10, seed=42)
+    assert np.array_equal(b_ret1, b_ret2)
+    assert np.array_equal(b_inf1, b_inf2)
 
+    # Bootstrapping variation with different seed
+    b_ret3, b_inf3 = generate_bootstrapped_data(num_runs=20, duration_years=10, seed=999)
+    assert not np.array_equal(b_ret1, b_ret3)
+    assert not np.array_equal(b_inf1, b_inf3)
 
+    # 2. Monte Carlo reproducibility with same seed
+    mc_args = dict(
+        num_runs=20,
+        duration_years=10,
+        ret_us=0.07,
+        ret_non_us=0.06,
+        ret_cash=0.01,
+        ret_gold=0.06,
+        ret_btc=0.10,
+        vol_eq=0.15,
+        vol_gold=0.15,
+        vol_btc=0.60,
+    )
+    mc_ret1 = generate_monte_carlo_returns(**mc_args, seed=42)
+    mc_ret2 = generate_monte_carlo_returns(**mc_args, seed=42)
+    assert np.array_equal(mc_ret1, mc_ret2)
 
+    # Monte Carlo variation with different seed
+    mc_ret3 = generate_monte_carlo_returns(**mc_args, seed=999)
+    assert not np.array_equal(mc_ret1, mc_ret3)

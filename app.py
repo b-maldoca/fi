@@ -270,6 +270,7 @@ vol_btc = st.sidebar.number_input("Bitcoin Volatility (%)", value=60.0, step=0.1
 
 mc_num_runs = int(st.sidebar.number_input("Number of Monte Carlo Runs", value=1000, min_value=100, max_value=10000, step=100, help="How many distinct future paths to simulate."))
 boot_num_runs = int(st.sidebar.number_input("Number of Bootstrapping Runs", value=1000, min_value=100, max_value=10000, step=100, help="How many empirical sampling paths (with replacement) to simulate."))
+random_seed = int(st.sidebar.number_input("Random Seed", value=42, min_value=0, step=1, help="Random seed for reproducible Monte Carlo and Bootstrapping simulation paths."))
 
 try:
     dummy = get_historic_return_matrix(int(duration))
@@ -331,7 +332,7 @@ if True:
     config_hist = create_config(hist_num_runs)
     
     from simulation_engine import generate_monte_carlo_returns
-    rng = np.random.default_rng(42)
+    rng = np.random.default_rng(random_seed)
     
     mc_return_matrix = generate_monte_carlo_returns(
         num_runs=config_mc.num_runs,
@@ -344,14 +345,14 @@ if True:
         vol_eq=vol_eq,
         vol_gold=vol_gold,
         vol_btc=vol_btc,
-        seed=42
+        seed=random_seed
     )
     mc_inflation_matrix = rng.normal(inflation_mean, inflation_std, (config_mc.num_runs, config_mc.duration_years))
     
     boot_return_matrix, boot_inflation_matrix = generate_bootstrapped_data(
         num_runs=config_boot.num_runs,
         duration_years=config_boot.duration_years,
-        seed=42
+        seed=random_seed
     )
     
     hist_return_matrix = get_historic_return_matrix(config_hist.duration_years)

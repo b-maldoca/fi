@@ -7,15 +7,16 @@ Phase 1 focuses on the **post-retirement decumulation phase** for a single indiv
 ## Features
 
 *   **Three Comparative Simulation Methods**: Compare outcomes side-by-side using:
-    1. **Historic Backtesting**: Replay contiguous historical periods (~100 years of Swiss-adjusted data).
-    2. **Historic Bootstrapping**: Random sampling with replacement across historical annual returns (as described in FIRE literature like *The Poor Swiss*).
-    3. **Parametric Monte Carlo**: Stochastic lognormal return generator with customizable asset class means and volatilities.
-*   **Swiss Tax Modeling**: Accurately models Federal, Cantonal, and Municipal income and wealth taxes for Canton Zurich.
-*   **AHV for Non-Workers**: Models mandatory AHV contributions for early retirees before age 65.
-*   **Pillar 2 & 3a Liquidations**: Simulates growth and staggered lump-sum withdrawals of Pillar 3a accounts (up to 5) and Pillar 2 vesting accounts, including capital withdrawal taxes.
-*   **Smart Cash Buffer**: Optional defensive strategy to spend cash first during market downturns, protecting equities.
-*   **Dynamic Expenses**: Optional adjustment to reduce expenses when net worth drops below the starting watermark, plus Vanguard Dynamic Spending rules.
-*   **Configurable Success Criteria**: Set target ending net worth (e.g., preserve 50% of inflation-adjusted starting wealth) and calculate probability of success.
+    1. **Historic Backtesting**: Replay contiguous historical periods (1922–2025, 104 years of Swiss-adjusted market and CPI data).
+    2. **Historic Bootstrapping**: Joint random sampling with replacement across historical annual equity returns and Swiss CPI inflation (as described in FIRE literature like *The Poor Swiss*).
+    3. **Parametric Monte Carlo**: Stochastic lognormal return generator (with Ito drift correction) and customizable asset class means, volatilities, inflation parameters, and reproducible **Random Seed**.
+*   **Swiss Tax Modeling**: Accurately models Federal, Cantonal (95% Steuerfuss), and Municipal (e.g., 119% Zurich City) income and wealth taxes for Canton Zurich.
+*   **AHV for Non-Workers**: Models mandatory AHV contributions for early retirees before age 65 based on wealth.
+*   **Pillar 2 & 3a Liquidations**: Simulates tax-sheltered equity growth and staggered lump-sum withdrawals of Pillar 3a accounts (up to 5 accounts between ages 60–64) and Pillar 2 vesting accounts (at age 65, or Year 0 if retiring at $\ge 65$), including immediate progressive capital withdrawal taxes.
+*   **Rebalancing & Pfau Cash Tent Glidepath**: Supports Cash Tent (rising equity glidepath from a multi-year cash buffer of expenses + estimated taxes), Monthly, Quarterly, Yearly, Threshold-based, and Never rebalancing strategies.
+*   **Smart Cash Buffer**: Optional defensive strategy during market downturns (net worth below inflation-adjusted starting watermark) to pause rebalancing and spend CHF Cash first before selling equities.
+*   **Flexible Spending Strategies**: Choose between **Static** (inflation-adjusted base expenses), **Dynamic (Floor & Ceiling)**, and **Vanguard Dynamic** spending (target withdrawal rate bi-directionally synchronized with Year 0 base expenses and estimated taxes).
+*   **Configurable Success Criteria**: Set target ending net worth (e.g., preserve 50% of inflation-adjusted starting wealth) and evaluate survival and wealth preservation metrics.
 
 ## Data Sources & Provenance
 
@@ -32,19 +33,22 @@ $$\text{Return}_{\text{CHF}} = (1 + \text{Return}_{\text{USD}}) \times \left(\fr
 ## Project Structure
 
 ```text
-├── app.py                  # Streamlit frontend UI
-├── data/                   # Historical CSV datasets from wichtounet/swr-calculator & SNB/FSO
+├── app.py                              # Streamlit frontend UI
+├── data/                               # Historical CSV datasets from wichtounet/swr-calculator & SNB/FSO
 ├── src/
-│   ├── simulation_engine.py # Core decumulation simulation loop
-│   ├── tax_engine.py        # Swiss/Zurich tax calculations
-│   └── historic_returns.py  # Historic return data and generators
+│   ├── simulation_engine.py            # Core monthly decumulation simulation loop & Monte Carlo generator
+│   ├── tax_engine.py                   # Swiss Federal & Canton Zurich tax and AHV calculations
+│   └── historic_returns.py             # Historic return datasets and bootstrapping generators
 ├── scripts/
-│   └── build_historic_returns.py # Pipeline building historic_returns.py from data/
+│   └── build_historic_returns.py       # Data pipeline building src/historic_returns.py from data/
+├── tests/
+│   ├── test_simulation_engine.py       # Unit & integration tests for simulation engine and return generators
+│   └── test_tax_engine.py              # Unit tests for income, wealth, capital withdrawal, and AHV taxes
 ├── docs/
-│   ├── prd_early_retirement_calc.md # Product Requirement Document
-│   └── design_doc_early_retirement.md # Technical Design Document
-├── requirements.txt         # Python dependencies
-└── venv/                    # Python virtual environment (ignored by git)
+│   ├── prd_early_retirement_calc.md    # Product Requirement Document (PRD)
+│   └── design_doc_early_retirement.md  # Technical Design Document (DD)
+├── requirements.txt                    # Python dependencies
+└── venv/                               # Python virtual environment (ignored by git)
 ```
 
 ## Getting Started
@@ -56,7 +60,7 @@ $$\text{Return}_{\text{CHF}} = (1 + \text{Return}_{\text{USD}}) \times \left(\fr
 
 ### Installation
 
-1.  Clone the repository (once created on GitHub):
+1.  Clone the repository:
     ```bash
     git clone git@github.com:b-maldoca/fi.git
     cd fi
@@ -73,7 +77,14 @@ $$\text{Return}_{\text{CHF}} = (1 + \text{Return}_{\text{USD}}) \times \left(\fr
 
 Start the Streamlit app:
 ```bash
-streamlit run app.py
+./venv/bin/streamlit run app.py
 ```
 
-The app will open in your default browser, typically at `http://localhost:8501`.
+The app will open in your browser at `http://localhost:8501`.
+
+### Running Tests
+
+Execute the test suite using `pytest`:
+```bash
+./venv/bin/pytest
+```

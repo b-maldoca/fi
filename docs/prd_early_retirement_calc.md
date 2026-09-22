@@ -76,49 +76,53 @@ The application must allow the user to input the following parameters:
     *   **Never**: Assets drift naturally.
 *   **Smart Cash Buffer (Selling Strategy):** A defensive mechanism during market downturns. If the net worth drops below the inflation-adjusted starting net worth, the engine skips portfolio rebalancing and forces all expenses to be paid out of the CHF Cash allocation first, protecting equities from being sold at depressed prices. Normal proportional selling and rebalancing resumes once the portfolio recovers above the watermark.
 
-#### D. Expenses & Spending Models (Post-Retirement)
+#### D. Expenses, Income & Simulation Parameters (Post-Retirement)
 *   Projected annual base retirement expenses (post-retirement) in CHF.
 *   **Spending Strategy Selector**: Configurable spending behavior with three selectable models:
     *   **Static Spending**: Base expenses grow strictly with CPI inflation.
     *   **Dynamic Spending (Floor & Ceiling)**: Expenses drop to a configurable floor (e.g. 85% of base) when total net worth is below the starting watermark, and expand to a ceiling (e.g. 115% of base) when above.
     *   **Vanguard Dynamic Spending**: Annual spending is recalculated each year as a target percentage of total portfolio net worth (e.g. 3.5%), bounded by a maximum annual cut (floor, e.g. -5.0%) and maximum annual raise (ceiling, e.g. +5.0%) relative to prior year's inflation-adjusted spending. The Target Withdrawal Rate (TWR) represents total annual portfolio outflows (net living expenses + estimated taxes) and is bi-directionally synchronized in the UI with Annual Base Expenses.
-*   Expected **Monthly** Pillar 1 (AHV) Pension from age 65 (CHF).
+*   **Income & Yield**:
+    *   Expected **Monthly** Pillar 1 (AHV) Pension from age 65 (CHF).
+    *   Expected Annual **Dividend Yield (%)** on equity holdings (US & Non-US Stocks).
+*   **Monte Carlo & Simulation Parameters**:
+    *   Nominal Mean Returns (%) and Volatilities (%) for asset classes, plus Inflation Mean (%) and Inflation Volatility (%) for Monte Carlo mode.
+    *   Number of Monte Carlo Runs (`mc_num_runs`) and Number of Bootstrapping Runs (`boot_num_runs`).
+    *   **Random Seed** (`random_seed`, default `42`) for reproducible Monte Carlo and Historic Bootstrapping simulation paths.
 
 
 ---
 
 ### 4.2. Emulation Engine & Calculation Logic
 
-The core simulator must run annual cycles (ticks) and compute the following:
+The core simulator executes monthly steps with annual tax and spending evaluations:
 
 #### A. Income Tax (Zurich & Federal)
 *   Calculate combined taxable income:
-    *   Base + Bonus + Vesting GSUs (treated as income upon vest in Switzerland).
-    *   Dividends from taxable investments (assumed yield, e.g., 2%).
-    *   **Pillar 1 (AHV) Pension payments** (fully taxable).
-    *   Interest.
-    *   *Minus* deductions: Pillar 3a contributions, Pillar 2 standard contributions, Pillar 2 voluntary buy-ins, professional expenses.
-*   Apply the progressive Federal Income Tax rate.
-*   Apply the progressive Zurich Cantonal and Municipal Income Tax rates (multiplied by the municipality's specific tax multiplier, e.g., 119% for Zurich city).
+    *   Dividends from taxable equity investments (`(US Stocks + Non-US Stocks) * dividend_yield`).
+    *   Interest from CHF Cash holdings (`CHF Cash * 1.0%` nominal APY).
+    *   **Pillar 1 (AHV) Pension payments** received from age 65 onward (`12 * monthly_ahv_pension * inflation_factor`, fully taxable).
+    *   *(Deferred to Phase 2: Pre-retirement Base + Bonus + Vesting GSUs and working-phase Pillar 2/3a contribution deductions).*
+*   Apply the progressive Federal Income Tax rate (Single tariff).
+*   Apply the progressive Zurich Cantonal and Municipal Income Tax rates (base rate multiplied by `cantonal_multiplier` (95% for 2026) + `municipal_multiplier` (e.g., 119% for Zurich City)).
 
 #### B. Wealth Tax (Zurich)
 *   Calculate taxable wealth:
-    *   Total value of taxable brokerage accounts.
-    *   Pillar 3b and cash.
+    *   Year-end total value of taxable liquid investments (US Stocks, Non-US Stocks, CHF Cash, Gold, Bitcoin) *minus* the current year's living expenses (`max(0, total_liquid_end - current_expenses)`).
     *   *Note: Pillar 2 and Pillar 3a balances are exempt from wealth tax until withdrawal.*
-*   Apply Zurich progressive wealth tax rates.
+*   Apply Zurich progressive wealth tax base rates multiplied by `cantonal_multiplier + municipal_multiplier`.
 
 #### C. Swiss Pension System (The 3 Pillars)
 *   **Pillar 1 (AHV)**:
-    *   Calculate mandatory contributions during the working phase (approx. 5.3% employee share).
-    *   **Crucial**: Calculate mandatory AHV contributions for *non-working* individuals post-retirement up to age 65. This is based on wealth and imputed pension income (can be significant for early retirees).
-    *   Model payout starting at official retirement age (currently 65 for both men and women). The user's input representing today's pension value is adjusted for cumulative inflation from the start of the simulation until the payout starts at 65. This payout acts as an income stream that offsets living expenses and is fully subject to income tax (adjusted annually for inflation thereafter).
+    *   *(Deferred to Phase 2: Mandatory employee contributions during the pre-retirement working phase).*
+    *   **Crucial (Phase 1)**: Calculate mandatory AHV contributions for *non-working* individuals post-retirement up to age 65 (`current_age < 65`). Based on `determining_wealth = taxable_wealth + 20 * imputed_pension_income` (min 530 CHF/year, max 26,500 CHF/year using official 2025 brackets).
+    *   Model monthly payout starting at official retirement age (65). The user's input representing today's monthly pension value is adjusted for cumulative CPI inflation from Year 0 (including all years before age 65), added directly to CHF Cash each month, and taxed annually as income.
 *   **Pillar 2**:
-    *   Model monthly growth of the **Freizügigkeitskonto** (Assumed to be 100% invested in equities proportional to target US/Non-US allocation).
-    *   Model **lump-sum withdrawal (Kapitalbezug)** at retirement age 65 (or immediately in Year 0 Month 0 if starting retirement at age $\ge 65$). Subject to separate capital withdrawal tax.
+    *   Model monthly growth of the **Freizügigkeitskonto** (assumed to be 100% invested in equities proportional to target US/Non-US allocation).
+    *   Model **lump-sum withdrawal (Kapitalbezug)** at retirement age 65 (or immediately in Year 0 Month 0 if starting retirement at age $\ge 65$). Subject to immediate progressive capital withdrawal tax at source.
 *   **Pillar 3a**:
-    *   Model monthly growth (Assumed to be 100% invested in equities proportional to target US/Non-US allocation).
-    *   Model staggered lump-sum withdrawals between age 60 and 65 (up to 5 accounts can be held to stagger tax brackets). If starting at age $\ge 65$, all accounts liquidate immediately in Year 0 Month 0. Apply capital withdrawal tax.
+    *   Model monthly growth (assumed to be 100% invested in equities proportional to target US/Non-US allocation).
+    *   Model staggered lump-sum withdrawals between age 60 and 64 (`60 + i` for up to 5 accounts, max 1 account per year). If starting at age $\ge 65$, all remaining accounts liquidate immediately in Year 0 Month 0. Subject to immediate progressive capital withdrawal tax at source.
 
 #### D. Investment Growth & Returns (CHF-based)
 The application supports three distinct return simulation engines utilizing empirical datasets curated by Baptiste Wicht (*The Poor Swiss*), available at [wichtounet/swr-calculator](https://github.com/wichtounet/swr-calculator) (and [The Poor Swiss](https://thepoorswiss.com)):
@@ -127,9 +131,9 @@ The application supports three distinct return simulation engines utilizing empi
     *   **Non-US Equities (USD)**: MSCI EAFE / World ex-US Total Returns proxy (1871–2025).
     *   **USD/CHF Exchange Rates**: Historical monthly FX rates (1913–2019 via *The Poor Swiss*, 2020–2025 via Swiss National Bank SNB).
     *   **Swiss Inflation (CPI)**: Historical Swiss Consumer Price Index (1921–2023 via *The Poor Swiss* / Swiss Federal Statistical Office FSO/BFS, 2024–2025 via FSO).
-*   **Historic Backtesting Mode**: Replays contiguous historical **nominal** return and inflation sequences (1922–2025 in CHF). Preserves historical sequence, macroeconomic autocorrelation, and historical Swiss inflation, generating $N = \text{total\_years} - \text{duration\_years} + 1$ overlapping cohorts.
-*   **Historic Bootstrapping (Sampling) Mode**: Randomly samples annual return and inflation blocks from the historical dataset with replacement across $N$ simulation iterations (e.g. 10,000 runs). Preserves cross-asset and inflation correlations while stress-testing sequence-of-returns risk beyond contiguous records.
-*   **Parametric Monte Carlo Mode**: Stochastic simulation using user-provided **nominal** asset class means ($\mu$), standard deviations ($\sigma$), and correlation assumptions via lognormal returns.
+*   **Historic Backtesting Mode**: Replays contiguous historical **nominal** return and inflation sequences (1922–2025 in CHF, 104 years). Preserves historical sequence, macroeconomic autocorrelation, and historical Swiss inflation, generating $N = \text{total\_years} - \text{duration\_years} + 1$ overlapping cohorts.
+*   **Historic Bootstrapping (Sampling) Mode**: Jointly samples annual return and inflation blocks from the historical dataset with replacement across $N$ simulation iterations seeded by `random_seed`. Preserves cross-asset and inflation correlations while stress-testing sequence-of-returns risk beyond contiguous records.
+*   **Parametric Monte Carlo Mode**: Stochastic simulation seeded by `random_seed` using user-provided **nominal** asset class means ($\mu$) and standard deviations ($\sigma$) via lognormal returns (with Ito drift correction) and normally distributed annual inflation.
 *   Model inflation in CHF explicitly by increasing base retirement expenses and AHV pension payouts annually. This separates nominal asset growth from the rising cost of living.
 
 
@@ -137,23 +141,25 @@ The application supports three distinct return simulation engines utilizing empi
 
 ### 4.3. Outputs & Visualizations
 
-The tool must present the user with results across simulation modes (Historic Backtesting, Bootstrapping, Monte Carlo):
+The tool presents results side-by-side across all three simulation modes (**Historic Backtesting**, **Historic Bootstrapping**, **Monte Carlo**):
 *   **TL;DR Status Indicator**: A quick overarching assessment of the median outcome:
-    *   **BROKE**: Median final net worth <= 0 (You run out of money).
-    *   **RICH**: Median final net worth >= 3x inflation-adjusted initial net worth (Real wealth grows massively).
-    *   **DEAD**: Final net worth is positive but below 3x the inflation-adjusted initial net worth (Safe, but real wealth depletes or stagnates).
-*   **Net Worth Trajectory Chart**: A chart showing the progression of assets over the 50-year horizon.
-    *   For multi-run simulations (Monte Carlo, Bootstrapping, and Historic Backtesting cohorts), it must plot individual runs (faint "spaghetti" lines, capped at 100 runs for performant rendering in stochastic modes) to show dispersion.
-    *   It must overlay clear percentile lines: **5th, 25th, 50th (median), 75th, and 95th** percentiles.
-*   **Income vs Required Cash Chart**: Dynamic annual view of inflows (Dividends, AHV annuities post-65, Capital Sold) vs. outflows (Total Cash Needed: Expenses + taxes).
-*   **Withdrawal Rate Chart**: Percentile chart showing annual withdrawal rate over time.
-*   **Asset Allocation Development Chart**: Stacked area chart displaying the median nominal balance of all asset categories (taxable liquid investments: US Stocks, Non-US Stocks, CHF Cash, Gold, Bitcoin, as well as Pillar 2 and Pillar 3a accounts) over time to visualize total net worth breakdown, glidepaths, and liquidations.
-*   **Expenses & Taxes Chart**: Stacked bar chart showing median expenses and median taxes paid over time.
+    *   **BROKE**: Median final net worth $\le 0$ (You run out of money).
+    *   **RICH**: Median final net worth $\ge 3\times$ inflation-adjusted initial net worth (Real wealth grows massively).
+    *   **DEAD**: Final net worth is positive but below $3\times$ the inflation-adjusted initial net worth (Safe, but real wealth depletes or grows modestly).
+*   **Net Worth Trajectory Chart**: A chart showing the progression of assets over the simulation horizon.
+    *   Plots individual runs (faint "spaghetti" lines for all contiguous cohorts in Historic Backtesting, capped at 100 runs for performant rendering in Bootstrapping and Monte Carlo) to show dispersion.
+    *   Overlays clear percentile lines (**5th, 25th, 50th (median), 75th, and 95th** percentiles) and a dashed **Inflation-Adj Start NW** reference line.
+*   **Income vs Required Cash Chart**: Dynamic annual stacked bar view of inflows (Dividends, AHV Pension post-65, Capital Sold) vs. a dashed reference line for Total Cash Needed (Expenses + Taxes).
+*   **Annual Withdrawal Breakdown Chart**: Stacked bar chart showing median Living Expenses and median Taxes Paid over time.
+*   **Withdrawal Rate Chart**: Percentile chart showing annual withdrawal rate over time (dynamically capped at 25% max for readability).
+*   **Asset Allocation Development Chart**: Stacked area chart displaying the median nominal balance of all asset categories (CHF Cash, US Stocks, Non-US Stocks, Gold, Bitcoin, Pillar 3a, and Pillar 2) over time to visualize total net worth breakdown, glidepaths, and liquidations.
 *   **Key Outflow KPI Metrics**:
+    *   **Avg Years Below Start NW**: Average number and percentage of years where net worth falls below the inflation-adjusted starting net worth watermark.
+    *   **Median Ending NW**: Real (inflation-adjusted) and Nominal ending net worth.
     *   **Median Total Withdrawals**: Total cumulative cash spent on living expenses and taxes over the entire retirement horizon (Real and Nominal).
     *   **Pre-AHV Outflow (< Age 65)**: Total median cash required to cover living expenses and taxes during the early retirement gap before age 65.
     *   **Post-65 Outflow (Age 65+)**: Total median cash required to cover living expenses and taxes from age 65 through end-of-life.
-*   **Run Analysis Tables**: Interactive data tables detailing the Top 10 Best and Worst individual simulation cohorts/runs, reporting Final Net Worth (Real), Final Net Worth (Nominal), and Minimum Net Worth (Nominal) reached.
+*   **Cohort / Run Analysis Tables**: Interactive data tables detailing the Top 10 Best and Worst individual simulation cohorts/runs, reporting `Cohort`/`Run`, `Final NW (Real)`, `Final NW (Nom)`, `Min NW (Nom)`, and `Yrs Below` (years below the starting watermark).
 *   **Success Metric**:
     *   Allows configuring a target ending net worth as a percentage of inflation-adjusted starting net worth (default is 50.0%).
     *   Shows the calculated probability of success matching this definition across all simulation runs.
@@ -168,18 +174,18 @@ The tool must present the user with results across simulation modes (Historic Ba
 | **No Capital Gains Tax** | Capital gains on private assets (e.g., selling stocks) are 100% tax-free. | Only dividends/interest add to taxable income. |
 | **Wealth Tax** | Canton Zurich taxes net wealth globally. | High net worth individuals pay significant wealth tax, which acts as a drag on portfolio growth during decumulation. |
 | **AHV for Non-Workers** | Early retirees must pay AHV contributions based on their wealth and pension income. | Can cost up to ~26,500 CHF/year per person if assets are high. |
-| **Pillar 2 Buy-ins** | Voluntary contributions to BVG are tax-deductible. | Excellent tax optimization strategy in high-earning years. |
+| **Pillar 2 Buy-ins** | Voluntary contributions to BVG are tax-deductible. | Excellent tax optimization strategy in high-earning years (Phase 2). |
 | **Capital Withdrawal Tax** | Pillar 2 & 3a withdrawals are taxed at a separate, progressive rate, independent of normal income. | Staggering withdrawals over multiple years (different accounts) is required for optimization. |
 
 ---
 
 ## 6. Non-Functional Requirements
 
-*   **Privacy & Data Security**: Financial data is highly sensitive. The tool should ideally run entirely in the browser (client-side) or local host, without sending private financial data to a backend server.
-*   **Extensibility**: The simulation engine should be decoupled from the UI, allowing it to be run as a CLI or library for scripting.
-*   **Performance**: Monte Carlo simulations (10,000 runs over 50 years) should complete in under 5 seconds.
+*   **Privacy & Data Security**: Financial data is highly sensitive. The tool runs locally without sending private financial data to an external server.
+*   **Extensibility**: The simulation engine (`src/simulation_engine.py`, `src/tax_engine.py`, `src/historic_returns.py`) is decoupled from the Streamlit UI (`app.py`), allowing direct programmatic use and unit testing.
+*   **Performance**: Vectorized NumPy operations allow Monte Carlo and Bootstrapping simulations (1,000–10,000 runs over 50 years) to execute in sub-second to a few seconds.
 
-## 7. Next Steps & Design Doc Focus Areas
-1.  **Architecture**: Decide between a TypeScript React client-side app or a Python backend with a simple frontend (Streamlit/FastAPI).
-2.  **Tax Formula Accuracy**: How to approximate the complex progressive tax curves of Zurich and Federal taxes without requiring a heavy external database.
-3.  **Monte Carlo Implementation**: Choosing the right statistical modeling library.
+## 7. Architecture & Design Decisions Implemented
+1.  **Architecture**: Built with Python, Streamlit, NumPy, Pandas, and Plotly (`app.py` + `src/`).
+2.  **Tax Formula Accuracy**: Vectorized progressive bracket engine in `src/tax_engine.py` modeling Federal income tax, Zurich Cantonal/Municipal income & wealth taxes, capital withdrawal tax, and 2025 AHV non-worker contribution tables.
+3.  **Simulation & Return Modeling**: Side-by-side execution of contiguous Historic Backtesting (`1922–2025`), joint Historic Bootstrapping, and Ito-corrected lognormal Monte Carlo simulation with configurable `Random Seed`.
