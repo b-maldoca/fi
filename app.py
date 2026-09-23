@@ -477,7 +477,24 @@ with st.spinner('Running Historic Backtesting simulations...'):
     history_hist = run_simulation(config_hist, hist_return_matrix, hist_inflation_matrix)
 
 
-def render_results(history, config, num_runs, title, inflation_matrix, success_pct):
+def _build_hist_eff_caption(history, config, inflation_matrix, success_pct) -> str:
+    final_net_worth = history['net_worth'][-1, :]
+    initial_nw = history['initial_net_worth']
+    safe_inflation_steps = np.maximum(0.01, 1.0 + inflation_matrix)
+    run_final_inflation_factor = np.prod(safe_inflation_steps, axis=1)
+    target_ending_nw = (success_pct / 100.0) * (initial_nw * run_final_inflation_factor)
+    hist_success_rate = float(np.mean(final_net_worth > target_ending_nw) * 100.0)
+    eff_stats = compute_effective_sample_size(
+        len(HISTORIC_YEARS), config.duration_years, hist_success_rate
+    )
+    return (
+        f"⚠️ <b>Effective Sample Size (<i>N</i><sub>eff</sub>): {eff_stats['n_eff']:.1f}</b> independent cohorts "
+        f"(from {int(eff_stats['n_cohorts'])} overlapping {config.duration_years}y windows) · "
+        f"<b>90% CI: {eff_stats['ci_low_pct']:.0f}%–{eff_stats['ci_high_pct']:.0f}%</b>"
+    )
+
+
+def render_results(history, config, num_runs, title, inflation_matrix, success_pct, hist_eff_caption: str = ""):
     header_tooltips = {
         "Historic Backtesting": "Replays exact contiguous historical sequences (e.g. 1928–1978, 1929–1979) from 104 years of historical Swiss-adjusted market data. Because rolling multi-decade cohorts overlap heavily, effective sample size N_eff = T / D is surfaced alongside a 90% Wilson confidence band, and tail lines show Worst/Best Cohort instead of unsupported 5th/95th percentiles.",
         "Historic Bootstrapping": "Creates thousands of distinct retirement scenarios using the Politis–Romano (1994) Stationary Bootstrap with circular wrap-around and geometric block lengths (default mean 5 years). Preserves intra-year and multi-year macroeconomic cycles while sampling all historical years with equal 1/T probability.",
@@ -521,11 +538,14 @@ def render_results(history, config, num_runs, title, inflation_matrix, success_p
     median_cum_inflation = np.median(cum_inflation, axis=0)
     inf_adj_start_nw_trajectory = initial_nw * median_cum_inflation
     st.markdown(f"**Nominal Starting NW:** {initial_nw:,.0f} CHF")
-    if is_historic_backtest:
-        st.caption(
-            f"⚠️ **Effective Sample Size ($N_\\text{{eff}}$): {eff_stats['n_eff']:.1f}** independent cohorts "
-            f"(from {int(eff_stats['n_cohorts'])} overlapping {config.duration_years}y windows) · "
-            f"**90% CI: {eff_stats['ci_low_pct']:.0f}%–{eff_stats['ci_high_pct']:.0f}%**"
+    if hist_eff_caption:
+        visibility_style = "visible" if is_historic_backtest else "hidden"
+        st.markdown(
+            f'<div style="font-size: 0.875rem; color: rgba(49, 51, 63, 0.75); line-height: 1.4; '
+            f'margin-top: -0.25rem; margin-bottom: 0.25rem; visibility: {visibility_style};" '
+            f'aria-hidden="{"false" if is_historic_backtest else "true"}">'
+            f'{hist_eff_caption}</div>',
+            unsafe_allow_html=True,
         )
 
     rich_threshold = initial_nw * median_cum_inflation[-1] * 3.0
@@ -832,10 +852,11 @@ def render_results(history, config, num_runs, title, inflation_matrix, success_p
     }), hide_index=True, width='stretch')
 
 
+hist_eff_caption = _build_hist_eff_caption(history_hist, config_hist, hist_inflation_matrix, success_pct)
 col_hist, col_boot, col_mc = st.columns(3)
 with col_hist:
-    render_results(history_hist, config_hist, hist_num_runs, "Historic Backtesting", hist_inflation_matrix, success_pct)
+    render_results(history_hist, config_hist, hist_num_runs, "Historic Backtesting", hist_inflation_matrix, success_pct, hist_eff_caption)
 with col_boot:
-    render_results(history_boot, config_boot, boot_num_runs, "Historic Bootstrapping", boot_inflation_matrix, success_pct)
+    render_results(history_boot, config_boot, boot_num_runs, "Historic Bootstrapping", boot_inflation_matrix, success_pct, hist_eff_caption)
 with col_mc:
-    render_results(history_mc, config_mc, mc_num_runs, "Monte Carlo", mc_inflation_matrix, success_pct)
+    render_results(history_mc, config_mc, mc_num_runs, "Monte Carlo", mc_inflation_matrix, success_pct, hist_eff_caption)

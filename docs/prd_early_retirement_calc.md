@@ -178,7 +178,7 @@ The tool presents results side-by-side across all three simulation modes (**Hist
 *   **Success Metric & Effective Sample Size ($N_{\text{eff}}$)**:
     *   Allows configuring a target ending net worth as a percentage of inflation-adjusted starting net worth (default is 50.0%).
     *   Shows the calculated probability of success matching this definition across all simulation runs.
-    *   In **Historic Backtesting**, explicitly surfaces the number of overlapping cohorts ($N_{\text{cohorts}} = T - D + 1$), the **Effective Sample Size ($N_{\text{eff}} = T / D$)** (e.g. `2.6` for a 40-year horizon or `2.1` for a 50-year horizon across 104 years), and the **90% two-sided Wilson confidence interval** evaluated at $N_{\text{eff}}$.
+    *   In **Historic Backtesting**, explicitly surfaces the number of overlapping cohorts ($N_{\text{cohorts}} = T - D + 1$), the **Effective Sample Size ($N_{\text{eff}} = T / D$)** (e.g. `2.6` for a 40-year horizon or `2.1` for a 50-year horizon across 104 years), and the **90% two-sided Wilson confidence interval** evaluated at $N_{\text{eff}}$ (with matching vertical space reserved in **Historic Bootstrapping** and **Monte Carlo** so all three columns remain vertically aligned).
 
 
 ---
