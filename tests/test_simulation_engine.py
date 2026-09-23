@@ -1816,3 +1816,66 @@ def test_vanguard_dynamic_net_target_rate_no_tax_double_counting():
     assert np.isclose(history['expenses_paid'][0, 0], base_exp)
     est_tax = estimate_year_0_taxes(config)
     assert np.isclose(history['taxes_paid'][0, 0], est_tax, rtol=1e-3)
+
+
+def test_bootstrapping_five_year_contiguous_blocks():
+    import pytest
+    from historic_returns import (
+        HISTORIC_RETURNS_NON_US_CHF,
+        HISTORIC_RETURNS_US_CHF,
+        HISTORIC_SWISS_INFLATION,
+        generate_bootstrapped_data,
+        generate_bootstrapped_inflation,
+        generate_bootstrapped_returns,
+    )
+
+    num_runs = 25
+    duration_years = 12  # Non-multiple of 5 (2 full 5-year blocks + 2 years from a 3rd block)
+    ret_matrix, inf_matrix = generate_bootstrapped_data(num_runs=num_runs, duration_years=duration_years, seed=42)
+
+    assert ret_matrix.shape == (num_runs, duration_years * 12, 5)
+    assert inf_matrix.shape == (num_runs, duration_years)
+
+    # Reconstruct annual US and Non-US returns from monthly return matrix (month 0 of each year)
+    sampled_us_annual = (1.0 + ret_matrix[:, ::12, 0]) ** 12 - 1.0
+    sampled_non_us_annual = (1.0 + ret_matrix[:, ::12, 1]) ** 12 - 1.0
+
+    # For every run, each 5-year block (years 0..4 and years 5..9) must match an exact contiguous 5-year slice
+    # in HISTORIC_RETURNS_US_CHF, HISTORIC_RETURNS_NON_US_CHF, and HISTORIC_SWISS_INFLATION
+    total_years = len(HISTORIC_RETURNS_US_CHF)
+    for r in range(num_runs):
+        for block_start in (0, 5):
+            us_block = sampled_us_annual[r, block_start : block_start + 5]
+            non_us_block = sampled_non_us_annual[r, block_start : block_start + 5]
+            inf_block = inf_matrix[r, block_start : block_start + 5]
+
+            matched = False
+            for h_idx in range(total_years - 5 + 1):
+                if (
+                    np.allclose(us_block, HISTORIC_RETURNS_US_CHF[h_idx : h_idx + 5], atol=1e-6)
+                    and np.allclose(non_us_block, HISTORIC_RETURNS_NON_US_CHF[h_idx : h_idx + 5], atol=1e-6)
+                    and np.allclose(inf_block, HISTORIC_SWISS_INFLATION[h_idx : h_idx + 5], atol=1e-6)
+                ):
+                    matched = True
+                    break
+            assert matched, f"Run {r} block starting at year {block_start} is not a contiguous 5-year historical slice"
+
+        # Also verify the trailing 2-year partial block (years 10..11) is a contiguous 2-year slice
+        us_tail = sampled_us_annual[r, 10:12]
+        inf_tail = inf_matrix[r, 10:12]
+        tail_matched = any(
+            np.allclose(us_tail, HISTORIC_RETURNS_US_CHF[h_idx : h_idx + 2], atol=1e-6)
+            and np.allclose(inf_tail, HISTORIC_SWISS_INFLATION[h_idx : h_idx + 2], atol=1e-6)
+            for h_idx in range(total_years - 5 + 1)
+        )
+        assert tail_matched
+
+    # Wrapper consistency with explicit block_size_years
+    assert np.array_equal(ret_matrix, generate_bootstrapped_returns(num_runs, duration_years, seed=42, block_size_years=5))
+    assert np.array_equal(inf_matrix, generate_bootstrapped_inflation(num_runs, duration_years, seed=42, block_size_years=5))
+
+    # Validation for invalid block_size_years
+    with pytest.raises(ValueError, match="block_size_years"):
+        generate_bootstrapped_data(10, 10, seed=42, block_size_years=0)
+    with pytest.raises(ValueError, match="block_size_years"):
+        generate_bootstrapped_data(10, 10, seed=42, block_size_years=total_years + 1)

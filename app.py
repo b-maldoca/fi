@@ -299,7 +299,7 @@ vol_gold = st.sidebar.number_input("Gold Volatility (%)", value=15.0, min_value=
 vol_btc = st.sidebar.number_input("Bitcoin Volatility (%)", value=60.0, min_value=0.0, step=0.1, format="%.1f", help="Expected volatility for Bitcoin.") / 100.0
 
 mc_num_runs = int(st.sidebar.number_input("Number of Monte Carlo Runs", value=1000, min_value=100, max_value=10000, step=100, help="How many distinct future paths to simulate."))
-boot_num_runs = int(st.sidebar.number_input("Number of Bootstrapping Runs", value=1000, min_value=100, max_value=10000, step=100, help="How many empirical sampling paths (with replacement) to simulate."))
+boot_num_runs = int(st.sidebar.number_input("Number of Bootstrapping Runs", value=1000, min_value=100, max_value=10000, step=100, help="How many empirical 5-year block-sampling paths (with replacement) to simulate."))
 random_seed = int(st.sidebar.number_input("Random Seed", value=42, min_value=0, step=1, help="Random seed for reproducible Monte Carlo, Bootstrapping, and synthetic asset simulation paths."))
 
 try:
@@ -399,7 +399,7 @@ with st.spinner('Running Historic Backtesting simulations...'):
 def render_results(history, config, num_runs, title, inflation_matrix, success_pct):
     header_tooltips = {
         "Historic Backtesting": "Replays exact contiguous historical sequences (e.g. 1928–1978, 1929–1979) from ~100 years of historical Swiss-adjusted market data. This preserves real-world macroeconomic sequence, asset correlation, and market cycle autocorrelation.",
-        "Historic Bootstrapping": "Creates thousands of distinct retirement scenarios by randomly drawing annual return and inflation instances with replacement from 100 years of historical data. This stress-tests sequence-of-returns risk across synthetic pasts while preserving empirical return distribution characteristics.",
+        "Historic Bootstrapping": "Creates thousands of distinct retirement scenarios by randomly drawing 5-year contiguous blocks of asset returns and inflation with replacement from 100+ years of historical data. Using 5-year blocks preserves multi-year market regimes (crashes followed by recoveries, or multi-year inflation waves) while stress-testing sequence-of-returns risk across synthetic pasts.",
         "Monte Carlo": "Generates thousands of stochastic future paths using parametric lognormal distributions based on user-configured nominal means, standard deviations, and inflation parameters."
     }
     st.header(title, help=header_tooltips.get(title))

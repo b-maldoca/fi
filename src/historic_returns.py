@@ -746,11 +746,14 @@ def get_historic_inflation_matrix(duration_years: int) -> np.ndarray:
 def generate_bootstrapped_data(
     num_runs: int,
     duration_years: int,
-    seed: int = 42
+    seed: int = 42,
+    block_size_years: int = 5
 ) -> tuple[np.ndarray, np.ndarray]:
     """
-    Jointly generates bootstrapped return matrix and inflation matrix from historical data.
-    Ensures returns and inflation for each simulation run are sampled using the exact same random year sequence.
+    Jointly generates block-bootstrapped return matrix and inflation matrix from historical data.
+    Samples contiguous multi-year blocks (default: 5-year time-frames) with replacement so that
+    multi-year market cycles, crashes/recoveries, and inflation regimes are preserved within each block,
+    while returns and inflation remain strictly aligned to the exact same historical calendar years.
     
     Returns:
         tuple (return_matrix, inflation_matrix)
@@ -762,13 +765,20 @@ def generate_bootstrapped_data(
         raise ValueError(f"num_runs ({num_runs}) and duration_years ({duration_years}) must be positive integers.")
     if seed < 0:
         raise ValueError(f"seed ({seed}) must be a non-negative integer.")
+    if block_size_years <= 0 or block_size_years > total_years:
+        raise ValueError(f"block_size_years ({block_size_years}) must be between 1 and {total_years}.")
         
     rng = np.random.default_rng(seed)
     duration_months = duration_years * 12
     return_matrix = np.zeros((num_runs, duration_months, 5))
     
-    # Jointly sample random historical years with replacement
-    random_indices = rng.integers(0, total_years, size=(num_runs, duration_years))
+    # Sample contiguous multi-year blocks (e.g., 5-year time-frames) with replacement
+    num_blocks = int(np.ceil(duration_years / block_size_years))
+    max_start_idx = total_years - block_size_years
+    start_indices = rng.integers(0, max_start_idx + 1, size=(num_runs, num_blocks))
+    offsets = np.arange(block_size_years)
+    random_indices = (start_indices[:, :, None] + offsets[None, None, :]).reshape(num_runs, -1)[:, :duration_years]
+
     sampled_annual_us = HISTORIC_RETURNS_US_CHF[random_indices]
     sampled_annual_non_us = HISTORIC_RETURNS_NON_US_CHF[random_indices]
     sampled_inflation = HISTORIC_SWISS_INFLATION[random_indices]
@@ -796,24 +806,30 @@ def generate_bootstrapped_data(
 def generate_bootstrapped_returns(
     num_runs: int,
     duration_years: int,
-    seed: int = 42
+    seed: int = 42,
+    block_size_years: int = 5
 ) -> np.ndarray:
     """
-    Generates a matrix of shape (num_runs, duration_months, 5) using historical bootstrapping 
-    (sampling annual return blocks with replacement from empirical Swiss-adjusted market history).
+    Generates a matrix of shape (num_runs, duration_months, 5) using historical block bootstrapping
+    (sampling contiguous 5-year return blocks with replacement from empirical Swiss-adjusted market history).
     """
-    ret_matrix, _ = generate_bootstrapped_data(num_runs, duration_years, seed=seed)
+    ret_matrix, _ = generate_bootstrapped_data(
+        num_runs, duration_years, seed=seed, block_size_years=block_size_years
+    )
     return ret_matrix
 
 
 def generate_bootstrapped_inflation(
     num_runs: int,
     duration_years: int,
-    seed: int = 42
+    seed: int = 42,
+    block_size_years: int = 5
 ) -> np.ndarray:
     """
-    Generates an inflation matrix of shape (num_runs, duration_years) by bootstrapping 
-    empirical Swiss CPI inflation rates using the same random seed alignment as asset returns.
+    Generates an inflation matrix of shape (num_runs, duration_years) by block-bootstrapping
+    contiguous 5-year empirical Swiss CPI inflation sequences using the same random seed alignment as asset returns.
     """
-    _, inf_matrix = generate_bootstrapped_data(num_runs, duration_years, seed=seed)
+    _, inf_matrix = generate_bootstrapped_data(
+        num_runs, duration_years, seed=seed, block_size_years=block_size_years
+    )
     return inf_matrix

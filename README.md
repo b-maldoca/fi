@@ -8,7 +8,7 @@ Phase 1 focuses on the **post-retirement decumulation phase** for a single indiv
 
 *   **Three Comparative Simulation Methods**: Compare outcomes side-by-side using:
     1. **Historic Backtesting**: Replay contiguous historical periods (1922–2025, 104 years of Swiss-adjusted market and CPI data, paired with Ito-corrected lognormal synthetic Gold/Bitcoin returns).
-    2. **Historic Bootstrapping**: Joint random sampling with replacement across historical annual equity returns and Swiss CPI inflation (as described in FIRE literature like *The Poor Swiss*), with vectorized lognormal synthetic Gold/Bitcoin returns.
+    2. **Historic Bootstrapping**: Joint 5-year block sampling (`block_size_years = 5`) with replacement across historical annual equity returns and Swiss CPI inflation (preserving multi-year market regimes and crash/recovery dynamics), with vectorized lognormal synthetic Gold/Bitcoin returns.
     3. **Parametric Monte Carlo**: Stochastic lognormal return generator (with Ito drift correction) and independent annual inflation stream (`seed + 10_000`), with customizable asset class means, volatilities, inflation parameters, and reproducible **Random Seed**.
 *   **Swiss Tax Modeling**: Accurately models Federal, Cantonal (95% Steuerfuss), and Municipal (e.g., 119% Zurich City) income and wealth taxes for Canton Zurich.
 *   **AHV for Non-Workers**: Models mandatory AHV contributions for early retirees before age 65 based on wealth.
