@@ -7,10 +7,11 @@ Phase 1 focuses on the **post-retirement decumulation phase** for a single indiv
 ## Features
 
 *   **Three Comparative Simulation Methods**: Compare outcomes side-by-side using:
-    1. **Historic Backtesting**: Replay contiguous historical periods (1922–2025, 104 years of Swiss-adjusted market and CPI data, paired with Ito-corrected lognormal synthetic Gold/Bitcoin returns).
-    2. **Historic Bootstrapping**: Joint 5-year block sampling (`block_size_years = 5`) with replacement across historical annual equity returns and Swiss CPI inflation (preserving multi-year market regimes and crash/recovery dynamics), with vectorized lognormal synthetic Gold/Bitcoin returns.
-    3. **Parametric Monte Carlo**: Stochastic lognormal return generator (with Ito drift correction) and independent annual inflation stream (`seed + 10_000`), with customizable asset class means, volatilities, inflation parameters, and reproducible **Random Seed**.
-*   **Swiss Tax Modeling**: Accurately models Federal, Cantonal (95% Steuerfuss), and Municipal (e.g., 119% Zurich City) income and wealth taxes for Canton Zurich.
+    1. **Historic Backtesting**: Replay contiguous historical periods (1922–2025, 104 years of Swiss-adjusted market, cash, gold, and CPI data, paired with Ito-corrected lognormal synthetic Bitcoin returns coupled to US equity shocks). Surfaces **Effective Sample Size ($N_{\text{eff}} = T / D$)** and the **90% Wilson confidence interval** on the cohort survival rate, and plots **Worst Cohort (Min) / Best Cohort (Max)** bounds (`[0, 25, 50, 75, 100]`) rather than unsupported 5th/95th percentiles.
+    2. **Historic Bootstrapping (Politis–Romano Stationary Bootstrap)**: Joint stationary block sampling (`stationary=True`, mean block length `block_size_years = 5` via geometric restart probability $p = 1/b$) with **circular wrap-around** (`year 2025 -> year 1922`) across historical equity, gold, cash, and Swiss CPI series, preserving multi-year volatility clusters while ensuring uniform sampling of every historical year (`1922` and `2025` have identical inclusion probability $1/104$).
+    3. **Parametric Monte Carlo**: Stochastic lognormal return generator (with Ito drift correction) with cross-asset shock coupling (`US`/`Non-US` $\rho=0.75$, `Gold` $\rho=-0.10$, `Bitcoin` $\rho=\text{btc\_equity\_corr}$, default `0.50`) and independent annual inflation stream (`seed + 10_000`).
+*   **Swiss Tax Modeling**: Accurately models Federal, Cantonal (95% Steuerfuss), and Municipal (e.g., 119% Zurich City) income and wealth taxes for Canton Zurich, including **dynamic cash interest taxation** (taxable interest is computed from the actual realized annual return on CHF Cash rather than a hardcoded `1%`, eliminating phantom tax drag during `0%` ZIRP/NIRP years).
+*   **Tax Bracket Indexation**: Bracket edges and the AHV contribution table are indexed to realized CPI each year, as Swiss law requires (Art. 39 DBG federally, § 48 StG ZH for Zurich income *and* wealth tax). Configurable from 0–100% of CPI to stress-test delayed or suspended compensation — freezing brackets at 0% overstates median lifetime real taxes by roughly a third over a 50-year horizon.
 *   **AHV for Non-Workers**: Models mandatory AHV contributions for early retirees before age 65 based on wealth.
 *   **Pillar 2 & 3a Liquidations**: Simulates tax-sheltered equity growth and staggered lump-sum withdrawals of Pillar 3a accounts (up to 5 accounts between ages 60–64) and Pillar 2 vesting accounts (at age 65, or Year 0 if retiring at $\ge 65$), including immediate progressive capital withdrawal taxes.
 *   **Rebalancing & Pfau Cash Tent Glidepath**: Supports Cash Tent (rising equity glidepath from a multi-year cash buffer of expenses + estimated taxes), Monthly, Quarterly, Yearly, Threshold-based, and Never rebalancing strategies.
@@ -20,33 +21,78 @@ Phase 1 focuses on the **post-retirement decumulation phase** for a single indiv
 
 ## Data Sources & Provenance
 
-This project incorporates historical datasets curated and maintained by Baptiste Wicht (*The Poor Swiss*), available in the open-source repository [wichtounet/swr-calculator](https://github.com/wichtounet/swr-calculator) and described at [The Poor Swiss](https://thepoorswiss.com):
+This project incorporates historical datasets from primary macroeconomic sources and [wichtounet/swr-calculator](https://github.com/wichtounet/swr-calculator):
 
-1. **US Stocks (USD)**: Robert Shiller monthly S&P 500 Total Returns dataset (1871–2025) from [`data/us_stocks.csv`](https://github.com/wichtounet/swr-calculator/blob/master/stock-data/us_stocks.csv).
-2. **Non-US Equities (USD)**: Empirical ex-US stocks total return dataset (MSCI EAFE / World ex-US proxy, 1871–2025) from [`data/ex_us_stocks.csv`](https://github.com/wichtounet/swr-calculator/blob/master/stock-data/ex_us_stocks.csv).
-3. **Currency Exchange (USD/CHF)**: Historical monthly USD/CHF exchange rates (1913–2019 from [`data/usd_chf.csv`](https://github.com/wichtounet/swr-calculator/blob/master/stock-data/usd_chf.csv), extended through 2025 via the [Swiss National Bank (SNB)](https://www.snb.ch)).
-4. **Swiss Inflation (CPI)**: Historical Swiss Consumer Price Index (1921–2023 from [`data/ch_inflation.csv`](https://github.com/wichtounet/swr-calculator/blob/master/stock-data/ch_inflation.csv), cleaned of 2022 entry error and extended through 2025 via the [Swiss Federal Statistical Office (FSO/BFS)](https://www.bfs.admin.ch)).
+1. **US Stocks (USD)** — [`data/us_stocks.csv`](data/us_stocks.csv), 1871–2025, monthly.
+   A **month-end S&P 500 total-return index** (dividends reinvested).
+   *Verified* against published month-end S&P 500 total returns (Oct 1929 −19.71%, Oct 1987 −21.53%, Oct 2008 −16.80%, Mar 2020 −12.35%) and against published calendar-year total returns for 1974, 1995, 2000, 2008, 2011, 2013, 2017–19, 2021–22 (agreement to ±0.00pp).
+2. **Non-US Equities (USD)** — [`data/jst_exus_usd.csv`](data/jst_exus_usd.csv) (1900–1969, annual) spliced with [`data/ex_us_stocks.csv`](data/ex_us_stocks.csv) (1970–2025, monthly).
+   * **1922–1969**: GDP-weighted 17-country total-return index built from the **Jordà–Schularick–Taylor Macrohistory Database R6** (`eq_tr`, nominal local currency, converted to USD via `xrusd`), replacing the pre-1970 US duplicate in `ex_us_stocks.csv`.
+   * **1970–2025**: MSCI EAFE / World ex-US monthly total return index in USD.
+3. **Currency Exchange (USD/CHF)** — [`data/usd_chf.csv`](data/usd_chf.csv), 1913–2025, monthly.
+   * **1913–1970**: SNB historical exchange rate series (Bretton Woods fixed parity era).
+   * **1971–2025**: True **month-end** rates rebuilt from the Federal Reserve H.10 daily series (`DEXSZUS`), capturing the 2024–2025 USD decline to `0.7924 CHF/USD` at year-end 2025.
+4. **Swiss Inflation (CPI)** — [`data/ch_inflation.csv`](data/ch_inflation.csv), 1921–2025, monthly.
+   Swiss Consumer Price Index via the [Swiss Federal Statistical Office (FSO/BFS)](https://www.bfs.admin.ch).
+5. **Gold (USD -> CHF)** — [`data/gold_usd.csv`](data/gold_usd.csv), 1871–2025, monthly.
+   Month-end [LBMA](https://prices.lbma.org.uk) London PM fix from Apr 1968; statutory fixed price (\$20.67, then \$35) before that, converted to CHF via `usd_chf.csv`.
+6. **Swiss Short-Term Cash Rate (CHF)** — [`data/ch_cash_rate.csv`](data/ch_cash_rate.csv), 1900–2025, annual (`wholesale_rate` and `retail_rate` floored at `0.0%`).
+   Built from the **Jordà–Schularick–Taylor Macrohistory Database R6** (`bill_rate` for Switzerland, 1900–2020) spliced with **SNB policy / SARON rates** (2021–2025), floored at `0.0%` (`retail_rate`) to reflect Swiss retail savings deposit pass-through during the 2015–2022 SNB negative-interest-rate era (`2.46%` nominal CAGR, `1.88%` vol, `-0.39%` real return after `2.05%` Swiss CPI).
 
-CHF-converted equity returns are computed annually as:
-$$\text{Return}_{\text{CHF}} = (1 + \text{Return}_{\text{USD}}) \times \left(\frac{\text{FX}_{\text{End}}}{\text{FX}_{\text{Start}}}\right) - 1$$
+### Return construction
+
+**Real monthly returns are carried end-to-end.** Monthly data is used wherever it genuinely exists, preserving intra-year volatility and monthly sequence-of-returns risk.
+
+CHF conversion is applied at the index level before differencing:
+$$\text{Return}^{\text{CHF}}_t = \frac{I^{\text{USD}}_t \times \text{FX}_t}{I^{\text{USD}}_{t-1} \times \text{FX}_{t-1}} - 1$$
+
+*   **Currency / PPP Assumption (`real_chf_appreciation`, default `0.00%/yr`)**: Over 1922–2025, `USD/CHF` fell by `-1.78%/yr` while the Swiss-vs-US CPI differential implied `-1.09%/yr` under Relative Purchasing Power Parity (PPP), leaving a `-0.68%/yr` historical real FX drag on foreign-priced assets (`+0.68%/yr` real CHF appreciation beyond PPP). The sidebar exposes **Real CHF Appreciation beyond PPP (%/yr)** defaulting to `0.00%` (PPP neutrality, scaling foreign-priced monthly returns by $\left(\frac{1 - a_{\text{target}}}{1 - 0.0068}\right)^{1/12}$), while `+0.68%` reproduces the raw unadjusted 1922–2025 historical CHF returns.
+*   **Bitcoin–Equity Correlation Coupling (`btc_equity_corr`, default `0.50`)**: Because Bitcoin has no 40-year history, its monthly log-returns ($\mu = 7.0\%$, $\sigma = 50.0\%$ default across all 3 engines, Ito-corrected and user-configurable via `btc_mean` / `btc_vol`) are coupled to **per-path standardized** monthly US equity log-returns via a Gaussian copula:
+    $$Z_{\text{BTC}, t} = \rho_{\text{BTC,EQ}} Z_{\text{US}, t} + \sqrt{1 - \rho_{\text{BTC,EQ}}^2}\,\varepsilon_t, \quad \varepsilon_t \sim \mathcal{N}(0, 1)$$
+    Per-path standardization ($\text{mean}(Z_{\text{US}}) = 0$, $\text{std}(Z_{\text{US}}) = 1$ within each cohort/run) ensures US cohort drift never leaks into Bitcoin's expected log-return while eliminating the zero-correlation "free lunch" during equity market drawdowns (`2022`, `1929`, `1973–74`, `2008`) across $\rho \in [-0.50, 0.90]$.
+
+| Series | Real monthly | Annual, smoothed |
+|---|---|---|
+| US equities | 1922–2025 (all) | — |
+| Ex-US equities | 1970–2025 | 1922–1969 (JST) |
+| Gold | 1968–2025 | 1922–1967 (peg era) |
+| CHF Cash | — | 1922–2025 (`data/ch_cash_rate.csv` retail rate, floored at `0.0%`) |
+| Bitcoin | — | synthetic throughout (**coupled to US equity shocks at $\rho = 0.50$**) |
+
+### Rebuilding the data
+
+```bash
+python scripts/fetch_source_data.py      # network: FRED, SNB, LBMA, JST
+python scripts/build_historic_returns.py # offline: regenerates src/historic_returns.py
+```
 
 ## Project Structure
 
 ```text
 ├── app.py                              # Streamlit frontend UI
-├── data/                               # Historical CSV datasets from wichtounet/swr-calculator & SNB/FSO
-├── src/
+├── data/                               # Normalised source datasets (every file here is ingested)
+│                                       #   us_stocks.csv      month-end S&P 500 TR, USD, monthly
+│                                       #   ex_us_stocks.csv   ex-US equities, USD, monthly (1970+ only)
+│                                       #   jst_exus_usd.csv   JST GDP-weighted ex-US, USD, annual (1900-1969)
+│                                       #   usd_chf.csv        month-end USD/CHF (SNB pre-1971, FRED after)
+│                                       #   ch_inflation.csv   Swiss CPI, monthly
+│                                       #   gold_usd.csv       LBMA PM fix, USD, monthly (1968+ real)
+│                                       #   ch_cash_rate.csv   JST Swiss bill rate + SNB policy/SARON (1900-2025)
+├── src/                                # Importable `src` package (no `sys.path` manipulation required)
+│   ├── __init__.py                     # Re-exports the public API (`from src import SimConfig, run_simulation`)
 │   ├── simulation_engine.py            # Core monthly decumulation simulation loop & Monte Carlo generator
 │   ├── tax_engine.py                   # Swiss Federal & Canton Zurich tax and AHV calculations
-│   └── historic_returns.py             # Historic return datasets and bootstrapping generators
+│   └── historic_returns.py             # GENERATED: monthly/annual return series & bootstrap generators
 ├── scripts/
-│   └── build_historic_returns.py       # Data pipeline building src/historic_returns.py from data/
+│   ├── fetch_source_data.py            # Network: FRED, SNB, LBMA, JST -> normalised CSVs in data/
+│   └── build_historic_returns.py       # Offline: data/ -> src/historic_returns.py
 ├── tests/
 │   ├── test_simulation_engine.py       # Unit & integration tests for simulation engine and return generators
 │   └── test_tax_engine.py              # Unit tests for income, wealth, capital withdrawal, and AHV taxes
 ├── docs/
 │   ├── prd_early_retirement_calc.md    # Product Requirement Document (PRD)
 │   └── design_doc_early_retirement.md  # Technical Design Document (DD)
+├── conftest.py                         # Puts the repo root on `sys.path` so tests can `import src`
 ├── requirements.txt                    # Python dependencies
 └── venv/                               # Python virtual environment (ignored by git)
 ```

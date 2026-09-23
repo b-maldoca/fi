@@ -66,8 +66,11 @@ def _calculate_bracket_tax(taxable_amount: np.ndarray, brackets: list) -> np.nda
 def calculate_income_tax(taxable_income: np.ndarray, cantonal_multiplier: float = 1.0, municipal_multiplier: float = 1.19) -> np.ndarray:
     """
     Calculate combined Federal, Cantonal, and Municipal income tax.
-    multiplier is typically sum of cantonal (e.g., 1.0) + municipal (e.g., 1.19 in Zurich city).
-    Total multiplier = 2.19
+
+    The Zurich base tariff is scaled by the sum of the cantonal and municipal
+    multipliers (Steuerfuss). `app.py` passes the Canton Zurich 2026 cantonal
+    multiplier of 0.95 plus the municipal multiplier (1.19 for Zurich City),
+    i.e. a total multiplier of 2.14.
     """
     is_scalar = np.isscalar(taxable_income) or (isinstance(taxable_income, np.ndarray) and taxable_income.ndim == 0)
     total_multiplier = cantonal_multiplier + municipal_multiplier

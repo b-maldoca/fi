@@ -1,11 +1,7 @@
 import numpy as np
-import sys
-import os
 
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '../src')))
-
-from simulation_engine import SimConfig, run_simulation, get_target_weights, estimate_year_0_taxes
-from historic_returns import (
+from src.simulation_engine import SimConfig, run_simulation, get_target_weights, estimate_year_0_taxes
+from src.historic_returns import (
     get_historic_return_matrix,
     get_historic_inflation_matrix,
     generate_bootstrapped_data,
@@ -406,7 +402,7 @@ def test_simulation_engine_invalid_allocation():
 
 
 def test_generate_monte_carlo_returns():
-    from simulation_engine import generate_monte_carlo_returns
+    from src.simulation_engine import generate_monte_carlo_returns
     
     num_runs = 10
     duration_years = 5
@@ -759,6 +755,9 @@ def test_simulation_engine_ahv_pre_65_inflation():
     # Start age: 63. Duration: 3 years.
     # We receive AHV in Year 2 (Age 65).
     # Inflation: 5% annually (constant).
+    # bracket_indexation is pinned to 0.0 so the AHV non-worker minimum stays at exactly
+    # 530 CHF and the cash arithmetic below remains hand-checkable. Indexed brackets are
+    # covered separately by test_bracket_indexation_*.
     config = SimConfig(
         num_runs=1,
         duration_years=3,
@@ -782,7 +781,8 @@ def test_simulation_engine_ahv_pre_65_inflation():
         annual_base_expenses=0.0,
         monthly_ahv_pension=1000.0,
         cantonal_multiplier=0.0,
-        municipal_multiplier=0.0
+        municipal_multiplier=0.0,
+        bracket_indexation=0.0
     )
     
     # 0% returns, 5% inflation
@@ -1125,12 +1125,14 @@ def test_simulation_engine_staggered_pillar_3a_multiple_accounts():
 
 
 def test_historic_returns_matrix_valid():
+    from src.historic_returns import MONTHLY_CASH_CHF
     # 50-year duration
     matrix = get_historic_return_matrix(50)
     expected_runs = len(HISTORIC_RETURNS) - 50 + 1
     assert matrix.shape == (expected_runs, 50 * 12, 5)
-    # Check that cash return is 1% annual nominal geometric monthly rate
-    assert np.allclose(matrix[:, :, 2], (1.01)**(1.0 / 12.0) - 1.0)
+    # Check that cash return matches empirical Swiss retail cash rate series (floored at 0%)
+    assert np.allclose(matrix[0, :, 2], MONTHLY_CASH_CHF[: 50 * 12])
+    assert np.all(matrix[:, :, 2] >= 0.0)
 
 
 def test_historic_returns_matrix_invalid():
@@ -1215,11 +1217,13 @@ def test_vanguard_spending_depleted_portfolio_floor():
 
 
 def test_generate_bootstrapped_returns_shape_and_values():
+    from src.historic_returns import MONTHLY_CASH_CHF
     matrix = generate_bootstrapped_returns(num_runs=50, duration_years=30, seed=123)
     assert matrix.shape == (50, 360, 5)
     assert not np.isnan(matrix).any()
-    # Check cash return is 1% annual nominal geometric monthly rate
-    assert np.allclose(matrix[:, :, 2], (1.01)**(1.0 / 12.0) - 1.0)
+    # Check cash return is drawn from empirical Swiss retail rates (non-negative and bounded by historical max)
+    assert np.all(matrix[:, :, 2] >= 0.0)
+    assert np.all(matrix[:, :, 2] <= np.max(MONTHLY_CASH_CHF) + 1e-9)
     # Check US and Non-US equities have valid return ranges
     assert np.all(matrix[:, :, 0] > -1.0)
     assert np.all(matrix[:, :, 1] > -1.0)
@@ -1539,7 +1543,7 @@ def test_sim_config_validation_extended_negative_inputs():
 
 
 def test_seed_reproducibility_and_variation():
-    from simulation_engine import generate_monte_carlo_returns
+    from src.simulation_engine import generate_monte_carlo_returns
 
     # 1. Bootstrapping reproducibility with same seed
     b_ret1, b_inf1 = generate_bootstrapped_data(num_runs=20, duration_years=10, seed=42)
@@ -1576,7 +1580,7 @@ def test_seed_reproducibility_and_variation():
 
 def test_monte_carlo_inflation_rng_independence_and_validation():
     import pytest
-    from simulation_engine import generate_monte_carlo_inflation, generate_monte_carlo_returns
+    from src.simulation_engine import generate_monte_carlo_inflation, generate_monte_carlo_returns
 
     num_runs = 200
     duration_years = 20
@@ -1630,8 +1634,8 @@ def test_monte_carlo_inflation_rng_independence_and_validation():
 
 
 def test_year_0_liquid_wealth_and_taxes_at_age_60_to_64():
-    from simulation_engine import _get_year_0_liquid_wealth, estimate_year_0_taxes, get_target_weights
-    from tax_engine import calculate_capital_withdrawal_tax
+    from src.simulation_engine import _get_year_0_liquid_wealth, estimate_year_0_taxes, get_target_weights
+    from src.tax_engine import calculate_capital_withdrawal_tax
 
     # At start_age=62, the first eligible Pillar 3a account (60 + 0 <= 62) is liquidated in Year 0 Month 0
     config_with_3a = SimConfig(
@@ -1695,12 +1699,12 @@ def test_year_0_liquid_wealth_and_taxes_at_age_60_to_64():
 
     # Verify estimate_year_0_taxes + capital_withdrawal_tax matches actual run_simulation Year 0 taxes_paid under base weights
     config_yearly = SimConfig(
-        **{**config_with_3a.__dict__, "rebalance_strategy": "Yearly"}
+        **{**config_with_3a.__dict__, "rebalance_strategy": "Yearly", "cash_rate": 0.0}
     )
     return_matrix = np.zeros((1, 60, 5))
     inflation_matrix = np.zeros((1, 5))
     history = run_simulation(config_yearly, return_matrix, inflation_matrix)
-    assert np.isclose(tax_with_3a + cap_tax_50k, history['taxes_paid'][0, 0], rtol=1e-5)
+    assert np.isclose(estimate_year_0_taxes(config_yearly) + cap_tax_50k, history['taxes_paid'][0, 0], rtol=1e-5)
 
 
 def test_sim_config_strategy_and_seed_validation():
@@ -1758,7 +1762,8 @@ def test_run_simulation_deterministic_fallback_inflation_and_deflation_clamp():
 
 
 def test_historic_and_bootstrapped_lognormal_bounds_and_seeds():
-    # Synthetic Gold (idx 3) and Bitcoin (idx 4) must use lognormal returns (> -1.0) and respect seed
+    from src.historic_returns import MONTHLY_CASH_CHF
+    # Synthetic Bitcoin (idx 4) must use lognormal returns (> -1.0) and respect seed
     hist_m1 = get_historic_return_matrix(10, seed=42)
     hist_m2 = get_historic_return_matrix(10, seed=42)
     hist_m3 = get_historic_return_matrix(10, seed=99)
@@ -1769,14 +1774,13 @@ def test_historic_and_bootstrapped_lognormal_bounds_and_seeds():
 
     boot_ret, _ = generate_bootstrapped_data(200, 30, seed=42)
     assert np.all(boot_ret > -1.0)
-    # Cash monthly return (idx 2) must equal exact geometric 1% APY: (1.01)**(1/12) - 1
-    expected_cash_monthly = (1.01)**(1.0 / 12.0) - 1.0
-    assert np.allclose(hist_m1[:, :, 2], expected_cash_monthly)
-    assert np.allclose(boot_ret[:, :, 2], expected_cash_monthly)
+    # Cash monthly return (idx 2) must match empirical Swiss retail cash rates (floored at 0.0)
+    assert np.allclose(hist_m1[0, :, 2], MONTHLY_CASH_CHF[: 10 * 12])
+    assert np.all(boot_ret[:, :, 2] >= 0.0)
 
 
 def test_vanguard_dynamic_net_target_rate_no_tax_double_counting():
-    from simulation_engine import estimate_year_0_taxes
+    from src.simulation_engine import estimate_year_0_taxes
 
     # Verify that setting vanguard_target_rate = annual_base_expenses / initial_net_worth
     # produces Year 0 living expenses equal to annual_base_expenses (85,000 CHF)
@@ -1790,6 +1794,7 @@ def test_vanguard_dynamic_net_target_rate_no_tax_double_counting():
         inflation_std=0.0,
         start_age=40,
         dividend_yield=0.015,
+        cash_rate=0.0,
         spending_strategy="Vanguard Dynamic",
         vanguard_target_rate=base_exp / total_nw,
         vanguard_floor_pct=0.05,
@@ -1820,7 +1825,7 @@ def test_vanguard_dynamic_net_target_rate_no_tax_double_counting():
 
 def test_bootstrapping_five_year_contiguous_blocks():
     import pytest
-    from historic_returns import (
+    from src.historic_returns import (
         HISTORIC_RETURNS_NON_US_CHF,
         HISTORIC_RETURNS_US_CHF,
         HISTORIC_SWISS_INFLATION,
@@ -1831,14 +1836,20 @@ def test_bootstrapping_five_year_contiguous_blocks():
 
     num_runs = 25
     duration_years = 12  # Non-multiple of 5 (2 full 5-year blocks + 2 years from a 3rd block)
-    ret_matrix, inf_matrix = generate_bootstrapped_data(num_runs=num_runs, duration_years=duration_years, seed=42)
+    ret_matrix, inf_matrix = generate_bootstrapped_data(
+        num_runs=num_runs, duration_years=duration_years, seed=42, stationary=False
+    )
 
     assert ret_matrix.shape == (num_runs, duration_years * 12, 5)
     assert inf_matrix.shape == (num_runs, duration_years)
 
-    # Reconstruct annual US and Non-US returns from monthly return matrix (month 0 of each year)
-    sampled_us_annual = (1.0 + ret_matrix[:, ::12, 0]) ** 12 - 1.0
-    sampled_non_us_annual = (1.0 + ret_matrix[:, ::12, 1]) ** 12 - 1.0
+    # Reconstruct annual returns by compounding each year's 12 REAL monthly returns.
+    def _to_annual(monthly_col):
+        reshaped = monthly_col.reshape(num_runs, duration_years, 12)
+        return np.prod(1.0 + reshaped, axis=2) - 1.0
+
+    sampled_us_annual = _to_annual(ret_matrix[:, :, 0])
+    sampled_non_us_annual = _to_annual(ret_matrix[:, :, 1])
 
     # For every run, each 5-year block (years 0..4 and years 5..9) must match an exact contiguous 5-year slice
     # in HISTORIC_RETURNS_US_CHF, HISTORIC_RETURNS_NON_US_CHF, and HISTORIC_SWISS_INFLATION
@@ -1871,11 +1882,402 @@ def test_bootstrapping_five_year_contiguous_blocks():
         assert tail_matched
 
     # Wrapper consistency with explicit block_size_years
-    assert np.array_equal(ret_matrix, generate_bootstrapped_returns(num_runs, duration_years, seed=42, block_size_years=5))
-    assert np.array_equal(inf_matrix, generate_bootstrapped_inflation(num_runs, duration_years, seed=42, block_size_years=5))
+    assert np.array_equal(
+        ret_matrix,
+        generate_bootstrapped_returns(num_runs, duration_years, seed=42, block_size_years=5, stationary=False),
+    )
+    assert np.array_equal(
+        inf_matrix,
+        generate_bootstrapped_inflation(num_runs, duration_years, seed=42, block_size_years=5, stationary=False),
+    )
 
     # Validation for invalid block_size_years
     with pytest.raises(ValueError, match="block_size_years"):
         generate_bootstrapped_data(10, 10, seed=42, block_size_years=0)
     with pytest.raises(ValueError, match="block_size_years"):
         generate_bootstrapped_data(10, 10, seed=42, block_size_years=total_years + 1)
+
+
+def _indexation_config(bracket_indexation, inflation_mean=0.04, start_age=45, duration_years=10, **overrides):
+    """Builds a deterministic single-run config used by the bracket indexation tests."""
+    params = dict(
+        num_runs=1,
+        duration_years=duration_years,
+        inflation_mean=inflation_mean,
+        inflation_std=0.0,
+        start_age=start_age,
+        dividend_yield=0.02,
+        enable_smart_selling=False,
+        initial_liquid_wealth=3_000_000.0,
+        initial_pillar_2=0.0,
+        initial_pillar_3a_accounts=[],
+        alloc_us_stocks=0.0,
+        alloc_non_us_stocks=0.6,
+        alloc_chf_cash=0.4,
+        alloc_gold=0.0,
+        alloc_bitcoin=0.0,
+        rebalance_strategy='Yearly',
+        annual_base_expenses=60_000.0,
+        monthly_ahv_pension=0.0,
+        cantonal_multiplier=0.95,
+        municipal_multiplier=1.19,
+        bracket_indexation=bracket_indexation,
+    )
+    params.update(overrides)
+    return SimConfig(**params)
+
+
+def test_bracket_indexation_matches_homogeneity_identity():
+    # Full indexation must be exactly equivalent to deflating the tax base, applying the
+    # unscaled tariff, and re-inflating: T_indexed(x, f) == f * T_nominal(x / f).
+    # Verified against a tariff reconstructed by hand from the raw tax_engine functions.
+    from src.tax_engine import calculate_income_tax, calculate_wealth_tax, calculate_ahv_non_worker
+
+    duration_years = 8
+    inflation = 0.04
+    config = _indexation_config(1.0, inflation_mean=inflation, duration_years=duration_years)
+
+    return_matrix = np.zeros((1, duration_years * 12, 5))
+    inflation_matrix = np.full((1, duration_years), inflation)
+    history = run_simulation(config, return_matrix, inflation_matrix)
+
+    # Re-derive the final year's tax bill by hand from the recorded state.
+    year = duration_years - 1
+    f = (1.0 + inflation) ** duration_years  # bracket factor after N annual updates
+
+    assets = history['liquid_assets_by_class'][year, 0, :]
+    expenses = history['expenses_paid'][year, 0]
+    taxes = history['taxes_paid'][year, 0]
+
+    # Undo the selling that happened after taxes were assessed to recover the tax base.
+    total_liquid_end = np.sum(assets) + expenses + taxes
+    equities = assets[1] + taxes * (assets[1] / np.sum(assets)) + expenses * (assets[1] / np.sum(assets))
+
+    # Since return_matrix has 0% cash return, realized cash interest is 0.0 (no phantom 1% tax drag).
+    taxable_income = equities * config.dividend_yield
+    taxable_wealth = max(0.0, total_liquid_end - expenses)
+
+    expected = (
+        f * calculate_income_tax(taxable_income / f, config.cantonal_multiplier, config.municipal_multiplier)
+        + f * calculate_wealth_tax(taxable_wealth / f, config.cantonal_multiplier, config.municipal_multiplier)
+        + f * calculate_ahv_non_worker(taxable_wealth / f)
+    )
+
+    assert np.isclose(taxes, expected, rtol=1e-6)
+
+    # And the identity must differ from the frozen-bracket tariff under real inflation.
+    unindexed = (
+        calculate_income_tax(taxable_income, config.cantonal_multiplier, config.municipal_multiplier)
+        + calculate_wealth_tax(taxable_wealth, config.cantonal_multiplier, config.municipal_multiplier)
+        + calculate_ahv_non_worker(taxable_wealth)
+    )
+    assert unindexed > expected
+
+
+def test_bracket_indexation_is_noop_without_inflation():
+    # With zero inflation the bracket factor stays at 1.0, so the setting must not matter.
+    duration_years = 6
+    return_matrix = np.zeros((1, duration_years * 12, 5))
+    inflation_matrix = np.zeros((1, duration_years))
+
+    frozen = run_simulation(
+        _indexation_config(0.0, inflation_mean=0.0, duration_years=duration_years),
+        return_matrix, inflation_matrix
+    )
+    indexed = run_simulation(
+        _indexation_config(1.0, inflation_mean=0.0, duration_years=duration_years),
+        return_matrix, inflation_matrix
+    )
+
+    assert np.allclose(frozen['taxes_paid'], indexed['taxes_paid'])
+    assert np.allclose(frozen['net_worth'], indexed['net_worth'])
+
+
+def test_bracket_indexation_monotonic_between_extremes():
+    # Under positive inflation, more indexation must mean strictly less tax, with partial
+    # indexation landing between the two extremes.
+    duration_years = 12
+    inflation = 0.04
+    return_matrix = np.zeros((1, duration_years * 12, 5))
+    inflation_matrix = np.full((1, duration_years), inflation)
+
+    results = {}
+    for p in (0.0, 0.5, 1.0):
+        h = run_simulation(
+            _indexation_config(p, inflation_mean=inflation, duration_years=duration_years),
+            return_matrix, inflation_matrix
+        )
+        results[p] = np.sum(h['taxes_paid'][:, 0])
+
+    assert results[0.0] > results[0.5] > results[1.0]
+
+    # Year 0 is barely affected (one year of indexation) while the gap compounds over time.
+    frozen = run_simulation(
+        _indexation_config(0.0, inflation_mean=inflation, duration_years=duration_years),
+        return_matrix, inflation_matrix
+    )
+    full = run_simulation(
+        _indexation_config(1.0, inflation_mean=inflation, duration_years=duration_years),
+        return_matrix, inflation_matrix
+    )
+    gap_year_0 = frozen['taxes_paid'][0, 0] / full['taxes_paid'][0, 0]
+    gap_final = frozen['taxes_paid'][-1, 0] / full['taxes_paid'][-1, 0]
+    assert gap_final > gap_year_0 > 1.0
+
+
+def test_bracket_indexation_scales_ahv_step_function():
+    # The AHV non-worker table is a step function, not a piecewise-linear tariff. It still
+    # indexes exactly, because floor division is scale invariant: (f*a) // (f*b) == a // b.
+    # A retiree pinned at the 530 CHF minimum must therefore pay 530 * f once indexed.
+    duration_years = 5
+    inflation = 0.10
+    return_matrix = np.zeros((1, duration_years * 12, 5))
+    inflation_matrix = np.full((1, duration_years), inflation)
+
+    # Tiny wealth keeps the contribution pinned to the minimum at every bracket factor.
+    common = dict(
+        inflation_mean=inflation,
+        duration_years=duration_years,
+        start_age=50,
+        initial_liquid_wealth=1.0,
+        annual_base_expenses=0.0,
+        dividend_yield=0.0,
+        cantonal_multiplier=0.0,
+        municipal_multiplier=0.0,
+    )
+
+    frozen = run_simulation(_indexation_config(0.0, **common), return_matrix, inflation_matrix)
+    indexed = run_simulation(_indexation_config(1.0, **common), return_matrix, inflation_matrix)
+
+    for year in range(duration_years):
+        f = (1.0 + inflation) ** (year + 1)
+        assert np.isclose(frozen['taxes_paid'][year, 0], 530.0)
+        assert np.isclose(indexed['taxes_paid'][year, 0], 530.0 * f)
+
+
+def test_bracket_indexation_validation_and_default():
+    import pytest
+
+    # Defaults to full indexation, matching Art. 39 DBG / § 48 StG ZH.
+    config = SimConfig(
+        num_runs=1, duration_years=5, inflation_mean=0.02, inflation_std=0.0,
+        start_age=40, dividend_yield=0.0, alloc_us_stocks=1.0
+    )
+    assert config.bracket_indexation == 1.0
+
+    with pytest.raises(ValueError, match="bracket_indexation"):
+        SimConfig(
+            num_runs=1, duration_years=5, inflation_mean=0.02, inflation_std=0.0,
+            start_age=40, dividend_yield=0.0, alloc_us_stocks=1.0,
+            bracket_indexation=-0.1
+        )
+
+
+def test_real_chf_appreciation_ppp_adjustment_and_validation():
+    import pytest
+    from src.historic_returns import (
+        HISTORIC_REAL_CHF_APPRECIATION,
+        generate_bootstrapped_data,
+        get_historic_return_matrix,
+    )
+
+    # Default SimConfig has real_chf_appreciation = 0.0 (PPP neutrality)
+    config = SimConfig(
+        num_runs=1, duration_years=5, inflation_mean=0.02, inflation_std=0.0,
+        start_age=40, dividend_yield=0.0, alloc_us_stocks=1.0
+    )
+    assert config.real_chf_appreciation == 0.0
+
+    with pytest.raises(ValueError, match="real_chf_appreciation"):
+        SimConfig(
+            num_runs=1, duration_years=5, inflation_mean=0.02, inflation_std=0.0,
+            start_age=40, dividend_yield=0.0, alloc_us_stocks=1.0,
+            real_chf_appreciation=1.0
+        )
+
+    # Raw history (None) matches HISTORIC_REAL_CHF_APPRECIATION (+0.68%/yr) identically
+    raw_mat = get_historic_return_matrix(10, seed=42, real_chf_appreciation=None)
+    hist_mat = get_historic_return_matrix(
+        10, seed=42, real_chf_appreciation=HISTORIC_REAL_CHF_APPRECIATION
+    )
+    assert np.allclose(raw_mat, hist_mat, atol=1e-12)
+
+    # PPP-neutral (0.0) scales foreign-priced sleeves (cols 0, 1, 3) by
+    # ann_adj = 1.0 / (1.0 - HISTORIC_REAL_CHF_APPRECIATION) over 12 months,
+    # while leaving CHF cash (col 2) and synthetic BTC (col 4) untouched.
+    ppp_mat = get_historic_return_matrix(10, seed=42, real_chf_appreciation=0.0)
+    expected_ann_adj = 1.0 / (1.0 - HISTORIC_REAL_CHF_APPRECIATION)
+    for col in (0, 1, 3):
+        raw_yr0 = np.prod(1.0 + raw_mat[0, :12, col])
+        ppp_yr0 = np.prod(1.0 + ppp_mat[0, :12, col])
+        assert np.isclose(ppp_yr0 / raw_yr0, expected_ann_adj, atol=1e-10)
+    for col in (2, 4):
+        assert np.allclose(raw_mat[:, :, col], ppp_mat[:, :, col], atol=1e-12)
+
+    # Same property holds for generate_bootstrapped_data
+    boot_raw, _ = generate_bootstrapped_data(5, 10, seed=7, real_chf_appreciation=None)
+    boot_ppp, _ = generate_bootstrapped_data(5, 10, seed=7, real_chf_appreciation=0.0)
+    for col in (0, 1, 3):
+        raw_yr0 = np.prod(1.0 + boot_raw[0, :12, col])
+        ppp_yr0 = np.prod(1.0 + boot_ppp[0, :12, col])
+        assert np.isclose(ppp_yr0 / raw_yr0, expected_ann_adj, atol=1e-10)
+
+
+def test_stationary_bootstrap_politis_romano_and_effective_sample_size():
+    from src.historic_returns import (
+        HISTORIC_RETURNS_US_CHF,
+        POLITIS_WHITE_BLOCK_YEARS,
+        compute_effective_sample_size,
+        generate_bootstrapped_data,
+    )
+
+    assert POLITIS_WHITE_BLOCK_YEARS == 5
+
+    # Verify effective sample size and 90% Wilson confidence interval for 40y horizon over 104y dataset
+    stats = compute_effective_sample_size(total_years=104, duration_years=40, success_rate_pct=90.0)
+    assert stats["n_cohorts"] == 65
+    assert np.isclose(stats["n_eff"], 2.6)
+    assert 0.0 <= stats["ci_low_pct"] < 90.0 < stats["ci_high_pct"] <= 100.0
+    # At N_eff = 2.6, a 90% sample rate has a wide 90% Wilson CI (~41% to ~99%)
+    assert stats["ci_high_pct"] - stats["ci_low_pct"] > 40.0
+
+    # Verify Politis-Romano stationary bootstrap (default stationary=True) supports circular wrap-around
+    # by checking that year 2025 (last historical index) is followed by year 1922 (index 0) whenever a block continues
+    total_years = len(HISTORIC_RETURNS_US_CHF)
+    ret_mat, inf_mat = generate_bootstrapped_data(
+        num_runs=200, duration_years=20, seed=42, block_size_years=5, stationary=True
+    )
+    assert ret_mat.shape == (200, 240, 5)
+    assert inf_mat.shape == (200, 20)
+
+    # Reconstruct annual US returns to identify sampled historical indices
+    us_annual = np.prod(1.0 + ret_mat[:, :, 0].reshape(200, 20, 12), axis=2) - 1.0
+
+    wrap_around_observed = False
+    for r in range(200):
+        for t in range(19):
+            idx_t = int(np.argmin(np.abs(HISTORIC_RETURNS_US_CHF - us_annual[r, t])))
+            idx_next = int(np.argmin(np.abs(HISTORIC_RETURNS_US_CHF - us_annual[r, t + 1])))
+            if idx_t == total_years - 1 and idx_next == 0:
+                wrap_around_observed = True
+                break
+        if wrap_around_observed:
+            break
+    assert wrap_around_observed, "Circular wrap-around from year T-1 to year 0 must occur under stationary bootstrap"
+
+
+def test_bitcoin_equity_correlation_and_cash_tax_interest():
+    from src.simulation_engine import generate_monte_carlo_returns
+
+    # 1. Verify positive vs negative Bitcoin-equity correlation across all 3 engines
+    hist_pos = get_historic_return_matrix(30, seed=42, btc_equity_corr=0.80)
+    hist_neg = get_historic_return_matrix(30, seed=42, btc_equity_corr=-0.80)
+    corr_hist_pos = np.corrcoef(np.log1p(hist_pos[0, :, 0]), np.log1p(hist_pos[0, :, 4]))[0, 1]
+    corr_hist_neg = np.corrcoef(np.log1p(hist_neg[0, :, 0]), np.log1p(hist_neg[0, :, 4]))[0, 1]
+    assert corr_hist_pos > 0.65
+    assert corr_hist_neg < -0.65
+
+    mc_pos = generate_monte_carlo_returns(
+        100, 30, 0.08, 0.06, 0.01, 0.02, 0.07, 0.16, 0.15, 0.50, seed=42, btc_equity_corr=0.80
+    )
+    mc_neg = generate_monte_carlo_returns(
+        100, 30, 0.08, 0.06, 0.01, 0.02, 0.07, 0.16, 0.15, 0.50, seed=42, btc_equity_corr=-0.80
+    )
+    corr_mc_pos = np.corrcoef(np.log1p(mc_pos[:, :, 0].ravel()), np.log1p(mc_pos[:, :, 4].ravel()))[0, 1]
+    corr_mc_neg = np.corrcoef(np.log1p(mc_neg[:, :, 0].ravel()), np.log1p(mc_neg[:, :, 4].ravel()))[0, 1]
+    assert corr_mc_pos > 0.75
+    assert corr_mc_neg < -0.75
+
+    # 2. Verify taxable cash interest scales with actual realized cash return (0% return -> 0 CHF interest tax)
+    cfg = SimConfig(
+        num_runs=1,
+        duration_years=1,
+        inflation_mean=0.0,
+        inflation_std=0.0,
+        start_age=65,
+        dividend_yield=0.0,
+        alloc_chf_cash=1.0,
+        initial_liquid_wealth=1_000_000.0,
+        annual_base_expenses=0.0,
+        monthly_ahv_pension=0.0,
+        cantonal_multiplier=0.95,
+        municipal_multiplier=1.19,
+    )
+    ret_zero_cash = np.zeros((1, 12, 5))
+    ret_high_cash = np.zeros((1, 12, 5))
+    ret_high_cash[:, :, 2] = (1.03) ** (1.0 / 12.0) - 1.0  # 3% cash return
+
+    h_zero = run_simulation(cfg, ret_zero_cash)
+    h_high = run_simulation(cfg, ret_high_cash)
+    # Under 3% cash return, income tax on 30,000 CHF interest + wealth tax is strictly higher than under 0% cash return
+    assert h_high["taxes_paid"][0, 0] > h_zero["taxes_paid"][0, 0] + 1_000.0
+
+
+def test_bitcoin_defaults_and_custom_params_across_engines():
+    import pytest
+    from src.historic_returns import (
+        BITCOIN_NOMINAL_MEAN,
+        BITCOIN_VOL,
+        generate_bootstrapped_data,
+        get_historic_return_matrix,
+    )
+
+    assert np.isclose(BITCOIN_NOMINAL_MEAN, 0.07)
+    assert np.isclose(BITCOIN_VOL, 0.50)
+
+    # Zero-volatility custom BTC return produces exact compound monthly return (1 + btc_mean)**(1/12) - 1
+    custom_mean = 0.12
+    expected_monthly = (1.0 + custom_mean) ** (1.0 / 12.0) - 1.0
+    hist_zero_vol = get_historic_return_matrix(10, seed=42, btc_mean=custom_mean, btc_vol=0.0)
+    assert np.allclose(hist_zero_vol[:, :, 4], expected_monthly, atol=1e-12)
+
+    boot_zero_vol, _ = generate_bootstrapped_data(5, 10, seed=42, btc_mean=custom_mean, btc_vol=0.0)
+    assert np.allclose(boot_zero_vol[:, :, 4], expected_monthly, atol=1e-12)
+
+    # Invalid btc_mean or btc_vol raises ValueError
+    with pytest.raises(ValueError, match="must be greater than -1.0"):
+        get_historic_return_matrix(10, seed=42, btc_mean=-1.0)
+    with pytest.raises(ValueError, match="cannot be negative"):
+        get_historic_return_matrix(10, seed=42, btc_vol=-0.1)
+
+
+def test_gaussian_copula_path_standardization_no_drift_leak():
+    from src.historic_returns import _generate_lognormal_monthly_returns
+
+    rng1 = np.random.default_rng(999)
+    rng2 = np.random.default_rng(999)
+
+    # Create two synthetic US equity paths with identical standardized monthly shocks
+    # but wildly different secular drifts (-5%/mo vs +5%/mo).
+    base_shocks = np.sin(np.linspace(0.1, 20.0, 240)) * 0.04
+    us_crash_cohort = np.expm1(-0.05 + base_shocks)[np.newaxis, :]
+    us_boom_cohort = np.expm1(0.05 + base_shocks)[np.newaxis, :]
+
+    btc_crash = _generate_lognormal_monthly_returns(
+        rng1, 0.07, 0.50, (1, 240), us_monthly_slice=us_crash_cohort, btc_equity_corr=0.80
+    )
+    btc_boom = _generate_lognormal_monthly_returns(
+        rng2, 0.07, 0.50, (1, 240), us_monthly_slice=us_boom_cohort, btc_equity_corr=0.80
+    )
+    # Because per-path standardization centers each cohort's log-returns to mean 0 and std 1,
+    # the US cohort's secular drift does not leak into Bitcoin's expected return.
+    assert np.allclose(btc_crash, btc_boom, atol=1e-12)
+
+
+def test_run_simulation_matrix_shape_validation():
+    import pytest
+
+    cfg = SimConfig(
+        num_runs=2,
+        duration_years=5,
+        inflation_mean=0.02,
+        inflation_std=0.01,
+        start_age=50,
+        dividend_yield=0.015,
+        alloc_us_stocks=1.0,
+    )
+    with pytest.raises(ValueError, match="return_matrix shape"):
+        run_simulation(cfg, np.zeros((2, 48, 5)))
+    with pytest.raises(ValueError, match="inflation_matrix shape"):
+        run_simulation(cfg, np.zeros((2, 60, 5)), np.zeros((2, 4)))
+

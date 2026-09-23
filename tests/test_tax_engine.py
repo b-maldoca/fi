@@ -1,9 +1,6 @@
 import numpy as np
-import sys
-import os
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '../src')))
 
-from tax_engine import (
+from src.tax_engine import (
     calculate_income_tax,
     calculate_wealth_tax,
     calculate_capital_withdrawal_tax,

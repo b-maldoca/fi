@@ -18,16 +18,16 @@ To manage complexity, the project will be split into two development phases:
 
 ### Phase 1 In-Scope
 *   Modeling return scenarios using three complementary simulation methods, calculated in **CHF**:
-    *   **Historic Backtesting**: Replaying contiguous historical market periods.
-    *   **Historic Bootstrapping (Sampling with Replacement)**: Stochastic sampling of empirical annual returns with replacement across thousands of runs to test non-historical return sequences.
-    *   **Parametric Monte Carlo**: Stochastic simulation using lognormal asset return distributions.
-*   Zurich Cantonal, Municipal, and Federal Income & Wealth tax rules.
+    *   **Historic Backtesting**: Replaying contiguous historical market periods (1922–2025) using real monthly returns end-to-end, reporting **Effective Sample Size ($N_{\text{eff}} = T / D$)** and the **90% Wilson confidence interval**, and displaying **Worst Cohort (Min) / Best Cohort (Max)** bounds (`[0, 25, 50, 75, 100]`).
+    *   **Historic Bootstrapping (Politis–Romano Stationary Bootstrap)**: Stochastic sampling of geometric-length blocks (`block_size_years = 5` default, restart probability $p = 1/b$) with **circular wrap-around** (`year 2025 -> year 1922`) across empirical returns, cash rates, and inflation with replacement across thousands of runs.
+    *   **Parametric Monte Carlo**: Stochastic simulation using lognormal asset return distributions with cross-asset shock correlation (`US`/`Non-US` $\rho=0.75$, `Gold` $\rho=-0.10$, `Bitcoin` $\rho=\text{btc\_equity\_corr}$, default `0.50`).
+*   Zurich Cantonal, Municipal, and Federal Income & Wealth tax rules, including dynamic cash interest taxation based on realized CHF cash returns.
 *   Mandatory AHV contributions for non-working early retirees.
 *   Pillar 2 modeled via a **Freizügigkeitskonto (Vesting Account)**, restricted to **lump-sum withdrawal (Kapitalbezug)** at retirement (no annuities for now).
 *   Pillar 3a lump-sum withdrawals.
 *   Basic cost of living / expense modeling.
 *   Configurable definition of "Success" for the simulation.
-*   Advanced net worth trajectory chart showing all simulation paths, median, and key percentiles.
+*   Advanced net worth trajectory chart showing all simulation paths, median, and key percentiles/extrema.
 
 ### Phase 1 Out-of-Scope
 *   Pre-retirement phase (Salary, RSUs, active accumulation) -> deferred to Phase 2.
@@ -87,8 +87,15 @@ The application must allow the user to input the following parameters:
     *   Expected Annual **Dividend Yield (%)** on equity holdings (US & Non-US Stocks).
 *   **Monte Carlo & Simulation Parameters**:
     *   Nominal Mean Returns (%) and Volatilities (%) for asset classes, plus Inflation Mean (%) and Inflation Volatility (%) for Monte Carlo mode.
+    *   **Bitcoin–Equity Correlation ($\rho$)** (`btc_equity_corr`, slider from `-0.50` to `0.90`, default `0.50`): Monthly log-return correlation between synthetic Bitcoin and US equities across all 3 simulation engines (Historic Backtesting, Stationary Bootstrapping, and Parametric Monte Carlo).
+    *   **Stationary Bootstrap Mean Block Length (Years)** (`block_size_years`, slider from `1` to `15`, default `5`, Politis–White optimal length for annual macro returns).
     *   Number of Monte Carlo Runs (`mc_num_runs`) and Number of Bootstrapping Runs (`boot_num_runs`).
-    *   **Random Seed** (`random_seed`, default `42`) for reproducible Monte Carlo, Historic Bootstrapping, and synthetic Gold/Bitcoin simulation paths.
+    *   **Random Seed** (`random_seed`, default `42`) for reproducible Monte Carlo, Historic Bootstrapping, and synthetic Bitcoin simulation paths.
+*   **Currency / PPP Assumption**:
+    *   **Real CHF Appreciation beyond PPP (%/yr)** (`real_chf_appreciation`, slider from `-1.00%` to `+2.00%`, default `0.00%`): Controls the expected long-run real appreciation of the Swiss Franc beyond Relative Purchasing Power Parity (inflation differentials) applied to foreign-priced sleeves (`US Stocks`, `Non-US Stocks`, `Gold`) in Historic Backtesting and Block Bootstrapping. `0.00%` (default) assumes Relative PPP holds going forward (removing the `-0.68%/yr` 1922–2025 historical real FX drag); `+0.68%` reproduces the raw unadjusted 1922–2025 historical CHF returns.
+*   **Tax Location & Assumptions**:
+    *   Municipal Multiplier (Steuerfuss, %) — default `119.0` for Zurich City. The cantonal multiplier is fixed at `95%` (Canton Zurich 2026).
+    *   **Tax Bracket Indexation (% of CPI)** (`bracket_indexation`, default `100`) — how much of each year's inflation flows through to the tax bracket edges and the AHV contribution table. See §4.2.B2.
 
 
 ---
@@ -100,7 +107,7 @@ The core simulator executes monthly steps with annual tax and spending evaluatio
 #### A. Income Tax (Zurich & Federal)
 *   Calculate combined taxable income:
     *   Dividends from taxable equity investments (`(US Stocks + Non-US Stocks) * dividend_yield`).
-    *   Interest from CHF Cash holdings (`CHF Cash * 1.0%` nominal APY).
+    *   Interest from CHF Cash holdings (`CHF Cash * max(0.0, realized_annual_cash_return)`, where `realized_annual_cash_return` is compounded from the actual 12 monthly returns of the CHF Cash sleeve in `return_matrix[:, (m - 11):(m + 1), 2]`, and `config.cash_rate` is used for Year 0 tax pre-estimates). This eliminates phantom taxable interest during `0%` ZIRP/NIRP years.
     *   **Pillar 1 (AHV) Pension payments** received from age 65 onward (`12 * monthly_ahv_pension * inflation_factor`, fully taxable).
     *   *(Deferred to Phase 2: Pre-retirement Base + Bonus + Vesting GSUs and working-phase Pillar 2/3a contribution deductions).*
 *   Apply the progressive Federal Income Tax rate (Single tariff).
@@ -111,6 +118,12 @@ The core simulator executes monthly steps with annual tax and spending evaluatio
     *   Year-end total value of taxable liquid investments (US Stocks, Non-US Stocks, CHF Cash, Gold, Bitcoin) *minus* the current year's living expenses (`max(0, total_liquid_end - current_expenses)`).
     *   *Note: Pillar 2 and Pillar 3a balances are exempt from wealth tax until withdrawal.*
 *   Apply Zurich progressive wealth tax base rates multiplied by `cantonal_multiplier + municipal_multiplier`.
+
+#### B2. Tax Bracket Indexation ("Kalte Progression")
+*   All franc-denominated bracket edges — Federal income, Zurich income, Zurich wealth, the derived capital withdrawal tariff, and the AHV non-worker contribution table — are indexed to realized CPI each year, matching Swiss law: **Art. 39 DBG** obliges the EFD to adjust the federal tariff annually to the LIK, and **§ 48 StG ZH** indexes the Canton Zurich income *and* wealth tariffs.
+*   Controlled by **Tax Bracket Indexation (% of CPI)** (`bracket_indexation`, default **100%**). Setting it to 0% freezes brackets in nominal terms so inflation alone pushes the retiree into higher brackets; intermediate values model delayed or partially suspended cantonal compensation.
+*   Tax *rates* and the Steuerfuss multipliers are never indexed — both are political parameters, not inflation-linked ones.
+*   *Note: Indexation removes only the spurious, inflation-driven bracket creep. A portfolio compounding faster than inflation still climbs the wealth tax schedule in real terms, which is intended.*
 
 #### C. Swiss Pension System (The 3 Pillars)
 *   **Pillar 1 (AHV)**:
@@ -125,15 +138,17 @@ The core simulator executes monthly steps with annual tax and spending evaluatio
     *   Model staggered lump-sum withdrawals between age 60 and 64 (`60 + i` for up to 5 accounts, max 1 account per year). If starting at age $\ge 65$, all remaining accounts liquidate immediately in Year 0 Month 0. Subject to immediate progressive capital withdrawal tax at source.
 
 #### D. Investment Growth & Returns (CHF-based)
-The application supports three distinct return simulation engines utilizing empirical datasets curated by Baptiste Wicht (*The Poor Swiss*), available at [wichtounet/swr-calculator](https://github.com/wichtounet/swr-calculator) (and [The Poor Swiss](https://thepoorswiss.com)):
-*   **Empirical Datasets Ingested**:
-    *   **US Stocks (USD)**: Robert Shiller monthly S&P 500 Total Returns (1871–2025).
-    *   **Non-US Equities (USD)**: MSCI EAFE / World ex-US Total Returns proxy (1871–2025).
-    *   **USD/CHF Exchange Rates**: Historical monthly FX rates (1913–2019 via *The Poor Swiss*, 2020–2025 via Swiss National Bank SNB).
-    *   **Swiss Inflation (CPI)**: Historical Swiss Consumer Price Index (1921–2023 via *The Poor Swiss* / Swiss Federal Statistical Office FSO/BFS, 2024–2025 via FSO).
-*   **Historic Backtesting Mode**: Replays contiguous historical **nominal** return and inflation sequences (1922–2025 in CHF, 104 years). Preserves historical sequence, macroeconomic autocorrelation, and historical Swiss inflation, generating $N = \text{total\_years} - \text{duration\_years} + 1$ overlapping cohorts, paired with exact 1% geometric APY for CHF Cash and Ito-corrected lognormal synthetic Gold/Bitcoin returns.
-*   **Historic Bootstrapping (Sampling) Mode**: Jointly samples contiguous 5-year return and inflation blocks (`block_size_years = 5`) from the historical dataset with replacement across $N$ simulation iterations seeded by `random_seed`, paired with exact 1% geometric APY for CHF Cash and vectorized Ito-corrected lognormal synthetic Gold/Bitcoin returns. Using 5-year blocks preserves multi-year macroeconomic cycles (e.g., crashes and subsequent recoveries) and cross-asset/inflation correlations while stress-testing sequence-of-returns risk beyond contiguous records.
-*   **Parametric Monte Carlo Mode**: Stochastic simulation seeded by `random_seed` using user-provided **nominal** asset class means ($\mu$) and standard deviations ($\sigma$) via lognormal returns (with Ito drift correction) and an independent normally distributed annual inflation stream (`seed + 10_000`).
+The application uses a two-stage reproducible data pipeline (`scripts/fetch_source_data.py` and `scripts/build_historic_returns.py`) generating `src/historic_returns.py` across 1922–2025 (`104` calendar years, `1,248` monthly steps):
+*   **Empirical Datasets Ingested (`data/`)**:
+    *   **US Stocks (`data/us_stocks.csv`)**: True **month-end** S&P 500 Total Return index in USD (dividends reinvested, 1871–2025), verified to $\pm 0.01\text{pp}$ against published month-end S&P 500 total returns (via [wichtounet/swr-calculator](https://github.com/wichtounet/swr-calculator); previously misattributed to Shiller's monthly-averaged price series). Carried as **real monthly returns** throughout 1922–2025.
+    *   **Non-US Equities (`data/jst_exus_usd.csv` + `data/ex_us_stocks.csv`)**: Spliced series. Because `ex_us_stocks.csv` is byte-identical to `us_stocks.csv` prior to MSCI EAFE's Dec 1969 inception, **1922–1969** uses a GDP-weighted 17-country ex-US equity total return index built from the **Jordà–Schularick–Taylor Macrohistory Database R6** (`eq_tr` converted to USD via `xrusd`, then to CHF; annual observations expanded into 12 geometric monthly steps, tracked in `MONTHLY_EXUS_IS_SMOOTHED`), spliced with **real monthly** MSCI EAFE / World ex-US returns from `data/ex_us_stocks.csv` for **1970–2025**.
+    *   **USD/CHF Exchange Rates (`data/usd_chf.csv`)**: True **month-end** spot rates for **1971–present** built from daily **FRED `DEXSZUS`** observations (fixing a 13.4% 2024–2025 tail error in the legacy hand-extended series), spliced with **SNB `devkum`** monthly averages for **1914–1970** (the gold-standard / Bretton Woods peg era).
+    *   **Swiss Inflation (`data/ch_inflation.csv`)**: Historical monthly Swiss Consumer Price Index (CPI / LIK) from the Swiss Federal Statistical Office (FSO/BFS, 1921–present).
+    *   **Gold (`data/gold_usd.csv`)**: **LBMA London PM Fix** month-end USD/oz prices from **April 1968–present** multiplied by month-end `USD/CHF` to yield **real monthly CHF gold returns** (`MONTHLY_GOLD_CHF`). Pre-1968 statutory fixed gold prices (`$20.67/oz` then `$35.00/oz`) reflect official currency devaluations spread evenly across the year (`MONTHLY_GOLD_IS_SMOOTHED`).
+    *   **Swiss Short-Term Cash Rate (`data/ch_cash_rate.csv`)**: Annual Swiss short-term interest rates (`1900–2025`) built from the **Jordà–Schularick–Taylor Macrohistory Database R6** (`bill_rate` for Switzerland, 1900–2020) spliced with **SNB policy / SARON rates** (2021–2025), floored at `0.0%` (`retail_rate`) for retail deposit accounts (`MONTHLY_CASH_CHF`, `HISTORIC_RETURNS_CASH_CHF`, `2.46%` nominal CAGR, `1.88%` vol).
+*   **Historic Backtesting Mode**: Replays contiguous historical **nominal** monthly return (`MONTHLY_US_CHF`, `MONTHLY_NON_US_CHF`, `MONTHLY_CASH_CHF`, `MONTHLY_GOLD_CHF`) and annual Swiss CPI inflation sequences (1922–2025 in CHF, 104 years), adjusted by the user's `real_chf_appreciation` PPP setting (`0.00%` default). Generates $N = \text{total\_years} - \text{duration\_years} + 1$ overlapping cohorts, paired with Ito-corrected lognormal synthetic Bitcoin returns (`btc_mean`, default `7%`, and `btc_vol`, default `50%`, shared with the sidebar inputs) coupled to per-path standardized US equity monthly log-returns via a Gaussian copula at correlation `btc_equity_corr` (default `0.50`).
+*   **Historic Bootstrapping (Politis–Romano Stationary Bootstrap) Mode**: Jointly samples historical years (`MONTHLY_US_CHF`, `MONTHLY_NON_US_CHF`, `MONTHLY_CASH_CHF`, `MONTHLY_GOLD_CHF`, and `HISTORIC_SWISS_INFLATION`) using the **Politis–Romano (1994) Stationary Bootstrap** (`stationary=True`, geometric block lengths of mean `block_size_years = 5` via restart probability $p = 1/b$) with **circular wrap-around** `(year_idx[:, t - 1] + 1) % total_years`. This eliminates endpoint under-sampling (every year from `1922` to `2025` has uniform $1/104$ selection probability) and fixed 5-year seam artifacts while preserving multi-year stagflation and crash/recovery clusters. Paired with Gaussian-copula Bitcoin returns (`btc_mean`, `btc_vol`, `btc_equity_corr`) coupled to the per-path standardized bootstrapped US equity path.
+*   **Parametric Monte Carlo Mode**: Stochastic simulation seeded by `random_seed` using user-provided **nominal** asset class means ($\mu$) and standard deviations ($\sigma$) via lognormal returns (with Ito drift correction), cross-asset shock coupling (`US`/`Non-US` $\rho=0.75$, `Gold` $\rho=-0.10$, `Bitcoin` $\rho=\text{btc\_equity\_corr}$), and an independent normally distributed annual inflation stream (`seed + 10_000`).
 *   Model inflation in CHF explicitly by increasing base retirement expenses and AHV pension payouts annually. This separates nominal asset growth from the rising cost of living.
 
 
@@ -148,10 +163,10 @@ The tool presents results side-by-side across all three simulation modes (**Hist
     *   **DEAD**: Final net worth is positive but below $3\times$ the inflation-adjusted initial net worth (Safe, but real wealth depletes or grows modestly).
 *   **Net Worth Trajectory Chart**: A chart showing the progression of assets over the simulation horizon.
     *   Plots individual runs (faint "spaghetti" lines for all contiguous cohorts in Historic Backtesting, capped at 100 runs for performant rendering in Bootstrapping and Monte Carlo) to show dispersion.
-    *   Overlays clear percentile lines (**5th, 25th, 50th (median), 75th, and 95th** percentiles) and a dashed **Inflation-Adj Start NW** reference line.
+    *   For **Historic Backtesting**, overlays **Worst Cohort (Min), 25th, 50th (median), 75th, and Best Cohort (Max)** (`[0, 25, 50, 75, 100]`) rather than 5th/95th percentiles that cannot be non-parametrically estimated at $N_{\text{eff}} \approx 2.1\text{–}2.6$. For **Historic Bootstrapping** and **Monte Carlo**, overlays **5th, 25th, 50th (median), 75th, and 95th** percentiles (`[5, 25, 50, 75, 95]`). Both include a dashed **Inflation-Adj Start NW** reference line.
 *   **Income vs Required Cash Chart**: Dynamic annual stacked bar view of inflows (Dividends, AHV Pension post-65, Capital Sold) vs. a dashed reference line for Total Cash Needed (Expenses + Taxes).
 *   **Annual Withdrawal Breakdown Chart**: Stacked bar chart showing median Living Expenses and median Taxes Paid over time.
-*   **Withdrawal Rate Chart**: Percentile chart showing annual withdrawal rate over time (dynamically capped at 25% max for readability).
+*   **Withdrawal Rate Chart**: Percentile/extrema chart showing the annual withdrawal rate over time, computed as `(Living Expenses + Taxes) / Beginning-of-Year Net Worth`, where the beginning-of-year net worth is reconstructed as end-of-year net worth plus that year's outflows (dynamically capped at 25% max for readability).
 *   **Asset Allocation Development Chart**: Stacked area chart displaying the median nominal balance of all asset categories (CHF Cash, US Stocks, Non-US Stocks, Gold, Bitcoin, Pillar 3a, and Pillar 2) over time to visualize total net worth breakdown, glidepaths, and liquidations.
 *   **Key Outflow KPI Metrics**:
     *   **Avg Years Below Start NW**: Average number and percentage of years where net worth falls below the inflation-adjusted starting net worth watermark.
@@ -160,9 +175,10 @@ The tool presents results side-by-side across all three simulation modes (**Hist
     *   **Pre-AHV Outflow (< Age 65)**: Total median cash required to cover living expenses and taxes during the early retirement gap before age 65.
     *   **Post-65 Outflow (Age 65+)**: Total median cash required to cover living expenses and taxes from age 65 through end-of-life.
 *   **Cohort / Run Analysis Tables**: Interactive data tables detailing the Top 10 Best and Worst individual simulation cohorts/runs, reporting `Cohort`/`Run`, `Final NW (Real)`, `Final NW (Nom)`, `Min NW (Nom)`, and `Yrs Below` (years below the starting watermark).
-*   **Success Metric**:
+*   **Success Metric & Effective Sample Size ($N_{\text{eff}}$)**:
     *   Allows configuring a target ending net worth as a percentage of inflation-adjusted starting net worth (default is 50.0%).
     *   Shows the calculated probability of success matching this definition across all simulation runs.
+    *   In **Historic Backtesting**, explicitly surfaces the number of overlapping cohorts ($N_{\text{cohorts}} = T - D + 1$), the **Effective Sample Size ($N_{\text{eff}} = T / D$)** (e.g. `2.6` for a 40-year horizon or `2.1` for a 50-year horizon across 104 years), and the **90% two-sided Wilson confidence interval** evaluated at $N_{\text{eff}}$.
 
 
 ---
@@ -176,13 +192,14 @@ The tool presents results side-by-side across all three simulation modes (**Hist
 | **AHV for Non-Workers** | Early retirees must pay AHV contributions based on their wealth and pension income. | Can cost up to ~26,500 CHF/year per person if assets are high. |
 | **Pillar 2 Buy-ins** | Voluntary contributions to BVG are tax-deductible. | Excellent tax optimization strategy in high-earning years (Phase 2). |
 | **Capital Withdrawal Tax** | Pillar 2 & 3a withdrawals are taxed at a separate, progressive rate, independent of normal income. | Staggering withdrawals over multiple years (different accounts) is required for optimization. |
+| **Bracket Indexation** | Art. 39 DBG and § 48 StG ZH require federal and Zurich income/wealth bracket edges to be indexed to the CPI. | Over a 50-year horizon this is material: freezing brackets instead overstates median lifetime real taxes by roughly a third. Modelled at 100% by default, adjustable. |
 
 ---
 
 ## 6. Non-Functional Requirements
 
 *   **Privacy & Data Security**: Financial data is highly sensitive. The tool runs locally without sending private financial data to an external server.
-*   **Extensibility**: The simulation engine (`src/simulation_engine.py`, `src/tax_engine.py`, `src/historic_returns.py`) is decoupled from the Streamlit UI (`app.py`), allowing direct programmatic use and unit testing.
+*   **Extensibility**: The simulation engine is a self-contained importable package (`src/`) decoupled from the Streamlit UI (`app.py`). From the repository root it supports direct programmatic use and unit testing with no `sys.path` manipulation — `from src import SimConfig, run_simulation`, or per-module (`from src.tax_engine import calculate_income_tax`).
 *   **Performance**: Vectorized NumPy operations allow Monte Carlo and Bootstrapping simulations (1,000–10,000 runs over 50 years) to execute in sub-second to a few seconds.
 
 ## 7. Architecture & Design Decisions Implemented

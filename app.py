@@ -1,27 +1,19 @@
-import importlib
-import os
-import sys
-
 import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), 'src')))
-
-import historic_returns
-import simulation_engine
-
-importlib.reload(simulation_engine)
-importlib.reload(historic_returns)
-
-from historic_returns import (
+from src.historic_returns import (
+    BITCOIN_NOMINAL_MEAN,
+    BITCOIN_VOL,
     HISTORIC_YEARS,
+    POLITIS_WHITE_BLOCK_YEARS,
+    compute_effective_sample_size,
     generate_bootstrapped_data,
     get_historic_inflation_matrix,
     get_historic_return_matrix,
 )
-from simulation_engine import (
+from src.simulation_engine import (
     SimConfig,
     estimate_year_0_taxes,
     generate_monte_carlo_inflation,
@@ -170,6 +162,7 @@ cantonal_multiplier = 0.95  # Zurich Cantonal Steuerfuss for 2026
 def get_year0_taxes(exp: float) -> float:
     try:
         live_div_yield = float(st.session_state.get("dividend_yield_pct", 1.5)) / 100.0
+        live_cash_rate = float(st.session_state.get("ret_cash_pct", 1.0)) / 100.0
         live_ahv = float(st.session_state.get("monthly_ahv_input", 2000))
         live_muni_mult = float(st.session_state.get("municipal_multiplier_pct", 119.0)) / 100.0
         temp_config = SimConfig(
@@ -179,6 +172,7 @@ def get_year0_taxes(exp: float) -> float:
             inflation_std=0.01,
             start_age=int(start_age),
             dividend_yield=live_div_yield,
+            cash_rate=live_cash_rate,
             initial_liquid_wealth=initial_liquid_wealth,
             initial_pillar_2=initial_pillar_2,
             initial_pillar_3a_accounts=pillar_3a_accounts,
@@ -213,6 +207,7 @@ _vanguard_sync_sig = (
     round(float(alloc_gold), 2),
     round(float(alloc_btc), 2),
     round(float(st.session_state.get("dividend_yield_pct", 1.5)), 2),
+    round(float(st.session_state.get("ret_cash_pct", 1.0)), 2),
     round(float(st.session_state.get("monthly_ahv_input", 2000)), 2),
     round(float(st.session_state.get("municipal_multiplier_pct", 119.0)), 2),
 )
@@ -290,31 +285,107 @@ inflation_mean = st.sidebar.number_input("Inflation Mean (%)", value=2.5, step=0
 inflation_std = st.sidebar.number_input("Inflation Volatility (%)", value=1.0, min_value=0.0, step=0.1, format="%.1f", help="Expected volatility of inflation for Monte Carlo.") / 100.0
 ret_us = st.sidebar.number_input("US Stocks Nominal Mean (%)", value=7.0, step=0.1, format="%.1f", help="Expected nominal mean return for US Stocks in CHF. Note: Historic S&P500 returns are ~9.5% in USD, but ~7.0% in CHF due to the appreciating Franc.") / 100.0
 ret_non_us = st.sidebar.number_input("Non-US Stocks Nominal Mean (%)", value=6.0, step=0.1, format="%.1f", help="Expected nominal mean return for Non-US Stocks in CHF terms.") / 100.0
-ret_cash = st.sidebar.number_input("CHF Cash Nominal Mean (%)", value=1.0, step=0.1, format="%.1f", help="Expected nominal mean return for CHF Cash.") / 100.0
+ret_cash = st.sidebar.number_input("CHF Cash Nominal Mean (%)", value=1.0, step=0.1, format="%.1f", key="ret_cash_pct", help="Expected nominal mean return for CHF Cash (also used as the contractual taxable savings interest floor in Year 0 tax sync and Monte Carlo).") / 100.0
 ret_gold = st.sidebar.number_input("Gold Nominal Mean (%)", value=6.0, step=0.1, format="%.1f", help="Expected nominal mean return for Gold in CHF terms.") / 100.0
-ret_btc = st.sidebar.number_input("Bitcoin Nominal Mean (%)", value=10.0, step=0.1, format="%.1f", help="Expected nominal mean return for Bitcoin in CHF terms.") / 100.0
+ret_btc = st.sidebar.number_input(
+    "Bitcoin Nominal Mean (%)",
+    value=float(BITCOIN_NOMINAL_MEAN * 100.0),
+    step=0.1,
+    format="%.1f",
+    help="Expected nominal arithmetic mean return for synthetic Bitcoin in CHF terms (applied across Historic Backtesting, Stationary Bootstrapping, and Monte Carlo).",
+) / 100.0
 
 vol_eq = st.sidebar.number_input("Equities Volatility (%)", value=15.0, min_value=0.0, step=0.1, format="%.1f", help="Expected volatility for Stocks.") / 100.0
 vol_gold = st.sidebar.number_input("Gold Volatility (%)", value=15.0, min_value=0.0, step=0.1, format="%.1f", help="Expected volatility for Gold.") / 100.0
-vol_btc = st.sidebar.number_input("Bitcoin Volatility (%)", value=60.0, min_value=0.0, step=0.1, format="%.1f", help="Expected volatility for Bitcoin.") / 100.0
+vol_btc = st.sidebar.number_input(
+    "Bitcoin Volatility (%)",
+    value=float(BITCOIN_VOL * 100.0),
+    min_value=0.0,
+    step=0.1,
+    format="%.1f",
+    help="Expected annualized volatility for synthetic Bitcoin (applied across Historic Backtesting, Stationary Bootstrapping, and Monte Carlo).",
+) / 100.0
+btc_equity_corr = st.sidebar.slider(
+    "Bitcoin–Equity Correlation (ρ)",
+    min_value=-0.50,
+    max_value=0.90,
+    value=0.50,
+    step=0.05,
+    format="%.2f",
+    help=(
+        "Correlation between synthetic Bitcoin monthly log-returns and US Equity log-returns "
+        "across all three engines (Historic Backtesting, Stationary Bootstrapping, and Monte Carlo). "
+        "Default 0.50 reflects post-2020 institutional co-movement and prevents a 0-correlation "
+        "rebalancing free lunch during equity crashes."
+    ),
+)
 
 mc_num_runs = int(st.sidebar.number_input("Number of Monte Carlo Runs", value=1000, min_value=100, max_value=10000, step=100, help="How many distinct future paths to simulate."))
-boot_num_runs = int(st.sidebar.number_input("Number of Bootstrapping Runs", value=1000, min_value=100, max_value=10000, step=100, help="How many empirical 5-year block-sampling paths (with replacement) to simulate."))
+boot_num_runs = int(st.sidebar.number_input("Number of Bootstrapping Runs", value=1000, min_value=100, max_value=10000, step=100, help="How many Politis-Romano stationary block-bootstrap paths (with circular wrap-around) to simulate."))
+boot_block_years = int(st.sidebar.slider(
+    "Stationary Bootstrap Mean Block Length (Years)",
+    min_value=1,
+    max_value=15,
+    value=int(POLITIS_WHITE_BLOCK_YEARS),
+    step=1,
+    help=(
+        "Mean block length L (in years) for the Politis-Romano (1994) Stationary Bootstrap "
+        "(geometric block lengths with transition probability p = 1/L and circular wrap-around). "
+        "Default 5 years matches the Politis-White (2004) spectral optimal block length."
+    ),
+))
 random_seed = int(st.sidebar.number_input("Random Seed", value=42, min_value=0, step=1, help="Random seed for reproducible Monte Carlo, Bootstrapping, and synthetic asset simulation paths."))
 
+st.sidebar.subheader("Currency / PPP Assumption")
+real_chf_appreciation = st.sidebar.slider(
+    "Real CHF Appreciation beyond PPP (%/yr)",
+    min_value=-1.00,
+    max_value=2.00,
+    value=0.00,
+    step=0.05,
+    format="%.2f%%",
+    help=(
+        "Expected long-run real appreciation of the Swiss Franc beyond inflation differentials "
+        "(Relative Purchasing Power Parity) applied to foreign-priced sleeves (US Stocks, Non-US Stocks, Gold) "
+        "in Historic Backtesting and Block Bootstrapping.\n\n"
+        "- 0.00% (default): Relative PPP holds going forward (no excess real currency drag).\n"
+        "- +0.68%: Reproduces the raw 1922–2025 historical real CHF appreciation beyond US-CH CPI differentials."
+    ),
+) / 100.0
+
 try:
-    dummy = get_historic_return_matrix(int(duration), seed=random_seed)
-    hist_num_runs = dummy.shape[0]
+    hist_return_matrix = get_historic_return_matrix(
+        int(duration),
+        seed=random_seed,
+        real_chf_appreciation=real_chf_appreciation,
+        btc_equity_corr=btc_equity_corr,
+        btc_mean=ret_btc,
+        btc_vol=vol_btc,
+    )
+    hist_num_runs = hist_return_matrix.shape[0]
     st.sidebar.info(f"Using {len(HISTORIC_YEARS)}-year historic Swiss market data ({HISTORIC_YEARS[0]}–{HISTORIC_YEARS[-1]}). Available contiguous cohorts: {hist_num_runs}")
 except ValueError as e:
     st.sidebar.error(str(e))
+    hist_return_matrix = None
     hist_num_runs = 0
 
 # 6. Tax Location
 st.sidebar.subheader("Zurich Tax Location")
 municipal_multiplier = st.sidebar.number_input("Municipal Multiplier (Steuerfuss, %)", value=119.0, step=0.1, format="%.1f", key="municipal_multiplier_pct", help="Your municipal tax multiplier (Steuerfuss) in Zurich (e.g. 119% for City of Zurich).") / 100.0
+bracket_indexation = st.sidebar.number_input(
+    "Tax Bracket Indexation (% of CPI)",
+    value=100.0,
+    min_value=0.0,
+    max_value=100.0,
+    step=5.0,
+    format="%.0f",
+    help="How much of each year's inflation is passed through to the tax bracket edges and the AHV contribution table.\n\n"
+         "- 100%: Full indexation. This is what Swiss law mandates — Art. 39 DBG requires the federal tariff to be adjusted to the CPI annually, and § 48 StG ZH indexes the Zurich income and wealth tariffs.\n"
+         "- 0%: Brackets frozen in nominal terms, so inflation alone pushes you into higher brackets ('kalte Progression'). A worst case, not the legal default.\n\n"
+         "Note that the Steuerfuss multipliers are political and never indexed. A portfolio growing faster than inflation still climbs the wealth tax schedule in real terms at any setting."
+) / 100.0
 
-if hist_num_runs == 0:
+if hist_num_runs == 0 or hist_return_matrix is None:
     st.error("Cannot run simulation. Duration is too long for the available historic data.")
     st.stop()
 
@@ -349,7 +420,11 @@ def create_config(num_runs: int) -> SimConfig:
         monthly_ahv_pension=monthly_ahv,
         cantonal_multiplier=cantonal_multiplier,
         municipal_multiplier=municipal_multiplier,
+        bracket_indexation=bracket_indexation,
         tent_duration_years=tent_duration_years,
+        real_chf_appreciation=real_chf_appreciation,
+        cash_rate=ret_cash,
+        btc_equity_corr=btc_equity_corr,
         seed=random_seed
     )
 
@@ -369,7 +444,8 @@ mc_return_matrix = generate_monte_carlo_returns(
     vol_eq=vol_eq,
     vol_gold=vol_gold,
     vol_btc=vol_btc,
-    seed=random_seed
+    seed=random_seed,
+    btc_equity_corr=btc_equity_corr,
 )
 mc_inflation_matrix = generate_monte_carlo_inflation(
     num_runs=config_mc.num_runs,
@@ -382,10 +458,15 @@ mc_inflation_matrix = generate_monte_carlo_inflation(
 boot_return_matrix, boot_inflation_matrix = generate_bootstrapped_data(
     num_runs=config_boot.num_runs,
     duration_years=config_boot.duration_years,
-    seed=random_seed
+    seed=random_seed,
+    block_size_years=boot_block_years,
+    real_chf_appreciation=real_chf_appreciation,
+    btc_equity_corr=btc_equity_corr,
+    btc_mean=ret_btc,
+    btc_vol=vol_btc,
+    stationary=True,
 )
 
-hist_return_matrix = get_historic_return_matrix(config_hist.duration_years, seed=random_seed)
 hist_inflation_matrix = get_historic_inflation_matrix(config_hist.duration_years)
 
 with st.spinner('Running Monte Carlo simulations...'):
@@ -398,12 +479,13 @@ with st.spinner('Running Historic Backtesting simulations...'):
 
 def render_results(history, config, num_runs, title, inflation_matrix, success_pct):
     header_tooltips = {
-        "Historic Backtesting": "Replays exact contiguous historical sequences (e.g. 1928–1978, 1929–1979) from ~100 years of historical Swiss-adjusted market data. This preserves real-world macroeconomic sequence, asset correlation, and market cycle autocorrelation.",
-        "Historic Bootstrapping": "Creates thousands of distinct retirement scenarios by randomly drawing 5-year contiguous blocks of asset returns and inflation with replacement from 100+ years of historical data. Using 5-year blocks preserves multi-year market regimes (crashes followed by recoveries, or multi-year inflation waves) while stress-testing sequence-of-returns risk across synthetic pasts.",
-        "Monte Carlo": "Generates thousands of stochastic future paths using parametric lognormal distributions based on user-configured nominal means, standard deviations, and inflation parameters."
+        "Historic Backtesting": "Replays exact contiguous historical sequences (e.g. 1928–1978, 1929–1979) from 104 years of historical Swiss-adjusted market data. Because rolling multi-decade cohorts overlap heavily, effective sample size N_eff = T / D is surfaced alongside a 90% Wilson confidence band, and tail lines show Worst/Best Cohort instead of unsupported 5th/95th percentiles.",
+        "Historic Bootstrapping": "Creates thousands of distinct retirement scenarios using the Politis–Romano (1994) Stationary Bootstrap with circular wrap-around and geometric block lengths (default mean 5 years). Preserves intra-year and multi-year macroeconomic cycles while sampling all historical years with equal 1/T probability.",
+        "Monte Carlo": "Generates thousands of stochastic future paths using correlated parametric lognormal distributions based on user-configured nominal means, standard deviations, and inflation parameters."
     }
     st.header(title, help=header_tooltips.get(title))
     net_worth_history = history['net_worth']
+    is_historic_backtest = "Historic Backtesting" in title
 
     final_net_worth = net_worth_history[-1, :]
     initial_nw = history['initial_net_worth']
@@ -422,6 +504,16 @@ def render_results(history, config, num_runs, title, inflation_matrix, success_p
     success_rate = np.mean(success_mask) * 100
     median_final = np.median(final_net_worth)
 
+    if is_historic_backtest:
+        eff_stats = compute_effective_sample_size(
+            len(HISTORIC_YEARS), config.duration_years, success_rate
+        )
+        tooltip_text += (
+            f" Effective independent sample size N_eff = {eff_stats['n_eff']:.1f} "
+            f"(from {int(eff_stats['n_cohorts'])} overlapping {config.duration_years}y windows). "
+            f"90% Wilson confidence interval: {eff_stats['ci_low_pct']:.0f}%–{eff_stats['ci_high_pct']:.0f}%."
+        )
+
     final_nw_inf_adj = final_net_worth / run_final_inflation_factor
     median_final_inf_adj = np.median(final_nw_inf_adj)
 
@@ -429,6 +521,12 @@ def render_results(history, config, num_runs, title, inflation_matrix, success_p
     median_cum_inflation = np.median(cum_inflation, axis=0)
     inf_adj_start_nw_trajectory = initial_nw * median_cum_inflation
     st.markdown(f"**Nominal Starting NW:** {initial_nw:,.0f} CHF")
+    if is_historic_backtest:
+        st.caption(
+            f"⚠️ **Effective Sample Size ($N_\\text{{eff}}$): {eff_stats['n_eff']:.1f}** independent cohorts "
+            f"(from {int(eff_stats['n_cohorts'])} overlapping {config.duration_years}y windows) · "
+            f"**90% CI: {eff_stats['ci_low_pct']:.0f}%–{eff_stats['ci_high_pct']:.0f}%**"
+        )
 
     rich_threshold = initial_nw * median_cum_inflation[-1] * 3.0
 
@@ -507,12 +605,18 @@ def render_results(history, config, num_runs, title, inflation_matrix, success_p
     years = np.arange(config.start_age + 1, config.start_age + config.duration_years + 1)
     fig = go.Figure()
 
-    percentiles = [5, 25, 50, 75, 95]
+    if is_historic_backtest:
+        # With N_eff ~ 2.1–2.6 independent cohorts, P5/P95 are statistically unsupported;
+        # show Empirical Min (Worst Cohort), quartiles (25th/50th/75th), and Empirical Max (Best Cohort).
+        percentiles = [0, 25, 50, 75, 100]
+        pct_labels = ['Worst Cohort (Min)', '25th Pct', '50th Pct', '75th Pct', 'Best Cohort (Max)']
+    else:
+        percentiles = [5, 25, 50, 75, 95]
+        pct_labels = ['5th Pct', '25th Pct', '50th Pct', '75th Pct', '95th Pct']
     colors = ['crimson', 'orange', 'forestgreen', 'royalblue', 'purple']
 
     simulation_years = np.arange(1, config.duration_years + 1)
 
-    is_historic_backtest = "Historic Backtesting" in title or "Historic Returns" in title
     max_traces_to_plot = int(num_runs) if is_historic_backtest else min(100, int(num_runs))
     for i in range(max_traces_to_plot):
         if is_historic_backtest:
@@ -536,7 +640,7 @@ def render_results(history, config, num_runs, title, inflation_matrix, success_p
             name=trace_name
         ))
 
-    for p, c in zip(percentiles, colors):
+    for p, label, c in zip(percentiles, pct_labels, colors):
         p_vals = np.percentile(net_worth_history, p, axis=1)
         custom_text_pct = [f"Year N: {y}" for y in simulation_years]
         fig.add_trace(go.Scatter(
@@ -544,9 +648,9 @@ def render_results(history, config, num_runs, title, inflation_matrix, success_p
             y=p_vals,
             customdata=custom_text_pct,
             mode='lines',
-            name=f'{p}th Pct',
+            name=label,
             line=dict(color=c, width=3 if p != 50 else 5),
-            hovertemplate="<b>" + f"{p}th Percentile" + "</b><br>%{customdata} (Age: %{x})<br>Net Worth: %{y:,.0f} CHF<extra></extra>"
+            hovertemplate="<b>" + label + "</b><br>%{customdata} (Age: %{x})<br>Net Worth: %{y:,.0f} CHF<extra></extra>"
         ))
 
     # Add Inflation-Adjusted Starting Net Worth Reference Line
@@ -620,12 +724,12 @@ def render_results(history, config, num_runs, title, inflation_matrix, success_p
 
     fig_wr = go.Figure()
     max_p_val = 5.0
-    for p, c in zip(percentiles, colors):
+    for p, label, c in zip(percentiles, pct_labels, colors):
         p_vals = np.percentile(withdrawal_rate_history, p, axis=1)
         # Cap values for visualization purposes when net worth approaches zero
         p_vals = np.minimum(p_vals, 100.0)
         max_p_val = max(max_p_val, float(np.max(p_vals)))
-        fig_wr.add_trace(go.Scatter(x=years, y=p_vals, mode='lines', name=f'{p}th Pct', line=dict(color=c, width=3 if p != 50 else 5)))
+        fig_wr.add_trace(go.Scatter(x=years, y=p_vals, mode='lines', name=label, line=dict(color=c, width=3 if p != 50 else 5)))
 
     y_upper = min(25.0, max_p_val * 1.15)
     fig_wr.update_layout(

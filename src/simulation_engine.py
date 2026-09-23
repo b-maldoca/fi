@@ -1,6 +1,6 @@
 import numpy as np
 from dataclasses import dataclass
-from tax_engine import calculate_income_tax, calculate_wealth_tax, calculate_capital_withdrawal_tax, calculate_ahv_non_worker
+from .tax_engine import calculate_income_tax, calculate_wealth_tax, calculate_capital_withdrawal_tax, calculate_ahv_non_worker
 
 VALID_SPENDING_STRATEGIES = {"Static", "Dynamic (Floor & Ceiling)", "Vanguard Dynamic"}
 VALID_REBALANCE_STRATEGIES = {"Cash Tent", "Monthly", "Quarterly", "Yearly", "Threshold", "Never"}
@@ -53,8 +53,23 @@ class SimConfig:
     cantonal_multiplier: float = 0.0
     municipal_multiplier: float = 0.0
 
+    # Fraction of realized CPI applied annually to the tax bracket edges.
+    # 1.0 = full indexation (Art. 39 DBG / § 48 StG ZH); 0.0 = frozen nominal
+    # brackets, i.e. the retiree absorbs the full bracket creep.
+    bracket_indexation: float = 1.0
+
     # Cash Tent Strategy (Pfau Glidepath)
     tent_duration_years: int = 7
+
+    # Expected real CHF appreciation beyond Relative Purchasing Power Parity (PPP).
+    # 0.0 = PPP neutrality (default); 0.0068 = raw 1922-2025 historical real CHF appreciation (+0.68%/yr).
+    real_chf_appreciation: float = 0.0
+
+    # Expected CHF Cash yield used for Year 0 tax estimation (and Cash Tent buffer sizing).
+    cash_rate: float = 0.01
+
+    # Correlation between synthetic Bitcoin monthly log-returns and US equity log-returns.
+    btc_equity_corr: float = 0.50
 
     # Random Seed for reproducible stochastic simulation
     seed: int = 42
@@ -74,6 +89,12 @@ class SimConfig:
 
         if self.seed < 0:
             raise ValueError(f"seed ({self.seed}) cannot be negative.")
+
+        if self.real_chf_appreciation >= 1.0:
+            raise ValueError(f"real_chf_appreciation ({self.real_chf_appreciation}) must be strictly less than 1.0.")
+
+        if not (-1.0 <= self.btc_equity_corr <= 1.0):
+            raise ValueError(f"btc_equity_corr ({self.btc_equity_corr}) must be between -1.0 and 1.0.")
             
         if self.vanguard_floor_pct < 0.0 or self.vanguard_ceiling_pct < 0.0 or self.vanguard_target_rate < 0.0:
             raise ValueError("Vanguard Dynamic Spending parameters cannot be negative.")
@@ -89,6 +110,9 @@ class SimConfig:
 
         if self.cantonal_multiplier < 0.0 or self.municipal_multiplier < 0.0:
             raise ValueError("Tax multipliers cannot be negative.")
+
+        if self.bracket_indexation < 0.0:
+            raise ValueError(f"bracket_indexation ({self.bracket_indexation}) cannot be negative.")
 
         if self.rebalance_threshold < 0.0 or self.dynamic_expense_floor_pct < 0.0 or self.dynamic_expense_ceiling_pct < 0.0:
             raise ValueError("Rebalance threshold and dynamic expense floor/ceiling percentages cannot be negative.")
@@ -149,7 +173,7 @@ def estimate_year_0_taxes(config: SimConfig) -> float:
     equities = max(0.0, init_wealth * (config.alloc_us_stocks + config.alloc_non_us_stocks))
     dividends = equities * config.dividend_yield
     cash = max(0.0, init_wealth * config.alloc_chf_cash)
-    interest = cash * 0.01
+    interest = cash * max(0.0, config.cash_rate)
     annual_ahv = 12 * config.monthly_ahv_pension if config.start_age >= 65 else 0.0
     
     taxable_income = dividends + interest + annual_ahv
@@ -212,6 +236,31 @@ def get_target_weights(config: SimConfig, year: int) -> np.ndarray:
     return weights
 
 
+def _indexed_tax(tax_fn, taxable_amount: np.ndarray, bracket_factors: np.ndarray, *args) -> np.ndarray:
+    """
+    Applies a progressive tariff whose bracket edges are scaled by `bracket_factors`.
+
+    Swiss law indexes tax bracket edges to the CPI so that purely nominal growth
+    does not push a taxpayer into higher brackets: Art. 39 DBG requires the EFD to
+    adjust the federal tariff annually, and § 48 StG ZH indexes the Canton Zurich
+    income *and* wealth tariffs.
+
+    Every tariff in `tax_engine` is positively homogeneous of degree 1 under a
+    simultaneous scaling of the tax base and the bracket edges. This holds for the
+    piecewise-linear income and wealth tariffs, and also for the AHV non-worker step
+    function, because floor division is scale invariant (`(f*a) // (f*b) == a // b`).
+    Scaling the brackets by `f` is therefore exactly equivalent to deflating the base
+    by `f`, applying the unscaled tariff, and re-inflating the result:
+
+        T_indexed(x, f) == f * T_nominal(x / f)
+
+    Note that only franc-denominated amounts scale; the bracket *rates* and the
+    Steuerfuss multipliers are unaffected, which is correct since both are political
+    parameters rather than inflation-linked ones.
+    """
+    return bracket_factors * tax_fn(taxable_amount / bracket_factors, *args)
+
+
 def run_simulation(config: SimConfig, return_matrix: np.ndarray, inflation_matrix: np.ndarray = None) -> dict:
     """
     Executes the multi-asset monthly simulation loop.
@@ -219,6 +268,18 @@ def run_simulation(config: SimConfig, return_matrix: np.ndarray, inflation_matri
     """
     num_runs = config.num_runs
     duration_months = config.duration_years * 12
+
+    expected_ret_shape = (num_runs, duration_months, 5)
+    if return_matrix.shape != expected_ret_shape:
+        raise ValueError(
+            f"return_matrix shape {return_matrix.shape} must match {expected_ret_shape}."
+        )
+    if inflation_matrix is not None:
+        expected_inf_shape = (num_runs, config.duration_years)
+        if inflation_matrix.shape != expected_inf_shape:
+            raise ValueError(
+                f"inflation_matrix shape {inflation_matrix.shape} must match {expected_inf_shape}."
+            )
     
     initial_target_weights = get_target_weights(config, 0)
     
@@ -243,11 +304,21 @@ def run_simulation(config: SimConfig, return_matrix: np.ndarray, inflation_matri
     history_below_watermark = np.zeros((duration_months // 12, num_runs), dtype=bool)
     
     inflation_factors = np.ones(num_runs)
+    bracket_factors = np.ones(num_runs)
     rng_inf = np.random.default_rng(config.seed + 10_000)
     vanguard_prev_expenses = np.full(num_runs, config.annual_base_expenses, dtype=float)
     vanguard_prev_inflation = np.ones(num_runs, dtype=float)
     taxable_liquidation_amount = np.zeros(num_runs)
     capital_withdrawal_tax_this_year = np.zeros(num_runs)
+
+    # Hoist loop-invariant constants outside the monthly simulation loop
+    total_stocks = config.alloc_us_stocks + config.alloc_non_us_stocks
+    if total_stocks > 0:
+        weight_us = config.alloc_us_stocks / total_stocks
+        weight_non_us = config.alloc_non_us_stocks / total_stocks
+    else:
+        weight_us, weight_non_us = 0.5, 0.5
+    penalty_monthly = (1.05) ** (1.0 / 12.0) - 1.0
     
     for m in range(duration_months):
         year = m // 12
@@ -263,6 +334,7 @@ def run_simulation(config: SimConfig, return_matrix: np.ndarray, inflation_matri
             else:
                 inflation = rng_inf.normal(config.inflation_mean, config.inflation_std, num_runs)
             inflation_factors *= np.maximum(0.01, 1.0 + inflation)
+            bracket_factors *= np.maximum(0.01, 1.0 + config.bracket_indexation * inflation)
             taxable_liquidation_amount.fill(0)
             capital_withdrawal_tax_this_year.fill(0)
             
@@ -297,8 +369,10 @@ def run_simulation(config: SimConfig, return_matrix: np.ndarray, inflation_matri
             has_liquidation = taxable_liquidation_amount > 0
             if np.any(has_liquidation):
                 cap_tax = np.zeros(num_runs)
-                cap_tax[has_liquidation] = calculate_capital_withdrawal_tax(
+                cap_tax[has_liquidation] = _indexed_tax(
+                    calculate_capital_withdrawal_tax,
                     taxable_liquidation_amount[has_liquidation],
+                    bracket_factors[has_liquidation],
                     config.cantonal_multiplier,
                     config.municipal_multiplier
                 )
@@ -313,13 +387,6 @@ def run_simulation(config: SimConfig, return_matrix: np.ndarray, inflation_matri
         monthly_returns = return_matrix[:, m, :] # (num_runs, 5)
         
         # Apply 100% Equity returns to Pillar 2 and 3a (proportional to US/Non-US target alloc)
-        total_stocks = config.alloc_us_stocks + config.alloc_non_us_stocks
-        if total_stocks > 0:
-            weight_us = config.alloc_us_stocks / total_stocks
-            weight_non_us = config.alloc_non_us_stocks / total_stocks
-        else:
-            weight_us, weight_non_us = 0.5, 0.5
-            
         equity_monthly_returns = monthly_returns[:, 0] * weight_us + monthly_returns[:, 1] * weight_non_us
         
         pillar_2 *= (1 + equity_monthly_returns)
@@ -336,7 +403,6 @@ def run_simulation(config: SimConfig, return_matrix: np.ndarray, inflation_matri
             liquid_assets[is_bankrupt, 2] = total_liquid[is_bankrupt].flatten()
             
         # Positive balances get market returns. Negative balances get a 5% APY penalty (converted to monthly)
-        penalty_monthly = (1.05)**(1/12) - 1
         returns_to_apply = np.where(liquid_assets > 0, monthly_returns, penalty_monthly)
         returns_to_apply = np.maximum(-1.0, returns_to_apply)
         liquid_assets *= (1 + returns_to_apply)
@@ -425,23 +491,25 @@ def run_simulation(config: SimConfig, return_matrix: np.ndarray, inflation_matri
             equities = np.maximum(0, liquid_assets[:, 0] + liquid_assets[:, 1])
             dividends = equities * config.dividend_yield
             
-            # Cash (index 2) generates taxable interest (assumed 1% APY as per return matrix)
+            # Cash (index 2) generates taxable interest from the realized annual return on CHF Cash
+            # in return_matrix[:, (m - 11):(m + 1), 2] (floored at 0.0 so negative rates never reduce taxable income).
             cash = np.maximum(0, liquid_assets[:, 2])
-            interest = cash * 0.01
+            realized_cash_ret = np.prod(1.0 + return_matrix[:, (m - 11) : (m + 1), 2], axis=1) - 1.0
+            interest = cash * np.maximum(0.0, realized_cash_ret)
             
             taxable_income = dividends + interest + annual_ahv_received
             
-            income_tax = calculate_income_tax(taxable_income, config.cantonal_multiplier, config.municipal_multiplier)
+            income_tax = _indexed_tax(calculate_income_tax, taxable_income, bracket_factors, config.cantonal_multiplier, config.municipal_multiplier)
             
             total_liquid_end = np.sum(liquid_assets, axis=1)
             # Wealth Tax and AHV non-worker tax are assessed on wealth *after* deducting living expenses
             taxable_wealth = np.maximum(0, total_liquid_end - current_expenses)
             
-            wealth_tax = calculate_wealth_tax(taxable_wealth, config.cantonal_multiplier, config.municipal_multiplier)
+            wealth_tax = _indexed_tax(calculate_wealth_tax, taxable_wealth, bracket_factors, config.cantonal_multiplier, config.municipal_multiplier)
             
             ahv_mask = current_age < 65
             ahv_contrib = np.zeros(num_runs)
-            ahv_contrib[ahv_mask] = calculate_ahv_non_worker(taxable_wealth[ahv_mask])
+            ahv_contrib[ahv_mask] = _indexed_tax(calculate_ahv_non_worker, taxable_wealth[ahv_mask], bracket_factors[ahv_mask])
             
             # Capital withdrawal tax was already deducted at source in month 0
             total_taxes = income_tax + wealth_tax + ahv_contrib
@@ -456,16 +524,13 @@ def run_simulation(config: SimConfig, return_matrix: np.ndarray, inflation_matri
             remaining_deficit = deficit - payable
             
             if config.enable_smart_selling:
-                inflation_adjusted_initial_nw = initial_net_worth * inflation_factors
-                is_downturn = current_nw_before_expenses < inflation_adjusted_initial_nw
-                
-                # Pay from cash first for downturn runs
-                downturn_payable = payable[is_downturn]
-                available_cash = np.maximum(0, liquid_assets[is_downturn, 2])
+                # Pay from cash first for downturn runs (reuse is_below_watermark computed above)
+                downturn_payable = payable[is_below_watermark]
+                available_cash = np.maximum(0, liquid_assets[is_below_watermark, 2])
                 sell_cash = np.minimum(downturn_payable, available_cash)
                 
-                liquid_assets[is_downturn, 2] -= sell_cash
-                payable[is_downturn] -= sell_cash
+                liquid_assets[is_below_watermark, 2] -= sell_cash
+                payable[is_below_watermark] -= sell_cash
             
             # Sell proportionally from remaining positive assets
             positive_assets = np.maximum(0, liquid_assets)
@@ -518,9 +583,17 @@ def generate_monte_carlo_returns(
     vol_eq: float,
     vol_gold: float,
     vol_btc: float,
-    seed: int = 42
+    seed: int = 42,
+    btc_equity_corr: float = 0.50,
+    exus_equity_corr: float = 0.75,
+    gold_equity_corr: float = 0.08,
 ) -> np.ndarray:
-    """Generates monthly returns using a lognormal model to prevent negative asset prices."""
+    """Generates monthly returns using a correlated lognormal model to prevent negative asset prices.
+
+    Draws US Stocks standard normal shocks `z_us` first (preserving stream alignment),
+    then couples Non-US Stocks (`exus_equity_corr=0.75`), Gold (`gold_equity_corr=0.08`),
+    and Bitcoin (`btc_equity_corr=0.50` default) to `z_us` via Gaussian copula.
+    """
     if num_runs <= 0:
         raise ValueError(f"num_runs must be positive, got {num_runs}")
     if duration_years <= 0:
@@ -531,24 +604,35 @@ def generate_monte_carlo_returns(
         raise ValueError("Expected annual returns must be greater than -100% (-1.0)")
     if any(v < 0.0 for v in (vol_eq, vol_gold, vol_btc)):
         raise ValueError("Volatilities cannot be negative")
+    if any(not (-1.0 <= c <= 1.0) for c in (btc_equity_corr, exus_equity_corr, gold_equity_corr)):
+        raise ValueError("Asset correlations must be between -1.0 and 1.0")
 
     rng = np.random.default_rng(seed)
     duration_months = duration_years * 12
     matrix = np.zeros((num_runs, duration_months, 5))
-    
-    def get_monthly_returns(ann_ret, ann_vol):
-        # Ito drift correction: mu = ln(1+R) - 0.5 * sigma^2
-        drift = np.log(1 + ann_ret) - 0.5 * ann_vol**2
-        log_ret = rng.normal(drift/12, ann_vol/np.sqrt(12), (num_runs, duration_months))
+    shape = (num_runs, duration_months)
+
+    def _from_z(ann_ret: float, ann_vol: float, z: np.ndarray) -> np.ndarray:
+        drift = np.log(1.0 + ann_ret) - 0.5 * (ann_vol ** 2)
+        log_ret = (drift / 12.0) + (ann_vol / np.sqrt(12.0)) * z
         return np.exp(log_ret) - 1.0
 
-    matrix[:, :, 0] = get_monthly_returns(ret_us, vol_eq)
-    matrix[:, :, 1] = get_monthly_returns(ret_non_us, vol_eq)
+    def _coupled_z(z_base: np.ndarray, rho: float) -> np.ndarray:
+        eps = rng.normal(0.0, 1.0, shape)
+        return rho * z_base + np.sqrt(max(0.0, 1.0 - rho ** 2)) * eps
+
+    z_us = rng.normal(0.0, 1.0, shape)
+    z_non_us = _coupled_z(z_us, exus_equity_corr)
+    z_gold = _coupled_z(z_us, gold_equity_corr)
+    z_btc = _coupled_z(z_us, btc_equity_corr)
+
+    matrix[:, :, 0] = _from_z(ret_us, vol_eq, z_us)
+    matrix[:, :, 1] = _from_z(ret_non_us, vol_eq, z_non_us)
     # Cash is constant nominal return (geometric monthly rate)
-    matrix[:, :, 2] = (1 + ret_cash)**(1/12) - 1.0
-    matrix[:, :, 3] = get_monthly_returns(ret_gold, vol_gold)
-    matrix[:, :, 4] = get_monthly_returns(ret_btc, vol_btc)
-    
+    matrix[:, :, 2] = (1.0 + ret_cash) ** (1.0 / 12.0) - 1.0
+    matrix[:, :, 3] = _from_z(ret_gold, vol_gold, z_gold)
+    matrix[:, :, 4] = _from_z(ret_btc, vol_btc, z_btc)
+
     return matrix
 
 
