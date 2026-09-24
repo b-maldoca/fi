@@ -1,5 +1,13 @@
 import numpy as np
 
+# Canton Zurich cantonal multiplier (Staatssteuerfuss) for 2026 and the City of
+# Zurich municipal multiplier (Gemeindesteuerfuss). These are political, not
+# inflation-linked, parameters. They are the defaults for every tariff below and
+# for `SimConfig`, so programmatic callers get realistic Zurich City taxes unless
+# they deliberately override them.
+ZURICH_CANTONAL_MULTIPLIER = 0.95
+ZURICH_CITY_MUNICIPAL_MULTIPLIER = 1.19
+
 # Federal Income Tax Brackets (approx 2024, Single)
 # Format: (Threshold, Rate)
 FEDERAL_INCOME_BRACKETS = [
@@ -14,6 +22,20 @@ FEDERAL_INCOME_BRACKETS = [
     (147_000, 0.1100),
     (191_000, 0.1320),
 ]
+
+# Art. 128 BV / Art. 36 DBG: the federal income tax never exceeds 11.5% of
+# taxable income. Above the top threshold the tariff switches from marginal 13.2%
+# to a flat 11.5% of the *whole* income, i.e. tax = min(tariff(x), 0.115 * x).
+FEDERAL_MAX_AVERAGE_RATE = 0.115
+
+# Art. 38 DBG: lump-sum pension withdrawals are taxed at 1/5 of the Art. 36 tariff.
+FEDERAL_CAPITAL_WITHDRAWAL_FRACTION = 1.0 / 5.0
+
+# § 37 StG ZH (since tax period 2022): the rate is the one that would apply if an
+# annual pension of 1/20 of the lump sum were paid instead, and the simple state
+# tax is at least 2% of the lump sum.
+ZURICH_CAPITAL_WITHDRAWAL_RATE_DIVISOR = 20.0
+ZURICH_CAPITAL_WITHDRAWAL_MIN_SIMPLE_RATE = 0.02
 
 # Zurich Cantonal Income Tax Brackets (approx 2024, Single, BASE RATE)
 # Note: Base rate must be multiplied by the combined multiplier (Steuerfuss).
@@ -45,75 +67,97 @@ ZURICH_WEALTH_BRACKETS = [
 ]
 
 
+def _is_scalar(x) -> bool:
+    return np.isscalar(x) or (isinstance(x, np.ndarray) and x.ndim == 0)
+
+
+def _as_output(result: np.ndarray, is_scalar: bool):
+    """Returns a Python float for scalar inputs and the array otherwise."""
+    return float(result) if is_scalar else result
+
+
 def _calculate_bracket_tax(taxable_amount: np.ndarray, brackets: list) -> np.ndarray:
-    """Vectorized calculation of progressive tax brackets."""
-    is_scalar = np.isscalar(taxable_amount) or (isinstance(taxable_amount, np.ndarray) and taxable_amount.ndim == 0)
+    """Vectorized calculation of progressive tax brackets (negative inputs clamp to 0)."""
     arr = np.maximum(0.0, np.asarray(taxable_amount, dtype=float))
     tax = np.zeros_like(arr, dtype=float)
-    
-    for i in range(len(brackets)):
-        threshold, rate = brackets[i]
-        next_threshold = brackets[i+1][0] if i + 1 < len(brackets) else np.inf
-        
-        # Calculate how much of the taxable amount falls within this specific bracket
-        amount_in_bracket = np.clip(arr - threshold, 0, next_threshold - threshold)
-        tax += amount_in_bracket * rate
-        
-    if is_scalar:
-        return float(tax)
+
+    for i, (threshold, rate) in enumerate(brackets):
+        next_threshold = brackets[i + 1][0] if i + 1 < len(brackets) else np.inf
+        # Portion of the taxable amount that falls within this specific bracket
+        tax += np.clip(arr - threshold, 0, next_threshold - threshold) * rate
+
     return tax
 
-def calculate_income_tax(taxable_income: np.ndarray, cantonal_multiplier: float = 1.0, municipal_multiplier: float = 1.19) -> np.ndarray:
+
+def _federal_income_tariff(taxable_income: np.ndarray) -> np.ndarray:
+    """Art. 36 DBG tariff for singles, including the 11.5% flat-rate ceiling."""
+    arr = np.maximum(0.0, np.asarray(taxable_income, dtype=float))
+    return np.minimum(_calculate_bracket_tax(arr, FEDERAL_INCOME_BRACKETS), FEDERAL_MAX_AVERAGE_RATE * arr)
+
+
+def calculate_income_tax(
+    taxable_income: np.ndarray,
+    cantonal_multiplier: float = ZURICH_CANTONAL_MULTIPLIER,
+    municipal_multiplier: float = ZURICH_CITY_MUNICIPAL_MULTIPLIER,
+) -> np.ndarray:
     """
     Calculate combined Federal, Cantonal, and Municipal income tax.
 
     The Zurich base tariff is scaled by the sum of the cantonal and municipal
-    multipliers (Steuerfuss). `app.py` passes the Canton Zurich 2026 cantonal
-    multiplier of 0.95 plus the municipal multiplier (1.19 for Zurich City),
+    multipliers (Steuerfuss). The defaults are the Canton Zurich 2026 cantonal
+    multiplier of 0.95 plus the City of Zurich municipal multiplier of 1.19,
     i.e. a total multiplier of 2.14.
     """
-    is_scalar = np.isscalar(taxable_income) or (isinstance(taxable_income, np.ndarray) and taxable_income.ndim == 0)
-    total_multiplier = cantonal_multiplier + municipal_multiplier
-    
-    fed_tax = _calculate_bracket_tax(taxable_income, FEDERAL_INCOME_BRACKETS)
+    fed_tax = _federal_income_tariff(taxable_income)
     cantonal_base_tax = _calculate_bracket_tax(taxable_income, ZURICH_INCOME_BRACKETS)
-    
-    total_cantonal_municipal_tax = cantonal_base_tax * total_multiplier
-    result = fed_tax + total_cantonal_municipal_tax
-    if is_scalar:
-        return float(result)
-    return result
+    result = fed_tax + cantonal_base_tax * (cantonal_multiplier + municipal_multiplier)
+    return _as_output(result, _is_scalar(taxable_income))
 
-def calculate_wealth_tax(taxable_wealth: np.ndarray, cantonal_multiplier: float = 1.0, municipal_multiplier: float = 1.19) -> np.ndarray:
+
+def calculate_wealth_tax(
+    taxable_wealth: np.ndarray,
+    cantonal_multiplier: float = ZURICH_CANTONAL_MULTIPLIER,
+    municipal_multiplier: float = ZURICH_CITY_MUNICIPAL_MULTIPLIER,
+) -> np.ndarray:
     """
     Calculate Cantonal and Municipal wealth tax. (Federal level does not have a wealth tax).
     """
-    is_scalar = np.isscalar(taxable_wealth) or (isinstance(taxable_wealth, np.ndarray) and taxable_wealth.ndim == 0)
-    total_multiplier = cantonal_multiplier + municipal_multiplier
-    
     cantonal_base_tax = _calculate_bracket_tax(taxable_wealth, ZURICH_WEALTH_BRACKETS)
-    result = cantonal_base_tax * total_multiplier
-    if is_scalar:
-        return float(result)
-    return result
+    result = cantonal_base_tax * (cantonal_multiplier + municipal_multiplier)
+    return _as_output(result, _is_scalar(taxable_wealth))
 
-def calculate_capital_withdrawal_tax(amount: np.ndarray, cantonal_multiplier: float = 1.0, municipal_multiplier: float = 1.19) -> np.ndarray:
+
+def calculate_capital_withdrawal_tax(
+    amount: np.ndarray,
+    cantonal_multiplier: float = ZURICH_CANTONAL_MULTIPLIER,
+    municipal_multiplier: float = ZURICH_CITY_MUNICIPAL_MULTIPLIER,
+) -> np.ndarray:
     """
     Calculate the separate tax on lump-sum withdrawals from Pillar 2 and Pillar 3a.
-    Federal: Roughly 1/5 of the standard tariff.
-    Zurich: Roughly 1/10 of the standard tariff on the base rate.
+
+    Federal (Art. 38 DBG): 1/5 of the ordinary Art. 36 tariff applied to the
+    whole amount (so the effective federal rate is capped at 11.5% / 5 = 2.3%).
+
+    Zurich (§ 37 StG ZH, since 2022): the simple state tax is levied at the rate
+    that the ordinary income tariff would apply to an annual pension of 1/20 of
+    the lump sum, applied to the whole lump sum, and is at least 2% of it:
+
+        simple_tax = max(0.02 * C, 20 * T_ZH(C / 20))
+
+    It is then multiplied by the cantonal + municipal Steuerfuss. Both parts are
+    positively homogeneous of degree 1 in (amount, bracket edges), so the
+    bracket-indexation identity used by the simulation engine still holds.
     """
-    is_scalar = np.isscalar(amount) or (isinstance(amount, np.ndarray) and amount.ndim == 0)
-    # Federal capital withdrawal tax approximation (1/5 of regular)
-    fed_tax = _calculate_bracket_tax(amount, FEDERAL_INCOME_BRACKETS) / 5.0
-    
-    # Zurich capital withdrawal tax approximation (1/10 of regular base)
-    cantonal_base_tax = _calculate_bracket_tax(amount, ZURICH_INCOME_BRACKETS) / 10.0
-    total_cantonal_tax = cantonal_base_tax * (cantonal_multiplier + municipal_multiplier)
-    result = fed_tax + total_cantonal_tax
-    if is_scalar:
-        return float(result)
-    return result
+    arr = np.maximum(0.0, np.asarray(amount, dtype=float))
+    fed_tax = _federal_income_tariff(arr) * FEDERAL_CAPITAL_WITHDRAWAL_FRACTION
+
+    divisor = ZURICH_CAPITAL_WITHDRAWAL_RATE_DIVISOR
+    rate_based_simple_tax = divisor * _calculate_bracket_tax(arr / divisor, ZURICH_INCOME_BRACKETS)
+    simple_tax = np.maximum(ZURICH_CAPITAL_WITHDRAWAL_MIN_SIMPLE_RATE * arr, rate_based_simple_tax)
+
+    result = fed_tax + simple_tax * (cantonal_multiplier + municipal_multiplier)
+    return _as_output(result, _is_scalar(amount))
+
 
 def calculate_ahv_non_worker(wealth: np.ndarray, imputed_pension_income: np.ndarray = 0) -> np.ndarray:
     """
@@ -121,31 +165,24 @@ def calculate_ahv_non_worker(wealth: np.ndarray, imputed_pension_income: np.ndar
     Based on wealth and 20x imputed pension income (e.g., from an annuity).
     Min 530 CHF, Max 26,500 CHF (2025 values).
     """
-    is_wealth_scalar = np.isscalar(wealth) or (isinstance(wealth, np.ndarray) and wealth.ndim == 0)
-    is_imputed_scalar = np.isscalar(imputed_pension_income) or (isinstance(imputed_pension_income, np.ndarray) and imputed_pension_income.ndim == 0)
-    is_scalar = is_wealth_scalar and is_imputed_scalar
+    is_scalar = _is_scalar(wealth) and _is_scalar(imputed_pension_income)
 
     wealth_arr = np.maximum(0.0, np.asarray(wealth, dtype=float))
     imputed_arr = np.maximum(0.0, np.asarray(imputed_pension_income, dtype=float))
-    
+
     determining_wealth = wealth_arr + (20 * imputed_arr)
-    
+
     # 106 CHF per 50k step above 300k (up to 1.75M)
     steps_mid = np.maximum(0.0, (determining_wealth - 300_000) // 50_000)
     contrib_mid = 530.0 + steps_mid * 106.0
-    
+
     # 159 CHF per 50k step above 1.75M
     steps_high = np.maximum(0.0, (determining_wealth - 1_750_000) // 50_000)
     contrib_high = 3604.0 + steps_high * 159.0
-    
+
     # Combine based on thresholds
     contribution = np.where(determining_wealth < 350_000, 530.0,
                             np.where(determining_wealth <= 1_750_000, contrib_mid, contrib_high))
-    
-    # Cap at max limit
-    result = np.minimum(contribution, 26_500.0)
-    
-    if is_scalar:
-        return float(result)
-    return result
 
+    # Cap at max limit
+    return _as_output(np.minimum(contribution, 26_500.0), is_scalar)

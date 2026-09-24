@@ -52,6 +52,7 @@ us_idx = load_monthly('us_stocks.csv')
 exus_idx = load_monthly('ex_us_stocks.csv')
 fx = load_monthly('usd_chf.csv')
 cpi = load_monthly('ch_inflation.csv')
+us_cpi = load_monthly('us_cpi.csv')
 gold_usd = load_monthly('gold_usd.csv')
 jst = pd.read_csv(os.path.join(DATA, 'jst_exus_usd.csv'))
 ch_cash_df = pd.read_csv(os.path.join(DATA, 'ch_cash_rate.csv')).set_index('year')
@@ -131,7 +132,7 @@ for y in years:
         ann = ((g1 / g0) * (fx_dec[y] / fx_dec[y - 1]) - 1.0) if g0 and g1 else 0.0
         monthly_gold.loc[sel] = smooth(ann)
         gold_smoothed[y] = True
-monthly_gold = monthly_gold.fillna(0.0)
+assert monthly_gold.notna().all(), 'gap in gold monthly series'
 print(f'gold: {sum(gold_smoothed.values())} years pegged/smoothed, '
       f'{len(years)-sum(gold_smoothed.values())} years real monthly (LBMA)')
 
@@ -175,6 +176,21 @@ cpi_dec = cpi[cpi.index.month == 12]
 cpi_dec.index = cpi_dec.index.year
 ch_inf_a = np.array([cpi_dec[y] / cpi_dec[y - 1] - 1.0 for y in years])
 fx_a = np.array([fx_dec[y] / fx_dec[y - 1] - 1.0 for y in years])
+
+# Real CHF appreciation beyond Relative PPP over the whole sample, in the (1 - a)
+# convention used by `_apply_fx_ppp_adjustment`:
+#   (1 + FX drift) = (1 + PPP-implied drift) * (1 - a)
+# where the PPP-implied drift is the Swiss-vs-US CPI differential. Derived here
+# rather than hard-coded so it stays consistent with the FX and CPI data.
+us_cpi_dec = us_cpi[us_cpi.index.month == 12]
+us_cpi_dec.index = us_cpi_dec.index.year
+n_years = len(years)
+fx_drift = (fx_dec[years[-1]] / fx_dec[years[0] - 1]) ** (1.0 / n_years) - 1.0
+ppp_drift = ((cpi_dec[years[-1]] / cpi_dec[years[0] - 1])
+             / (us_cpi_dec[years[-1]] / us_cpi_dec[years[0] - 1])) ** (1.0 / n_years) - 1.0
+real_chf_appreciation = round(1.0 - (1.0 + fx_drift) / (1.0 + ppp_drift), 4)
+print(f'USD/CHF drift {fx_drift*100:.2f}%/yr, PPP-implied {ppp_drift*100:.2f}%/yr '
+      f'-> real CHF appreciation beyond PPP {real_chf_appreciation*100:.2f}%/yr')
 
 print(f'\nUS   CHF: CAGR {np.prod(1+us_chf_a)**(1/len(years))*100-100:6.2f}%  '
       f'ann.vol {us_chf_a.std(ddof=1)*100:5.2f}%  monthly vol {monthly_us.std(ddof=1)*100:.2f}%')
@@ -269,6 +285,10 @@ header = f'''# =================================================================
 # 7. Bitcoin -- SYNTHETIC (lognormal, 7% nominal / 50% vol default, correlated
 #    with US equities at default rho=0.50 via Gaussian copula on standardized
 #    monthly US equity log-returns).
+#
+# 8. US CPI -- data/us_cpi.csv, monthly, 1871-present (via wichtounet/swr-calculator).
+#    Used ONLY to derive HISTORIC_REAL_CHF_APPRECIATION (PPP residual); it does
+#    not enter any return series.
 #
 # CHF conversion: Return_CHF = (1 + Return_USD) * (FX_end / FX_start) - 1
 '''
@@ -366,11 +386,12 @@ DEFAULT_BTC_EQUITY_CORR = 0.50
 # Politis-White (2004) optimal stationary bootstrap mean block length (years).
 POLITIS_WHITE_BLOCK_YEARS = 5
 
-# Historical real CHF appreciation beyond Relative Purchasing Power Parity (1922-2025).
-# Over 1922-2025, USD/CHF fell -1.78%/yr while the Swiss-vs-US CPI differential implied
-# -1.09%/yr, leaving a -0.68%/yr excess real FX drag on foreign-priced assets (+0.68%/yr
-# real CHF appreciation beyond PPP). Setting real_chf_appreciation=0.0 removes this drag.
-HISTORIC_REAL_CHF_APPRECIATION = 0.0068
+# Historical real CHF appreciation beyond Relative Purchasing Power Parity
+# ({years[0]}-{years[-1]}), DERIVED AT BUILD TIME from data/usd_chf.csv, data/ch_inflation.csv
+# and data/us_cpi.csv. USD/CHF drifted {fx_drift*100:.2f}%/yr while the Swiss-vs-US CPI
+# differential implied {ppp_drift*100:.2f}%/yr, leaving a -{real_chf_appreciation*100:.2f}%/yr excess
+# real FX drag on foreign-priced assets. Setting real_chf_appreciation=0.0 removes it.
+HISTORIC_REAL_CHF_APPRECIATION = {real_chf_appreciation:.4f}
 FOREIGN_ASSET_COLS = (ASSET_US_STOCKS, ASSET_NON_US_STOCKS, ASSET_GOLD)
 
 

@@ -1,6 +1,13 @@
 import numpy as np
-from dataclasses import dataclass
-from .tax_engine import calculate_income_tax, calculate_wealth_tax, calculate_capital_withdrawal_tax, calculate_ahv_non_worker
+from dataclasses import dataclass, field
+from .tax_engine import (
+    ZURICH_CANTONAL_MULTIPLIER,
+    ZURICH_CITY_MUNICIPAL_MULTIPLIER,
+    calculate_ahv_non_worker,
+    calculate_capital_withdrawal_tax,
+    calculate_income_tax,
+    calculate_wealth_tax,
+)
 
 VALID_SPENDING_STRATEGIES = {"Static", "Dynamic (Floor & Ceiling)", "Vanguard Dynamic"}
 VALID_REBALANCE_STRATEGIES = {"Cash Tent", "Monthly", "Quarterly", "Yearly", "Threshold", "Never"}
@@ -30,7 +37,7 @@ class SimConfig:
     # Initial Assets
     initial_liquid_wealth: float = 0.0
     initial_pillar_2: float = 0.0
-    initial_pillar_3a_accounts: list[float] = None
+    initial_pillar_3a_accounts: list[float] = field(default_factory=list)
     
     # Target Asset Allocation (must sum to 1.0)
     # Indices: 0: US Stocks, 1: Non-US Stocks, 2: CHF Cash, 3: Gold, 4: Bitcoin
@@ -49,9 +56,9 @@ class SimConfig:
     annual_base_expenses: float = 0.0
     monthly_ahv_pension: float = 0.0
     
-    # Taxes
-    cantonal_multiplier: float = 0.0
-    municipal_multiplier: float = 0.0
+    # Taxes (Steuerfuss). Defaults are Canton Zurich 2026 (0.95) + City of Zurich (1.19).
+    cantonal_multiplier: float = ZURICH_CANTONAL_MULTIPLIER
+    municipal_multiplier: float = ZURICH_CITY_MUNICIPAL_MULTIPLIER
 
     # Fraction of realized CPI applied annually to the tax bracket edges.
     # 1.0 = full indexation (Art. 39 DBG / § 48 StG ZH); 0.0 = frozen nominal
@@ -62,7 +69,8 @@ class SimConfig:
     tent_duration_years: int = 7
 
     # Expected real CHF appreciation beyond Relative Purchasing Power Parity (PPP).
-    # 0.0 = PPP neutrality (default); 0.0068 = raw 1922-2025 historical real CHF appreciation (+0.68%/yr).
+    # 0.0 = PPP neutrality (default); historic_returns.HISTORIC_REAL_CHF_APPRECIATION
+    # (derived from the data at build time, ~0.70%/yr) reproduces raw 1922-2025 history.
     real_chf_appreciation: float = 0.0
 
     # Expected CHF Cash yield used for Year 0 tax estimation (and Cash Tent buffer sizing).
@@ -87,6 +95,11 @@ class SimConfig:
         if self.inflation_std < 0.0:
             raise ValueError(f"inflation_std ({self.inflation_std}) cannot be negative.")
 
+        if self.inflation_mean <= -1.0 or self.cash_rate <= -1.0:
+            raise ValueError(
+                f"inflation_mean ({self.inflation_mean}) and cash_rate ({self.cash_rate}) must be greater than -1.0."
+            )
+
         if self.seed < 0:
             raise ValueError(f"seed ({self.seed}) cannot be negative.")
 
@@ -98,6 +111,10 @@ class SimConfig:
             
         if self.vanguard_floor_pct < 0.0 or self.vanguard_ceiling_pct < 0.0 or self.vanguard_target_rate < 0.0:
             raise ValueError("Vanguard Dynamic Spending parameters cannot be negative.")
+
+        if self.vanguard_floor_pct > 1.0:
+            # A cut of more than 100% would allow negative spending floors.
+            raise ValueError(f"vanguard_floor_pct ({self.vanguard_floor_pct}) cannot exceed 1.0 (a 100% cut).")
 
         if self.initial_pillar_3a_accounts is None:
             self.initial_pillar_3a_accounts = []
@@ -281,7 +298,10 @@ def run_simulation(config: SimConfig, return_matrix: np.ndarray, inflation_matri
                 f"inflation_matrix shape {inflation_matrix.shape} must match {expected_inf_shape}."
             )
     
-    initial_target_weights = get_target_weights(config, 0)
+    # Target weights only change at year boundaries (Cash Tent glidepath), and each
+    # evaluation re-runs the Year 0 tax estimate, so compute them once per year.
+    target_weights_by_year = np.array([get_target_weights(config, y) for y in range(config.duration_years)])
+    initial_target_weights = target_weights_by_year[0]
     
     # Assets (0: US Stocks, 1: Non-US Stocks, 2: CHF Cash, 3: Gold, 4: Bitcoin)
     liquid_assets = np.zeros((num_runs, 5))
@@ -325,7 +345,14 @@ def run_simulation(config: SimConfig, return_matrix: np.ndarray, inflation_matri
         month_of_year = m % 12
         current_age = config.start_age + year
         
-        current_target_weights = get_target_weights(config, year)
+        current_target_weights = target_weights_by_year[year]
+        # A year-end (month 11) rebalance sets the allocation held throughout the
+        # *next* year, so it must target next year's glidepath weights. Otherwise the
+        # Cash Tent lags by one year and base weights are only reached in year T + 1.
+        if month_of_year == 11 and year + 1 < config.duration_years:
+            rebalance_target_weights = target_weights_by_year[year + 1]
+        else:
+            rebalance_target_weights = current_target_weights
 
         # 1. Inflation (Update once a year at month 0)
         if month_of_year == 0:
@@ -444,7 +471,7 @@ def run_simulation(config: SimConfig, return_matrix: np.ndarray, inflation_matri
             
         if np.any(do_rebalance):
             total_to_rebalance = np.sum(liquid_assets[do_rebalance], axis=1, keepdims=True)
-            liquid_assets[do_rebalance] = total_to_rebalance * current_target_weights
+            liquid_assets[do_rebalance] = total_to_rebalance * rebalance_target_weights
             
         # 5. Annual Taxation and Expenses
         if month_of_year == 11:
@@ -468,7 +495,7 @@ def run_simulation(config: SimConfig, return_matrix: np.ndarray, inflation_matri
                 
                 vanguard_prev_expenses = current_expenses.copy()
                 vanguard_prev_inflation = inflation_factors.copy()
-            elif config.spending_strategy == "Dynamic (Floor & Ceiling)" or config.enable_dynamic_expenses:
+            elif config.spending_strategy == "Dynamic (Floor & Ceiling)":
                 base_exp = config.annual_base_expenses * inflation_factors
                 is_above_watermark = current_nw_before_expenses > inflation_adjusted_initial_nw
                 

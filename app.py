@@ -6,12 +6,23 @@ import streamlit as st
 from src.historic_returns import (
     BITCOIN_NOMINAL_MEAN,
     BITCOIN_VOL,
+    HISTORIC_REAL_CHF_APPRECIATION,
+    HISTORIC_RETURNS_NON_US_CHF,
+    HISTORIC_RETURNS_US_CHF,
+    HISTORIC_RETURNS_US_USD,
     HISTORIC_YEARS,
     POLITIS_WHITE_BLOCK_YEARS,
     compute_effective_sample_size,
     generate_bootstrapped_data,
     get_historic_inflation_matrix,
     get_historic_return_matrix,
+)
+from src.metrics import (
+    beginning_of_year_withdrawal_rate,
+    classify_outcome,
+    compute_success_mask,
+    cumulative_inflation,
+    real_final_net_worth,
 )
 from src.simulation_engine import (
     SimConfig,
@@ -20,6 +31,7 @@ from src.simulation_engine import (
     generate_monte_carlo_returns,
     run_simulation,
 )
+from src.tax_engine import ZURICH_CANTONAL_MULTIPLIER, ZURICH_CITY_MUNICIPAL_MULTIPLIER
 
 st.set_page_config(page_title="Zurich Early Retirement Simulator", layout="wide")
 
@@ -99,6 +111,7 @@ st.sidebar.subheader("Success Criteria")
 success_pct = st.sidebar.number_input(
     "Target Ending NW (% of Inflation-Adj. Start NW)",
     value=50.0,
+    min_value=0.0,
     step=5.0,
     format="%.1f",
     help="The percentage of inflation-adjusted starting net worth you want to preserve at the end of the simulation. 0.0% means you just want to avoid going broke (survival)."
@@ -106,8 +119,8 @@ success_pct = st.sidebar.number_input(
 
 # 2. Initial Assets
 st.sidebar.subheader("Initial Assets (CHF)")
-initial_liquid_wealth = st.sidebar.number_input("Taxable Liquid Wealth (CHF)", value=2_450_000, step=50_000, help="Your easily accessible taxable investments (stocks, bonds, cash). Do not include your primary residence.")
-initial_pillar_2 = st.sidebar.number_input("Pillar 2 (Freizügigkeitskonto)", value=450_000, step=50_000, help="The current balance of your Swiss Pillar 2 pension. Assumed to be 100% invested in equities (proportional to your US vs Non-US target allocation). Withdrawn at age 65.")
+initial_liquid_wealth = st.sidebar.number_input("Taxable Liquid Wealth (CHF)", value=2_450_000, min_value=0, step=50_000, help="Your easily accessible taxable investments (stocks, bonds, cash). Do not include your primary residence.")
+initial_pillar_2 = st.sidebar.number_input("Pillar 2 (Freizügigkeitskonto)", value=450_000, min_value=0, step=50_000, help="The current balance of your Swiss Pillar 2 pension. Assumed to be 100% invested in equities (proportional to your US vs Non-US target allocation). Withdrawn at age 65.")
 
 num_pillar_3a = st.sidebar.number_input(
     "Number of Pillar 3a Accounts",
@@ -146,7 +159,7 @@ rebalance_threshold = 0.0
 tent_duration_years = 7
 
 if rebalance_strategy == "Threshold":
-    rebalance_threshold = st.sidebar.number_input("Threshold Drift (%)", value=1.0, step=0.1, format="%.1f", help="If rebalancing based on threshold, the max absolute drift allowed before rebalancing.") / 100.0
+    rebalance_threshold = st.sidebar.number_input("Threshold Drift (%)", value=1.0, min_value=0.0, step=0.1, format="%.1f", help="If rebalancing based on threshold, the max absolute drift allowed before rebalancing.") / 100.0
 elif rebalance_strategy == "Cash Tent":
     tent_duration_years = int(st.sidebar.number_input("Tent Duration (Years)", value=7, min_value=1, max_value=30, step=1, help="Number of years of living expenses + estimated taxes held as cash buffer at retirement (Year 0), which glides down to your base cash target weight over the tent duration."))
 
@@ -167,7 +180,7 @@ spending_strategy = st.sidebar.selectbox(
 
 # Bi-directional synchronization for Vanguard Dynamic Spending
 total_start_nw = initial_liquid_wealth + initial_pillar_2 + sum(pillar_3a_accounts)
-cantonal_multiplier = 0.95  # Zurich Cantonal Steuerfuss for 2026
+cantonal_multiplier = ZURICH_CANTONAL_MULTIPLIER  # Zurich Cantonal Steuerfuss for 2026
 
 
 def get_year0_taxes(exp: float) -> float:
@@ -175,7 +188,7 @@ def get_year0_taxes(exp: float) -> float:
         live_div_yield = float(st.session_state.get("dividend_yield_pct", 1.5)) / 100.0
         live_cash_rate = float(st.session_state.get("ret_cash_pct", 1.0)) / 100.0
         live_ahv = float(st.session_state.get("monthly_ahv_input", 2000))
-        live_muni_mult = float(st.session_state.get("municipal_multiplier_pct", 119.0)) / 100.0
+        live_muni_mult = float(st.session_state.get("municipal_multiplier_pct", ZURICH_CITY_MUNICIPAL_MULTIPLIER * 100.0)) / 100.0
         temp_config = SimConfig(
             num_runs=1,
             duration_years=1,
@@ -200,7 +213,9 @@ def get_year0_taxes(exp: float) -> float:
             municipal_multiplier=live_muni_mult
         )
         return estimate_year_0_taxes(temp_config)
-    except Exception:
+    except ValueError:
+        # Transiently invalid widget state (e.g. mid-edit); a real error surfaces
+        # when the full SimConfig is built below. Anything else is a bug and must raise.
         return 0.0
 
 
@@ -257,6 +272,7 @@ def on_twr_change():
 annual_expenses = float(st.sidebar.number_input(
     "Annual Base Expenses (CHF)",
     key="annual_expenses",
+    min_value=0,
     step=5000,
     format="%d",
     on_change=on_expenses_change,
@@ -270,12 +286,13 @@ vanguard_floor_pct = 0.050
 vanguard_ceiling_pct = 0.050
 
 if spending_strategy == "Dynamic (Floor & Ceiling)":
-    dynamic_expense_floor_pct = st.sidebar.number_input("Reduced Expense Floor (%)", value=85.0, step=1.0, format="%.1f", help="The percentage of your base expenses you will spend when your net worth is below the watermark.")
-    dynamic_expense_ceiling_pct = st.sidebar.number_input("Expanded Expense Ceiling (%)", value=115.0, step=1.0, format="%.1f", help="The percentage of your base expenses you will spend when your net worth is above the watermark.")
+    dynamic_expense_floor_pct = st.sidebar.number_input("Reduced Expense Floor (%)", value=85.0, min_value=0.0, step=1.0, format="%.1f", help="The percentage of your base expenses you will spend when your net worth is below the watermark.")
+    dynamic_expense_ceiling_pct = st.sidebar.number_input("Expanded Expense Ceiling (%)", value=115.0, min_value=0.0, step=1.0, format="%.1f", help="The percentage of your base expenses you will spend when your net worth is above the watermark.")
 elif spending_strategy == "Vanguard Dynamic":
     twr_pct = st.sidebar.number_input(
         "Target Withdrawal Rate (%)",
         key="vanguard_target_rate_pct",
+        min_value=0.0,
         step=0.1,
         format="%.2f",
         on_change=on_twr_change,
@@ -283,24 +300,40 @@ elif spending_strategy == "Vanguard Dynamic":
     )
     # Convert tax-inclusive UI withdrawal rate into net living expense rate of net worth for SimConfig
     vanguard_target_rate = (annual_expenses / total_start_nw) if total_start_nw > 0 else (twr_pct / 100.0)
-    vanguard_floor_pct = st.sidebar.number_input("Max Annual Cut / Floor (%)", value=5.0, step=0.5, format="%.1f", help="Maximum allowable reduction in spending compared to prior year's inflation-adjusted spending (Vanguard default: 5.0%).") / 100.0
-    vanguard_ceiling_pct = st.sidebar.number_input("Max Annual Raise / Ceiling (%)", value=5.0, step=0.5, format="%.1f", help="Maximum allowable increase in spending compared to prior year's inflation-adjusted spending (Vanguard default: 5.0%).") / 100.0
+    vanguard_floor_pct = st.sidebar.number_input("Max Annual Cut / Floor (%)", value=5.0, min_value=0.0, max_value=100.0, step=0.5, format="%.1f", help="Maximum allowable reduction in spending compared to prior year's inflation-adjusted spending (Vanguard default: 5.0%).") / 100.0
+    vanguard_ceiling_pct = st.sidebar.number_input("Max Annual Raise / Ceiling (%)", value=5.0, min_value=0.0, step=0.5, format="%.1f", help="Maximum allowable increase in spending compared to prior year's inflation-adjusted spending (Vanguard default: 5.0%).") / 100.0
 
 st.sidebar.subheader("Income & Yield")
-monthly_ahv = st.sidebar.number_input("Expected Monthly AHV Pension from age 65 (CHF)", value=2000, step=100, key="monthly_ahv_input", help="The monthly AHV pension you expect to receive starting at age 65 (in today's CHF, adjusted annually for CPI inflation in the simulation).")
-dividend_yield = st.sidebar.number_input("Dividend Yield (%)", value=1.5, step=0.1, format="%.1f", key="dividend_yield_pct", help="Expected annual dividend yield of the portfolio.") / 100.0
+monthly_ahv = st.sidebar.number_input("Expected Monthly AHV Pension from age 65 (CHF)", value=2000, min_value=0, step=100, key="monthly_ahv_input", help="The monthly AHV pension you expect to receive starting at age 65 (in today's CHF, adjusted annually for CPI inflation in the simulation).")
+dividend_yield = st.sidebar.number_input("Dividend Yield (%)", value=1.5, min_value=0.0, step=0.1, format="%.1f", key="dividend_yield_pct", help="Expected annual dividend yield of the portfolio.") / 100.0
+
+
+def _cagr_pct(annual_returns: np.ndarray) -> float:
+    return (float(np.prod(1.0 + annual_returns)) ** (1.0 / len(annual_returns)) - 1.0) * 100.0
+
+
+_hist_span = f"{HISTORIC_YEARS[0]}–{HISTORIC_YEARS[-1]}"
+_us_usd_cagr = _cagr_pct(HISTORIC_RETURNS_US_USD)
+_us_chf_cagr = _cagr_pct(HISTORIC_RETURNS_US_CHF)
+_exus_chf_cagr = _cagr_pct(HISTORIC_RETURNS_NON_US_CHF)
 
 st.sidebar.subheader("Monte Carlo Parameters")
-st.sidebar.caption("Note: Returns and inflation must be Nominal (unadjusted for inflation) and in CHF terms. E.g., historic US Stock returns are ~9.5% in USD, but ~7.0% in CHF due to currency drag.")
-inflation_mean = st.sidebar.number_input("Inflation Mean (%)", value=2.5, step=0.1, format="%.1f", help="Expected average annual inflation rate for Monte Carlo.") / 100.0
+st.sidebar.caption(
+    "Note: Returns and inflation must be Nominal (unadjusted for inflation) and in CHF terms, and the means are "
+    f"arithmetic. For reference ({_hist_span}, geometric CAGR): US Stocks {_us_usd_cagr:.1f}% in USD but "
+    f"{_us_chf_cagr:.1f}% in CHF due to currency drag; Non-US Stocks {_exus_chf_cagr:.1f}% in CHF."
+)
+_min_ret_pct = -99.0  # generate_monte_carlo_returns requires returns > -100%
+inflation_mean = st.sidebar.number_input("Inflation Mean (%)", value=2.5, min_value=_min_ret_pct, step=0.1, format="%.1f", help="Expected average annual inflation rate for Monte Carlo.") / 100.0
 inflation_std = st.sidebar.number_input("Inflation Volatility (%)", value=1.0, min_value=0.0, step=0.1, format="%.1f", help="Expected volatility of inflation for Monte Carlo.") / 100.0
-ret_us = st.sidebar.number_input("US Stocks Nominal Mean (%)", value=7.0, step=0.1, format="%.1f", help="Expected nominal mean return for US Stocks in CHF. Note: Historic S&P500 returns are ~9.5% in USD, but ~7.0% in CHF due to the appreciating Franc.") / 100.0
-ret_non_us = st.sidebar.number_input("Non-US Stocks Nominal Mean (%)", value=6.0, step=0.1, format="%.1f", help="Expected nominal mean return for Non-US Stocks in CHF terms.") / 100.0
-ret_cash = st.sidebar.number_input("CHF Cash Nominal Mean (%)", value=1.0, step=0.1, format="%.1f", key="ret_cash_pct", help="Expected nominal mean return for CHF Cash (also used as the contractual taxable savings interest floor in Year 0 tax sync and Monte Carlo).") / 100.0
-ret_gold = st.sidebar.number_input("Gold Nominal Mean (%)", value=6.0, step=0.1, format="%.1f", help="Expected nominal mean return for Gold in CHF terms.") / 100.0
+ret_us = st.sidebar.number_input("US Stocks Nominal Mean (%)", value=7.0, min_value=_min_ret_pct, step=0.1, format="%.1f", help=f"Expected nominal arithmetic mean return for US Stocks in CHF. Historic S&P 500 CAGR {_hist_span}: {_us_usd_cagr:.1f}% in USD, {_us_chf_cagr:.1f}% in CHF.") / 100.0
+ret_non_us = st.sidebar.number_input("Non-US Stocks Nominal Mean (%)", value=6.0, min_value=_min_ret_pct, step=0.1, format="%.1f", help="Expected nominal mean return for Non-US Stocks in CHF terms.") / 100.0
+ret_cash = st.sidebar.number_input("CHF Cash Nominal Mean (%)", value=1.0, min_value=_min_ret_pct, step=0.1, format="%.1f", key="ret_cash_pct", help="Expected nominal mean return for CHF Cash (also used as the contractual taxable savings interest floor in Year 0 tax sync and Monte Carlo).") / 100.0
+ret_gold = st.sidebar.number_input("Gold Nominal Mean (%)", value=6.0, min_value=_min_ret_pct, step=0.1, format="%.1f", help="Expected nominal mean return for Gold in CHF terms.") / 100.0
 ret_btc = st.sidebar.number_input(
     "Bitcoin Nominal Mean (%)",
     value=float(BITCOIN_NOMINAL_MEAN * 100.0),
+    min_value=_min_ret_pct,
     step=0.1,
     format="%.1f",
     help="Expected nominal arithmetic mean return for synthetic Bitcoin in CHF terms (applied across Historic Backtesting, Stationary Bootstrapping, and Monte Carlo).",
@@ -360,7 +393,8 @@ real_chf_appreciation = st.sidebar.slider(
         "(Relative Purchasing Power Parity) applied to foreign-priced sleeves (US Stocks, Non-US Stocks, Gold) "
         "in Historic Backtesting and Block Bootstrapping.\n\n"
         "- 0.00% (default): Relative PPP holds going forward (no excess real currency drag).\n"
-        "- +0.68%: Reproduces the raw 1922–2025 historical real CHF appreciation beyond US-CH CPI differentials."
+        f"- +{HISTORIC_REAL_CHF_APPRECIATION * 100:.2f}%: Reproduces the raw {_hist_span} historical real CHF "
+        "appreciation beyond US-CH CPI differentials."
     ),
 ) / 100.0
 
@@ -382,7 +416,7 @@ except ValueError as e:
 
 # 6. Tax Location
 st.sidebar.subheader("Zurich Tax Location")
-municipal_multiplier = st.sidebar.number_input("Municipal Multiplier (Steuerfuss, %)", value=119.0, step=0.1, format="%.1f", key="municipal_multiplier_pct", help="Your municipal tax multiplier (Steuerfuss) in Zurich (e.g. 119% for City of Zurich).") / 100.0
+municipal_multiplier = st.sidebar.number_input("Municipal Multiplier (Steuerfuss, %)", value=ZURICH_CITY_MUNICIPAL_MULTIPLIER * 100.0, min_value=0.0, step=0.1, format="%.1f", key="municipal_multiplier_pct", help="Your municipal tax multiplier (Steuerfuss) in Zurich (e.g. 119% for City of Zurich).") / 100.0
 bracket_indexation = st.sidebar.number_input(
     "Tax Bracket Indexation (% of CPI)",
     value=100.0,
@@ -410,7 +444,6 @@ def create_config(num_runs: int) -> SimConfig:
         start_age=int(start_age),
         dividend_yield=dividend_yield,
         spending_strategy=spending_strategy,
-        enable_dynamic_expenses=(spending_strategy == "Dynamic (Floor & Ceiling)"),
         dynamic_expense_floor_pct=dynamic_expense_floor_pct / 100.0,
         dynamic_expense_ceiling_pct=dynamic_expense_ceiling_pct / 100.0,
         vanguard_target_rate=vanguard_target_rate,
@@ -489,14 +522,11 @@ with st.spinner('Running Historic Backtesting simulations...'):
 
 
 def _build_hist_eff_caption(history, config, inflation_matrix, success_pct) -> str:
-    final_net_worth = history['net_worth'][-1, :]
-    initial_nw = history['initial_net_worth']
-    safe_inflation_steps = np.maximum(0.01, 1.0 + inflation_matrix)
-    run_final_inflation_factor = np.prod(safe_inflation_steps, axis=1)
-    target_ending_nw = (success_pct / 100.0) * (initial_nw * run_final_inflation_factor)
-    hist_success_rate = float(np.mean(final_net_worth > target_ending_nw) * 100.0)
+    success_mask = compute_success_mask(
+        history['net_worth'][-1, :], history['initial_net_worth'], inflation_matrix, success_pct
+    )
     eff_stats = compute_effective_sample_size(
-        len(HISTORIC_YEARS), config.duration_years, hist_success_rate
+        len(HISTORIC_YEARS), config.duration_years, float(np.mean(success_mask) * 100.0)
     )
     return (
         f"⚠️ <b>Effective Sample Size (<i>N</i><sub>eff</sub>): {eff_stats['n_eff']:.1f}</b> independent cohorts "
@@ -505,9 +535,12 @@ def _build_hist_eff_caption(history, config, inflation_matrix, success_pct) -> s
     )
 
 
+_TLDR_BADGES = {"BROKE": "🛑 **BROKE**", "RICH": "🚀 **RICH**", "DEAD": "🪦 **DEAD**"}
+
+
 def render_results(history, config, num_runs, title, inflation_matrix, success_pct, hist_eff_caption: str = ""):
     header_tooltips = {
-        "Historic Backtesting": "Replays exact contiguous historical sequences (e.g. 1928–1978, 1929–1979) from 104 years of historical Swiss-adjusted market data. Because rolling multi-decade cohorts overlap heavily, effective sample size N_eff = T / D is surfaced alongside a 90% Wilson confidence band, and tail lines show Worst/Best Cohort instead of unsupported 5th/95th percentiles.",
+        "Historic Backtesting": f"Replays exact contiguous historical sequences (e.g. 1928–1978, 1929–1979) from {len(HISTORIC_YEARS)} years of historical Swiss-adjusted market data. Because rolling multi-decade cohorts overlap heavily, effective sample size N_eff = T / D is surfaced alongside a 90% Wilson confidence band, and tail lines show Worst/Best Cohort instead of unsupported 5th/95th percentiles.",
         "Historic Bootstrapping": "Creates thousands of distinct retirement scenarios using the Politis–Romano (1994) Stationary Bootstrap with circular wrap-around and geometric block lengths (default mean 5 years). Preserves intra-year and multi-year macroeconomic cycles while sampling all historical years with equal 1/T probability.",
         "Monte Carlo": "Generates thousands of stochastic future paths using correlated parametric lognormal distributions based on user-configured nominal means, standard deviations, and inflation parameters."
     }
@@ -518,11 +551,7 @@ def render_results(history, config, num_runs, title, inflation_matrix, success_p
     final_net_worth = net_worth_history[-1, :]
     initial_nw = history['initial_net_worth']
 
-    safe_inflation_steps = np.maximum(0.01, 1.0 + inflation_matrix)
-    run_final_inflation_factor = np.prod(safe_inflation_steps, axis=1)
-    run_inf_adj_start_nw = initial_nw * run_final_inflation_factor
-    target_ending_nw = (success_pct / 100.0) * run_inf_adj_start_nw
-    success_mask = final_net_worth > target_ending_nw
+    success_mask = compute_success_mask(final_net_worth, initial_nw, inflation_matrix, success_pct)
 
     if success_pct == 0.0:
         tooltip_text = "Success is defined as ending net worth > 0 CHF (not going broke)."
@@ -542,10 +571,10 @@ def render_results(history, config, num_runs, title, inflation_matrix, success_p
             f"90% Wilson confidence interval: {eff_stats['ci_low_pct']:.0f}%–{eff_stats['ci_high_pct']:.0f}%."
         )
 
-    final_nw_inf_adj = final_net_worth / run_final_inflation_factor
+    final_nw_inf_adj = real_final_net_worth(final_net_worth, inflation_matrix)
     median_final_inf_adj = np.median(final_nw_inf_adj)
 
-    cum_inflation = np.cumprod(safe_inflation_steps, axis=1)
+    cum_inflation = cumulative_inflation(inflation_matrix)
     median_cum_inflation = np.median(cum_inflation, axis=0)
     inf_adj_start_nw_trajectory = initial_nw * median_cum_inflation
     st.markdown(f"**Nominal Starting NW:** {initial_nw:,.0f} CHF")
@@ -559,16 +588,7 @@ def render_results(history, config, num_runs, title, inflation_matrix, success_p
             unsafe_allow_html=True,
         )
 
-    rich_threshold = initial_nw * median_cum_inflation[-1] * 3.0
-
-    if median_final <= 0:
-        tldr_status = "🛑 **BROKE**"
-    elif median_final >= rich_threshold:
-        tldr_status = "🚀 **RICH**"
-    else:
-        tldr_status = "🪦 **DEAD**"
-
-    st.markdown(f"### {tldr_status}")
+    st.markdown(f"### {_TLDR_BADGES[classify_outcome(final_net_worth, initial_nw, inflation_matrix)]}")
 
     # Row 1: Success Rate & Watermark Metric
     col_r1_1, col_r1_2 = st.columns(2)
@@ -750,8 +770,7 @@ def render_results(history, config, num_runs, title, inflation_matrix, success_p
     st.plotly_chart(fig_withdrawal, width='stretch')
 
     # Withdrawal Rate Chart (relative to beginning-of-year portfolio value)
-    safe_start_nw = np.maximum(net_worth_history + history['expenses_paid'] + history['taxes_paid'], 1.0)
-    withdrawal_rate_history = ((history['expenses_paid'] + history['taxes_paid']) / safe_start_nw) * 100.0
+    withdrawal_rate_history = beginning_of_year_withdrawal_rate(history)
 
     fig_wr = go.Figure()
     max_p_val = 5.0

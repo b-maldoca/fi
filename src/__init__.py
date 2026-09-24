@@ -48,6 +48,14 @@ from .historic_returns import (
     get_historic_inflation_matrix,
     get_historic_return_matrix,
 )
+from .metrics import (
+    RICH_MULTIPLE,
+    beginning_of_year_withdrawal_rate,
+    classify_outcome,
+    compute_success_mask,
+    cumulative_inflation,
+    real_final_net_worth,
+)
 from .simulation_engine import (
     VALID_REBALANCE_STRATEGIES,
     VALID_SPENDING_STRATEGIES,
@@ -59,6 +67,8 @@ from .simulation_engine import (
     run_simulation,
 )
 from .tax_engine import (
+    ZURICH_CANTONAL_MULTIPLIER,
+    ZURICH_CITY_MUNICIPAL_MULTIPLIER,
     calculate_ahv_non_worker,
     calculate_capital_withdrawal_tax,
     calculate_income_tax,
@@ -75,7 +85,16 @@ __all__ = [
     "generate_monte_carlo_inflation",
     "VALID_SPENDING_STRATEGIES",
     "VALID_REBALANCE_STRATEGIES",
+    # metrics
+    "RICH_MULTIPLE",
+    "beginning_of_year_withdrawal_rate",
+    "classify_outcome",
+    "compute_success_mask",
+    "cumulative_inflation",
+    "real_final_net_worth",
     # tax_engine
+    "ZURICH_CANTONAL_MULTIPLIER",
+    "ZURICH_CITY_MUNICIPAL_MULTIPLIER",
     "calculate_income_tax",
     "calculate_wealth_tax",
     "calculate_capital_withdrawal_tax",

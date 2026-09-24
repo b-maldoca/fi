@@ -3,7 +3,7 @@
 Network step. Run this before `build_historic_returns.py`.
 
 Produces, in data/:
-  usd_chf.csv       month-end USD/CHF        1913-present  (SNB pre-1971, FRED DEXSZUS after)
+  usd_chf.csv       month-end USD/CHF        1914-present  (SNB pre-1971, FRED DEXSZUS after)
   gold_usd.csv      month-end gold USD/oz    1871-present  (fixed peg pre-1968, LBMA PM fix after)
   jst_exus_usd.csv  annual ex-US equity TR   1900-1969     (GDP-weighted, from JST R6)
   ch_cash_rate.csv  annual CHF cash rates    1900-present  (JST CHE bill_rate + SNB SARON, retail 0% floor)
@@ -140,7 +140,7 @@ print(f'   -> data/jst_exus_usd.csv  {agg.year.min()}-{agg.year.max()} '
       f'({len(agg)} years, {agg.n_countries.min()}-{agg.n_countries.max()} countries/yr)')
 cagr = np.prod(1 + agg.tr_usd) ** (1 / len(agg)) - 1
 print(f'      nominal USD CAGR {cagr*100:.2f}%, vol {agg.tr_usd.std(ddof=1)*100:.2f}%')
-print(f'      worst years: '
+print('      worst years: '
       + ', '.join(f'{int(r.year)} {r.tr_usd*100:.1f}%'
                   for r in agg.nsmallest(3, 'tr_usd').itertuples()))
 

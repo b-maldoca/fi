@@ -4,7 +4,7 @@
 # (run scripts/fetch_source_data.py first to refresh the raw sources)
 # ============================================================================
 #
-# Provenance & Data Sources (built 2026-09-23):
+# Provenance & Data Sources (built 2026-09-24):
 #
 # 1. US Stocks -- data/us_stocks.csv, monthly, 1871-2025.
 #    Month-END S&P 500 TOTAL RETURN index (dividends reinvested), via
@@ -61,6 +61,10 @@
 # 7. Bitcoin -- SYNTHETIC (lognormal, 7% nominal / 50% vol default, correlated
 #    with US equities at default rho=0.50 via Gaussian copula on standardized
 #    monthly US equity log-returns).
+#
+# 8. US CPI -- data/us_cpi.csv, monthly, 1871-present (via wichtounet/swr-calculator).
+#    Used ONLY to derive HISTORIC_REAL_CHF_APPRECIATION (PPP residual); it does
+#    not enter any return series.
 #
 # CHF conversion: Return_CHF = (1 + Return_USD) * (FX_end / FX_start) - 1
 
@@ -896,11 +900,12 @@ DEFAULT_BTC_EQUITY_CORR = 0.50
 # Politis-White (2004) optimal stationary bootstrap mean block length (years).
 POLITIS_WHITE_BLOCK_YEARS = 5
 
-# Historical real CHF appreciation beyond Relative Purchasing Power Parity (1922-2025).
-# Over 1922-2025, USD/CHF fell -1.78%/yr while the Swiss-vs-US CPI differential implied
-# -1.09%/yr, leaving a -0.68%/yr excess real FX drag on foreign-priced assets (+0.68%/yr
-# real CHF appreciation beyond PPP). Setting real_chf_appreciation=0.0 removes this drag.
-HISTORIC_REAL_CHF_APPRECIATION = 0.0068
+# Historical real CHF appreciation beyond Relative Purchasing Power Parity
+# (1922-2025), DERIVED AT BUILD TIME from data/usd_chf.csv, data/ch_inflation.csv
+# and data/us_cpi.csv. USD/CHF drifted -1.78%/yr while the Swiss-vs-US CPI
+# differential implied -1.09%/yr, leaving a -0.70%/yr excess
+# real FX drag on foreign-priced assets. Setting real_chf_appreciation=0.0 removes it.
+HISTORIC_REAL_CHF_APPRECIATION = 0.0070
 FOREIGN_ASSET_COLS = (ASSET_US_STOCKS, ASSET_NON_US_STOCKS, ASSET_GOLD)
 
 

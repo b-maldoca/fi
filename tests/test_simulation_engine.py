@@ -8,7 +8,6 @@ from src.historic_returns import (
     generate_bootstrapped_returns,
     generate_bootstrapped_inflation,
     HISTORIC_RETURNS,
-    HISTORIC_RETURNS_NON_US_CHF,
     HISTORIC_SWISS_INFLATION,
     HISTORIC_YEARS
 )
@@ -891,20 +890,44 @@ def test_simulation_engine_cash_tent_glidepath():
     return_matrix = np.zeros((1, 48, 5))
     history = run_simulation(config, return_matrix)
     
-    # Year 0 end: 15k expenses paid -> 85k wealth remaining. 60% Cash = 51k, 40% US Stocks = 34k
+    # Glidepath: w(y) = 0.60 - (y / 4) * 0.40 -> 60%, 50%, 40%, 30%, then 20% base.
+    # The month-11 rebalance sets the allocation HELD DURING THE NEXT YEAR, so it
+    # must target w(y + 1). (Previously it targeted w(y), lagging the tent by a year.)
+
+    # Year 0 end: 15k expenses paid -> 85k remaining, rebalanced to w(1) = 50%
     assets_y0 = history['liquid_assets_by_class'][0, 0]
-    assert np.isclose(assets_y0[2], 51_000.0)
-    assert np.isclose(assets_y0[0], 34_000.0)
+    assert np.isclose(assets_y0[2], 42_500.0)
+    assert np.isclose(assets_y0[0], 42_500.0)
     
-    # Year 2 end: 3 years * 15k expenses paid = 45k paid -> 55k wealth remaining. Target Cash = 40% (22k), 60% US Stocks (33k)
+    # Year 2 end: 45k paid -> 55k remaining, rebalanced to w(3) = 30% Cash (16.5k), 70% US (38.5k)
     assets_y2 = history['liquid_assets_by_class'][2, 0]
-    assert np.isclose(assets_y2[2], 22_000.0)
-    assert np.isclose(assets_y2[0], 33_000.0)
+    assert np.isclose(assets_y2[2], 16_500.0)
+    assert np.isclose(assets_y2[0], 38_500.0)
     
-    # Year 3 end: 4 years * 15k expenses paid = 60k paid -> 40k wealth remaining. Target Cash = 30% (12k), 70% US Stocks (28k)
+    # Year 3 end (last year): 60k paid -> 40k remaining. No next year exists, so it
+    # rebalances to its own w(3) = 30% Cash (12k), 70% US (28k)
     assets_y3 = history['liquid_assets_by_class'][3, 0]
     assert np.isclose(assets_y3[2], 12_000.0)
     assert np.isclose(assets_y3[0], 28_000.0)
+
+
+def test_cash_tent_reaches_base_weights_after_tent_duration():
+    # With a 3-year tent over a 6-year horizon, the allocation held during year 3
+    # (i.e. after the year-2 month-11 rebalance) must already be the base weights.
+    config = SimConfig(
+        num_runs=1, duration_years=6, inflation_mean=0.0, inflation_std=0.0,
+        start_age=65, dividend_yield=0.0, enable_smart_selling=False,
+        initial_liquid_wealth=100_000.0, alloc_us_stocks=0.80, alloc_chf_cash=0.20,
+        rebalance_strategy='Cash Tent', annual_base_expenses=10_000.0,
+        cantonal_multiplier=0.0, municipal_multiplier=0.0, tent_duration_years=3,
+    )
+    history = run_simulation(config, np.zeros((1, 72, 5)))
+    by_class = history['liquid_assets_by_class'][:, 0, :]
+    cash_share = by_class[:, 2] / by_class.sum(axis=1)
+    # End of year y holds w(y + 1): 3/3 * ... -> [w1, w2, w3=base, base, base, base(last)]
+    w_peak = 0.30  # 3 * 10k / 100k
+    expected = [w_peak - (1 / 3) * (w_peak - 0.20), w_peak - (2 / 3) * (w_peak - 0.20), 0.20, 0.20, 0.20, 0.20]
+    assert np.allclose(cash_share, expected)
 
 
 def test_estimate_year_0_taxes_includes_taxes():
@@ -1289,7 +1312,6 @@ def test_bootstrapping_simulation_integration():
     assert not np.isnan(history['net_worth']).any()
     
     # Verify success rate computation
-    cum_inf = np.cumprod(1 + inflation_matrix, axis=1)
     run_final_inf_factor = np.prod(1 + inflation_matrix, axis=1)
     target_ending_nw = 0.5 * (history['initial_net_worth'] * run_final_inf_factor)
     success_rate = np.mean(history['net_worth'][-1, :] > target_ending_nw) * 100.0
@@ -1457,9 +1479,7 @@ def test_beginning_of_year_withdrawal_rate_calculation():
 
 def test_trace_labeling_bootstrapping_vs_backtesting():
     # Verify that Bootstrapping (e.g. 1000 runs) does not try to index HISTORIC_YEARS beyond 104
-    boot_num_runs = 1000
     duration_years = 50
-    simulation_years = np.arange(1, duration_years + 1)
     
     # Simulate the UI trace generation logic
     for title, num_runs in [("Historic Backtesting", 55), ("Historic Bootstrapping", 1000), ("Monte Carlo", 1000)]:
@@ -2280,4 +2300,70 @@ def test_run_simulation_matrix_shape_validation():
         run_simulation(cfg, np.zeros((2, 48, 5)))
     with pytest.raises(ValueError, match="inflation_matrix shape"):
         run_simulation(cfg, np.zeros((2, 60, 5)), np.zeros((2, 4)))
+
+
+def test_sim_config_defaults_to_zurich_city_multipliers():
+    # Previously both defaulted to 0.0, so programmatic users (incl. the package
+    # docstring example) silently got zero cantonal/municipal income & wealth tax.
+    cfg = SimConfig(num_runs=1, duration_years=1, inflation_mean=0.0, inflation_std=0.0,
+                    start_age=50, dividend_yield=0.0, alloc_us_stocks=1.0)
+    assert (cfg.cantonal_multiplier, cfg.municipal_multiplier) == (0.95, 1.19)
+    assert cfg.initial_pillar_3a_accounts == []
+    # default_factory: instances must not share one mutable list
+    other = SimConfig(num_runs=1, duration_years=1, inflation_mean=0.0, inflation_std=0.0,
+                      start_age=50, dividend_yield=0.0, alloc_us_stocks=1.0)
+    assert cfg.initial_pillar_3a_accounts is not other.initial_pillar_3a_accounts
+
+
+def test_sim_config_rejects_out_of_range_rates():
+    import pytest
+    base = dict(num_runs=1, duration_years=1, inflation_mean=0.0, inflation_std=0.0,
+                start_age=50, dividend_yield=0.0, alloc_us_stocks=1.0)
+    with pytest.raises(ValueError, match="vanguard_floor_pct"):
+        SimConfig(**base | {"vanguard_floor_pct": 1.01})
+    with pytest.raises(ValueError, match="inflation_mean"):
+        SimConfig(**base | {"inflation_mean": -1.0})
+    with pytest.raises(ValueError, match="cash_rate"):
+        SimConfig(**base | {"cash_rate": -1.5})
+    # Boundary values are accepted
+    SimConfig(**base | {"vanguard_floor_pct": 1.0, "inflation_mean": -0.5, "cash_rate": -0.0075})
+
+
+def test_historic_real_chf_appreciation_is_derived_from_data():
+    # The PPP residual must match what the CSVs imply. It was hard-coded at 0.0068
+    # (arithmetic -1.78% - -1.09% on stale FX data); the geometric value from the
+    # rebuilt data is ~0.70%/yr.
+    import os
+    import pandas as pd
+    from src.historic_returns import HISTORIC_REAL_CHF_APPRECIATION, HISTORIC_YEARS
+
+    data = os.path.join(os.path.dirname(__file__), "..", "data")
+
+    def dec(name):
+        df = pd.read_csv(os.path.join(data, name), header=None, names=["m", "y", "v"])
+        return df[df.m == 12].set_index("y").v
+
+    fx, ch, us = dec("usd_chf.csv"), dec("ch_inflation.csv"), dec("us_cpi.csv")
+    y0, y1 = int(HISTORIC_YEARS[0]) - 1, int(HISTORIC_YEARS[-1])
+    n = y1 - y0
+    fx_drift = (fx[y1] / fx[y0]) ** (1 / n)
+    ppp_drift = ((ch[y1] / ch[y0]) / (us[y1] / us[y0])) ** (1 / n)
+    expected = 1.0 - fx_drift / ppp_drift
+    assert abs(HISTORIC_REAL_CHF_APPRECIATION - expected) < 5e-5
+    assert 0.006 < HISTORIC_REAL_CHF_APPRECIATION < 0.008
+
+
+def test_target_weights_computed_once_per_year(monkeypatch):
+    # get_target_weights re-runs the Year 0 tax estimate; run_simulation must not
+    # call it every month (it used to: 12x per year).
+    import src.simulation_engine as se
+    calls = []
+    real = se.get_target_weights
+    monkeypatch.setattr(se, "get_target_weights", lambda c, y: calls.append(y) or real(c, y))
+    cfg = SimConfig(num_runs=1, duration_years=10, inflation_mean=0.0, inflation_std=0.0,
+                    start_age=50, dividend_yield=0.0, initial_liquid_wealth=1e6,
+                    alloc_us_stocks=0.8, alloc_chf_cash=0.2, rebalance_strategy="Cash Tent",
+                    annual_base_expenses=40_000.0)
+    se.run_simulation(cfg, np.zeros((1, 120, 5)))
+    assert calls == list(range(10))
 
