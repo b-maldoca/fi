@@ -59,7 +59,7 @@ The application must allow the user to input the following parameters:
 *   **Initial Assets**:
     *   Taxable Liquid Wealth (will be allocated according to the target portfolio)
     *   Pillar 2 (Freizügigkeitskonto) balance.
-    *   List of Pillar 3a account balances.
+    *   Number of Pillar 3a Accounts (`0` to `5`) and a single **Balance per Pillar 3a Account (CHF)** input (all Pillar 3a accounts hold the same equal balance, constructing `[balance_per_account] * num_accounts` for staggered withdrawals).
 *   **Target Asset Allocation**:
     *   US Stocks (%)
     *   Non-US Stocks (%)
@@ -135,7 +135,7 @@ The core simulator executes monthly steps with annual tax and spending evaluatio
     *   Model **lump-sum withdrawal (Kapitalbezug)** at retirement age 65 (or immediately in Year 0 Month 0 if starting retirement at age $\ge 65$). Subject to immediate progressive capital withdrawal tax at source.
 *   **Pillar 3a**:
     *   Model monthly growth (assumed to be 100% invested in equities proportional to target US/Non-US allocation).
-    *   Model staggered lump-sum withdrawals between age 60 and 64 (`60 + i` for up to 5 accounts, max 1 account per year). If starting at age $\ge 65$, all remaining accounts liquidate immediately in Year 0 Month 0. Subject to immediate progressive capital withdrawal tax at source.
+    *   Model staggered lump-sum withdrawals between age 60 and 64 (`60 + i` for up to 5 equal-balance accounts configured via account count and balance per account, max 1 account per year). If starting at age $\ge 65$, all remaining accounts liquidate immediately in Year 0 Month 0. Subject to immediate progressive capital withdrawal tax at source.
 
 #### D. Investment Growth & Returns (CHF-based)
 The application uses a two-stage reproducible data pipeline (`scripts/fetch_source_data.py` and `scripts/build_historic_returns.py`) generating `src/historic_returns.py` across 1922–2025 (`104` calendar years, `1,248` monthly steps):

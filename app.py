@@ -109,11 +109,22 @@ st.sidebar.subheader("Initial Assets (CHF)")
 initial_liquid_wealth = st.sidebar.number_input("Taxable Liquid Wealth (CHF)", value=2_450_000, step=50_000, help="Your easily accessible taxable investments (stocks, bonds, cash). Do not include your primary residence.")
 initial_pillar_2 = st.sidebar.number_input("Pillar 2 (Freizügigkeitskonto)", value=450_000, step=50_000, help="The current balance of your Swiss Pillar 2 pension. Assumed to be 100% invested in equities (proportional to your US vs Non-US target allocation). Withdrawn at age 65.")
 
-num_pillar_3a = st.sidebar.number_input("Number of Pillar 3a Accounts", value=5, min_value=0, max_value=5, help="How many separate Pillar 3a accounts you hold. Liquidated sequentially starting 5 years before age 65 to minimize taxes.")
-pillar_3a_accounts = []
-for i in range(int(num_pillar_3a)):
-    val = st.sidebar.number_input(f"Pillar 3a Account {i+1}", value=20_000, step=5000, help="The balance of this specific Pillar 3a account. Assumed to be 100% invested in equities (proportional to your US vs Non-US target allocation).")
-    pillar_3a_accounts.append(val)
+num_pillar_3a = st.sidebar.number_input(
+    "Number of Pillar 3a Accounts",
+    value=5,
+    min_value=0,
+    max_value=5,
+    help="How many separate Pillar 3a accounts you hold. Liquidated sequentially starting 5 years before age 65 to minimize taxes.",
+)
+pillar_3a_balance = st.sidebar.number_input(
+    "Balance per Pillar 3a Account (CHF)",
+    value=20_000,
+    min_value=0,
+    step=5_000,
+    disabled=(int(num_pillar_3a) == 0),
+    help="The balance of each Pillar 3a account (all accounts hold this equal amount). Assumed to be 100% invested in equities (proportional to your US vs Non-US target allocation).",
+)
+pillar_3a_accounts = [pillar_3a_balance] * int(num_pillar_3a)
 
 # 3. Asset Allocation
 st.sidebar.subheader("Target Asset Allocation (%)")
