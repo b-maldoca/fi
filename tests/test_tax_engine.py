@@ -99,21 +99,17 @@ def test_zurich_capital_withdrawal_minimum_simple_tax_of_2pct():
     # § 37 StG ZH: rate of a pension of C/20. For C = 100k that pension is 5k, which
     # falls in the 0% bracket, so the 2% minimum simple state tax binds.
     # Federal (Art. 38 DBG): 1/5 of the Art. 36 tariff on the full 100k.
-    fed_tariff_100k = (
-        (33_300 - 18_800) * 0.0077 + (43_800 - 33_300) * 0.0088 + (58_400 - 43_800) * 0.0264
-        + (77_400 - 58_400) * 0.0297 + (84_000 - 77_400) * 0.0594 + (100_000 - 84_000) * 0.0660
-    )
-    expected = fed_tariff_100k / 5.0 + 0.02 * 100_000 * (0.95 + 1.19)
+    from src.tax_engine import _federal_income_tariff
+    expected = _federal_income_tariff(100_000.0) / 5.0 + 0.02 * 100_000 * (0.95 + 1.19)
     assert np.isclose(calculate_capital_withdrawal_tax(100_000.0, 0.95, 1.19), expected)
-    # ~4.8% all-in, in line with published Zurich City figures (the old 1/10-of-tariff
-    # approximation gave ~1.8%, understating the tax by ~60%).
+    # ~4.8% all-in, matching the official ESTV calculator (CHF 4,817 for Zurich City 2026).
     assert 0.047 < expected / 100_000 < 0.049
 
 
 def test_zurich_capital_withdrawal_rate_rule_above_minimum():
-    # C = 1M -> notional pension 50k. Zurich base tariff on 50k:
-    zh_tariff_50k = 5_200 * 0.02 + 5_500 * 0.03 + 7_000 * 0.04 + 9_000 * 0.05 + 11_000 * 0.06 + 5_000 * 0.07
-    rate = zh_tariff_50k / 50_000  # 4.02% > 2% minimum
+    # C = 1M -> notional pension 50k. Zurich 2026 base tariff on 50k:
+    zh_tariff_50k = 5_000 * 0.02 + 4_800 * 0.03 + 8_000 * 0.04 + 9_700 * 0.05 + 11_200 * 0.06 + 4_300 * 0.07
+    rate = zh_tariff_50k / 50_000  # 4.04% > 2% minimum
     simple_tax = rate * 1_000_000
     # Federal tariff at 1M exceeds the 11.5% ceiling, so it is 11.5% / 5.
     fed = 0.115 * 1_000_000 / 5.0
@@ -158,5 +154,62 @@ def test_default_multipliers_are_zurich_city_2026():
     for fn, x in ((calculate_income_tax, 90_000.0), (calculate_wealth_tax, 2_000_000.0),
                   (calculate_capital_withdrawal_tax, 400_000.0)):
         assert fn(x) == fn(x, 0.95, 1.19)
+
+
+# Reference values from the official ESTV tax calculator
+# (swisstaxcalculator.estv.admin.ch, API_calculateSimpleTaxes /
+# API_calculateManyCapitalTaxes), tax year 2026, Zurich City (BFS 261), single,
+# no children, no church tax, queried 2026-09-24. Each tuple is
+# (amount, federal, cantonal, municipal) in CHF. The calculator floors taxable
+# amounts to CHF 100 (income) / CHF 1,000 (wealth) and rounds taxes to whole CHF;
+# the model does not, hence the small absolute tolerance. The CHF 24 Zurich
+# personal tax (Personalsteuer) is excluded because it is not modelled.
+ESTV_2026_INCOME = [
+    (30_000, 114, 783, 981),
+    (60_000, 671, 2_597, 3_253),
+    (100_000, 2_684, 5_862, 7_342),
+    (150_000, 7_076, 10_569, 13_239),
+    (250_000, 19_503, 21_518, 26_955),
+    (500_000, 52_503, 52_235, 65_431),
+    (1_000_000, 115_000, 113_985, 142_781),
+]
+ESTV_2026_WEALTH = [
+    (500_000, 0, 284, 355),
+    (1_000_000, 0, 889, 1_113),
+    (2_000_000, 0, 2_613, 3_273),
+    (3_000_000, 0, 4_826, 6_046),
+    (4_000_000, 0, 7_532, 9_435),
+]
+ESTV_2026_CAPITAL = [
+    (20_000, 7, 380, 476),
+    (50_000, 80, 950, 1_190),
+    (100_000, 537, 1_900, 2_380),
+    (250_000, 3_901, 4_750, 5_950),
+    (500_000, 10_501, 10_906, 13_661),
+    (750_000, 17_101, 23_351, 29_250),
+    (1_000_000, 23_000, 38_418, 48_124),
+    (2_000_000, 46_000, 117_230, 146_846),
+    (5_000_000, 115_000, 430_369, 539_094),
+]
+
+
+def test_income_tax_matches_estv_2026():
+    import pytest
+    from src.tax_engine import _federal_income_tariff
+    for amount, fed, canton, city in ESTV_2026_INCOME:
+        assert _federal_income_tariff(float(amount)) == pytest.approx(fed, abs=2)
+        assert calculate_income_tax(float(amount)) == pytest.approx(fed + canton + city, abs=4)
+
+
+def test_wealth_tax_matches_estv_2026():
+    import pytest
+    for amount, _, canton, city in ESTV_2026_WEALTH:
+        assert calculate_wealth_tax(float(amount)) == pytest.approx(canton + city, abs=3)
+
+
+def test_capital_withdrawal_tax_matches_estv_2026():
+    import pytest
+    for amount, fed, canton, city in ESTV_2026_CAPITAL:
+        assert calculate_capital_withdrawal_tax(float(amount)) == pytest.approx(fed + canton + city, abs=3)
 
 

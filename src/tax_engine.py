@@ -8,19 +8,30 @@ import numpy as np
 ZURICH_CANTONAL_MULTIPLIER = 0.95
 ZURICH_CITY_MUNICIPAL_MULTIPLIER = 1.19
 
-# Federal Income Tax Brackets (approx 2024, Single)
+# Base-year tariffs are for tax year 2026 (single, no children). They were
+# reverse-engineered from, and are verified against, the official ESTV tax
+# calculator (swisstaxcalculator.estv.admin.ch) for Zurich City; see
+# tests/test_tax_engine.py::test_*_matches_estv_2026. The simulation indexes the
+# bracket edges forward to CPI every year (Art. 39 DBG / § 48 StG ZH).
+#
+# Deliberate simplifications (all < CHF 25/year, and they would break the
+# positive homogeneity that bracket indexation relies on): taxable amounts are not
+# rounded down to CHF 100 / CHF 1,000, federal tax below CHF 25 is not waived
+# (Art. 36 Abs. 3 DBG), and the CHF 24 Zurich personal tax is not modelled.
+
+# Federal Income Tax Brackets (2026, Art. 36 Abs. 1 DBG, single)
 # Format: (Threshold, Rate)
 FEDERAL_INCOME_BRACKETS = [
     (0, 0.0000),
-    (18_800, 0.0077),
-    (33_300, 0.0088),
-    (43_800, 0.0264),
-    (58_400, 0.0297),
-    (77_400, 0.0594),
-    (84_000, 0.0660),
-    (109_300, 0.0880),
-    (147_000, 0.1100),
-    (191_000, 0.1320),
+    (15_200, 0.0077),
+    (33_200, 0.0088),
+    (43_500, 0.0264),
+    (58_000, 0.0297),
+    (76_200, 0.0594),
+    (82_100, 0.0660),
+    (108_900, 0.0880),
+    (141_500, 0.1100),
+    (185_100, 0.1320),
 ]
 
 # Art. 128 BV / Art. 36 DBG: the federal income tax never exceeds 11.5% of
@@ -37,33 +48,33 @@ FEDERAL_CAPITAL_WITHDRAWAL_FRACTION = 1.0 / 5.0
 ZURICH_CAPITAL_WITHDRAWAL_RATE_DIVISOR = 20.0
 ZURICH_CAPITAL_WITHDRAWAL_MIN_SIMPLE_RATE = 0.02
 
-# Zurich Cantonal Income Tax Brackets (approx 2024, Single, BASE RATE)
+# Zurich Cantonal Income Tax Brackets (2026, § 35 Abs. 1 StG ZH Grundtarif, BASE RATE)
 # Note: Base rate must be multiplied by the combined multiplier (Steuerfuss).
 ZURICH_INCOME_BRACKETS = [
     (0, 0.00),
-    (7_300, 0.02),
-    (12_500, 0.03),
-    (18_000, 0.04),
-    (25_000, 0.05),
-    (34_000, 0.06),
-    (45_000, 0.07),
-    (59_000, 0.08),
-    (78_000, 0.09),
-    (104_000, 0.10),
-    (139_000, 0.11),
-    (186_000, 0.12),
-    (250_000, 0.13),
+    (7_000, 0.02),
+    (12_000, 0.03),
+    (16_800, 0.04),
+    (24_800, 0.05),
+    (34_500, 0.06),
+    (45_700, 0.07),
+    (58_800, 0.08),
+    (76_400, 0.09),
+    (110_400, 0.10),
+    (144_100, 0.11),
+    (197_400, 0.12),
+    (266_700, 0.13),
 ]
 
-# Zurich Cantonal Wealth Tax Brackets (2025, Single, BASE RATE)
+# Zurich Cantonal Wealth Tax Brackets (2026, § 47 StG ZH, single, BASE RATE)
 ZURICH_WEALTH_BRACKETS = [
     (0, 0.0000),
     (80_000, 0.0005),
-    (318_000, 0.0010),
-    (717_000, 0.0015),
-    (1_353_000, 0.0020),
-    (2_309_000, 0.0025),
-    (3_262_000, 0.0030),
+    (321_000, 0.0010),
+    (727_000, 0.0015),
+    (1_371_000, 0.0020),
+    (2_339_000, 0.0025),
+    (3_304_000, 0.0030),
 ]
 
 
