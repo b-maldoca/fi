@@ -59,13 +59,23 @@ def test_ppp_slider_help_matches_data_constant():
 
 
 def test_monte_carlo_defaults_are_calibrated_to_history():
-    from src.historic_returns import HISTORIC_RETURNS_GOLD_CHF, HISTORIC_RETURNS_NON_US_CHF, HISTORIC_RETURNS_US_CHF
+    import numpy as np
+    from src.historic_returns import (
+        HISTORIC_RETURNS_GOLD_CHF,
+        HISTORIC_RETURNS_NON_US_CHF,
+        HISTORIC_RETURNS_US_CHF,
+        HISTORIC_SWISS_INFLATION,
+    )
     from src.simulation_engine import historic_lognormal_params
     at = _run()
     inputs = {n.label: n for n in at.number_input}
     us_mean, us_vol = historic_lognormal_params(HISTORIC_RETURNS_US_CHF)
     exus_mean, exus_vol = historic_lognormal_params(HISTORIC_RETURNS_NON_US_CHF)
     gold_mean, gold_vol = historic_lognormal_params(HISTORIC_RETURNS_GOLD_CHF)
+    infl_mean = float(np.mean(HISTORIC_SWISS_INFLATION))
+    infl_std = float(np.std(HISTORIC_SWISS_INFLATION, ddof=1))
+    assert inputs["Inflation Mean (%)"].value == pytest.approx(round(infl_mean * 100, 1))
+    assert inputs["Inflation Volatility (%)"].value == pytest.approx(round(infl_std * 100, 1))
     assert inputs["US Stocks Nominal Mean (%)"].value == pytest.approx(round(us_mean * 100, 1))
     assert inputs["Non-US Stocks Nominal Mean (%)"].value == pytest.approx(round(exus_mean * 100, 1))
     assert inputs["Equities Volatility (%)"].value == pytest.approx(round((us_vol + exus_vol) / 2 * 100, 1))
