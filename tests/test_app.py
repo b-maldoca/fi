@@ -63,9 +63,11 @@ def test_monte_carlo_defaults_are_calibrated_to_history():
     from src.simulation_engine import historic_lognormal_params
     at = _run()
     inputs = {n.label: n for n in at.number_input}
-    _, us_vol = historic_lognormal_params(HISTORIC_RETURNS_US_CHF)
-    _, exus_vol = historic_lognormal_params(HISTORIC_RETURNS_NON_US_CHF)
+    us_mean, us_vol = historic_lognormal_params(HISTORIC_RETURNS_US_CHF)
+    exus_mean, exus_vol = historic_lognormal_params(HISTORIC_RETURNS_NON_US_CHF)
     gold_mean, gold_vol = historic_lognormal_params(HISTORIC_RETURNS_GOLD_CHF)
+    assert inputs["US Stocks Nominal Mean (%)"].value == pytest.approx(round(us_mean * 100, 1))
+    assert inputs["Non-US Stocks Nominal Mean (%)"].value == pytest.approx(round(exus_mean * 100, 1))
     assert inputs["Equities Volatility (%)"].value == pytest.approx(round((us_vol + exus_vol) / 2 * 100, 1))
     assert inputs["Gold Volatility (%)"].value == pytest.approx(round(gold_vol * 100, 1))
     assert inputs["Gold Nominal Mean (%)"].value == pytest.approx(round(gold_mean * 100, 1))

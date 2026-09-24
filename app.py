@@ -345,14 +345,15 @@ st.sidebar.caption(
     "Note: Returns and inflation must be Nominal (unadjusted for inflation) and in CHF terms, and the means are "
     f"arithmetic. For reference ({_hist_span}, geometric CAGR): US Stocks {_us_usd_cagr:.1f}% in USD but "
     f"{_us_chf_cagr:.1f}% in CHF due to currency drag; Non-US Stocks {_exus_chf_cagr:.1f}% in CHF. "
-    "Volatility and gold defaults are calibrated to that history; stock, cash and inflation means are "
-    "deliberately conservative forward-looking assumptions (historic values in each field's help)."
+    "Stock means, volatilities and gold defaults are calibrated to that history (arithmetic means, log-return vols); "
+    "CHF cash and inflation stay forward-looking (today's near-zero savings rates, SNB 0–2% target), with historic "
+    "values in each field's help."
 )
 _min_ret_pct = -99.0  # generate_monte_carlo_returns requires returns > -100%
 inflation_mean = st.sidebar.number_input("Inflation Mean (%)", value=2.5, min_value=_min_ret_pct, step=0.1, format="%.1f", help="Expected average annual inflation rate for Monte Carlo." + _hist_help(_hist_infl_mean)) / 100.0
 inflation_std = st.sidebar.number_input("Inflation Volatility (%)", value=1.0, min_value=0.0, step=0.1, format="%.1f", help="Expected volatility of inflation for Monte Carlo." + f" Historic {_hist_span}: {_hist_infl_std * 100:.1f}% (dominated by the 1920s deflation and the 1940s/1970s inflation spikes).") / 100.0
-ret_us = st.sidebar.number_input("US Stocks Nominal Mean (%)", value=7.0, min_value=_min_ret_pct, step=0.1, format="%.1f", help="Expected nominal arithmetic mean return for US Stocks in CHF." + _hist_help(_hist_us_mean) + f" (S&P 500 CAGR: {_us_usd_cagr:.1f}% in USD, {_us_chf_cagr:.1f}% in CHF.)") / 100.0
-ret_non_us = st.sidebar.number_input("Non-US Stocks Nominal Mean (%)", value=6.0, min_value=_min_ret_pct, step=0.1, format="%.1f", help="Expected nominal arithmetic mean return for Non-US Stocks in CHF terms." + _hist_help(_hist_exus_mean)) / 100.0
+ret_us = st.sidebar.number_input("US Stocks Nominal Mean (%)", value=round(_hist_us_mean * 100.0, 1), min_value=_min_ret_pct, step=0.1, format="%.1f", help="Expected nominal arithmetic mean return for US Stocks in CHF. Default = history." + _hist_help(_hist_us_mean) + f" (S&P 500 CAGR: {_us_usd_cagr:.1f}% in USD, {_us_chf_cagr:.1f}% in CHF.)") / 100.0
+ret_non_us = st.sidebar.number_input("Non-US Stocks Nominal Mean (%)", value=round(_hist_exus_mean * 100.0, 1), min_value=_min_ret_pct, step=0.1, format="%.1f", help="Expected nominal arithmetic mean return for Non-US Stocks in CHF terms. Default = history." + _hist_help(_hist_exus_mean)) / 100.0
 ret_cash = st.sidebar.number_input("CHF Cash Nominal Mean (%)", value=1.0, min_value=_min_ret_pct, step=0.1, format="%.1f", key="ret_cash_pct", help="Expected nominal mean return for CHF Cash (also used as the contractual taxable savings interest floor in Year 0 tax sync and Monte Carlo)." + _hist_help(_hist_cash_mean)) / 100.0
 ret_gold = st.sidebar.number_input("Gold Nominal Mean (%)", value=round(_hist_gold_mean * 100.0, 1), min_value=_min_ret_pct, step=0.1, format="%.1f", help="Expected nominal arithmetic mean return for Gold in CHF terms. Default = history." + _hist_help(_hist_gold_mean)) / 100.0
 ret_btc = st.sidebar.number_input(
