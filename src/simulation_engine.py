@@ -278,6 +278,46 @@ def _indexed_tax(tax_fn, taxable_amount: np.ndarray, bracket_factors: np.ndarray
     return bracket_factors * tax_fn(taxable_amount / bracket_factors, *args)
 
 
+def _deferred_withdrawal_tax(
+    pillar_2: np.ndarray,
+    pillar_3a: list,
+    from_age: int,
+    bracket_factors: np.ndarray,
+    config: SimConfig,
+) -> np.ndarray:
+    """Capital withdrawal tax still owed on the current pension balances, per run.
+
+    Mirrors the liquidation schedule of `run_simulation` from `from_age` onwards: before
+    65, at most one Pillar 3a account per year (the first non-empty account whose
+    liquidation age `60 + i` has been reached); at 65, all remaining 3a accounts together
+    with Pillar 2 in one taxable event. Balances are taken as they are today (no growth)
+    and taxed at today's bracket indexation. Pension balances are pre-tax claims, so this
+    is subtracted wherever net worth drives a *decision* (watermark comparisons).
+    """
+    tax = np.zeros_like(pillar_2, dtype=float)
+    remaining = [i for i, acc in enumerate(pillar_3a) if np.any(acc > 0)]
+    if not remaining and not np.any(pillar_2 > 0):
+        return tax
+    events = []
+    for age in range(from_age, 65):
+        idx = next((i for i in remaining if 60 + i <= age), None)
+        if idx is not None:
+            events.append(pillar_3a[idx])
+            remaining.remove(idx)
+    events.append(pillar_2 + sum((pillar_3a[i] for i in remaining), np.zeros_like(pillar_2)))
+    for amount in events:
+        mask = amount > 0
+        if np.any(mask):
+            tax[mask] += _indexed_tax(
+                calculate_capital_withdrawal_tax,
+                amount[mask],
+                bracket_factors[mask],
+                config.cantonal_multiplier,
+                config.municipal_multiplier,
+            )
+    return tax
+
+
 def run_simulation(config: SimConfig, return_matrix: np.ndarray, inflation_matrix: np.ndarray = None) -> dict:
     """
     Executes the multi-asset monthly simulation loop.
@@ -311,6 +351,13 @@ def run_simulation(config: SimConfig, return_matrix: np.ndarray, inflation_matri
     pillar_3a = [np.full(num_runs, acc, dtype=float) for acc in config.initial_pillar_3a_accounts]
     
     initial_net_worth = config.initial_liquid_wealth + config.initial_pillar_2 + sum(config.initial_pillar_3a_accounts)
+    # Watermark decisions (Smart Cash Buffer, Dynamic Floor & Ceiling, "Years Below") compare
+    # *after-tax* net worth: pension balances are pre-tax claims that lose the capital withdrawal
+    # tax on payout. Both sides of the comparison are net, so a pension-heavy portfolio is not
+    # flagged as "below watermark" merely because the tax is realized at 60-65.
+    initial_net_worth_after_tax = initial_net_worth - _deferred_withdrawal_tax(
+        pillar_2, pillar_3a, config.start_age, np.ones(num_runs), config
+    )
     
     history_net_worth = np.zeros((duration_months // 12, num_runs))
     history_liquid = np.zeros((duration_months // 12, num_runs))
@@ -464,9 +511,10 @@ def run_simulation(config: SimConfig, return_matrix: np.ndarray, inflation_matri
             
         if config.enable_smart_selling:
             current_p3a = sum(pillar_3a) if pillar_3a else np.zeros(num_runs)
-            current_nw = np.sum(liquid_assets, axis=1) + pillar_2 + current_p3a
-            inflation_adjusted_initial_nw = initial_net_worth * inflation_factors
-            is_downturn = current_nw < inflation_adjusted_initial_nw
+            # This year's liquidation already ran at month 0, so the remaining schedule starts next year.
+            current_nw_after_tax = (np.sum(liquid_assets, axis=1) + pillar_2 + current_p3a
+                                    - _deferred_withdrawal_tax(pillar_2, pillar_3a, current_age + 1, bracket_factors, config))
+            is_downturn = current_nw_after_tax < initial_net_worth_after_tax * inflation_factors
             do_rebalance[is_downturn] = False
             
         if np.any(do_rebalance):
@@ -478,9 +526,12 @@ def run_simulation(config: SimConfig, return_matrix: np.ndarray, inflation_matri
             # Spending Model Adjustment
             total_p3a_current = sum(pillar_3a) if pillar_3a else np.zeros(num_runs)
             current_nw_before_expenses = np.sum(liquid_assets, axis=1) + pillar_2 + total_p3a_current
-            
-            inflation_adjusted_initial_nw = initial_net_worth * inflation_factors
-            is_below_watermark = current_nw_before_expenses < inflation_adjusted_initial_nw
+            nw_after_tax_before_expenses = current_nw_before_expenses - _deferred_withdrawal_tax(
+                pillar_2, pillar_3a, current_age + 1, bracket_factors, config
+            )
+
+            inflation_adjusted_watermark = initial_net_worth_after_tax * inflation_factors
+            is_below_watermark = nw_after_tax_before_expenses < inflation_adjusted_watermark
             history_below_watermark[year, :] = is_below_watermark
             
             if config.spending_strategy == "Vanguard Dynamic":
@@ -497,7 +548,7 @@ def run_simulation(config: SimConfig, return_matrix: np.ndarray, inflation_matri
                 vanguard_prev_inflation = inflation_factors.copy()
             elif config.spending_strategy == "Dynamic (Floor & Ceiling)":
                 base_exp = config.annual_base_expenses * inflation_factors
-                is_above_watermark = current_nw_before_expenses > inflation_adjusted_initial_nw
+                is_above_watermark = nw_after_tax_before_expenses > inflation_adjusted_watermark
                 
                 current_expenses = np.where(
                     is_below_watermark,
@@ -595,7 +646,8 @@ def run_simulation(config: SimConfig, return_matrix: np.ndarray, inflation_matri
         'income_dividends': history_income_divs,
         'income_ahv': history_income_ahv,
         'below_watermark': history_below_watermark,
-        'initial_net_worth': initial_net_worth
+        'initial_net_worth': initial_net_worth,
+        'initial_net_worth_after_tax': float(initial_net_worth_after_tax[0]),
     }
 
 

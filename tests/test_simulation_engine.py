@@ -2394,3 +2394,63 @@ def test_target_weights_computed_once_per_year(monkeypatch):
     se.run_simulation(cfg, np.zeros((1, 120, 5)))
     assert calls == list(range(10))
 
+
+def test_deferred_withdrawal_tax_mirrors_liquidation_schedule():
+    import pytest
+    from src.simulation_engine import _deferred_withdrawal_tax
+    from src.tax_engine import calculate_capital_withdrawal_tax as cwt
+
+    cfg = SimConfig(num_runs=1, duration_years=1, inflation_mean=0.0, inflation_std=0.0, start_age=40,
+                    dividend_yield=0.0, annual_base_expenses=1.0, alloc_us_stocks=1.0)
+    p2 = np.array([450_000.0])
+    p3a = [np.array([20_000.0]) for _ in range(5)]
+    ones = np.ones(1)
+    tax = lambda x: float(cwt(x, cfg.cantonal_multiplier, cfg.municipal_multiplier))  # noqa: E731
+
+    # From 40: one 3a account per year at 60..64, Pillar 2 alone at 65.
+    got = _deferred_withdrawal_tax(p2, p3a, 40, ones, cfg)[0]
+    assert got == pytest.approx(5 * tax(20_000) + tax(450_000))
+    # From 63: accounts 0 and 1 at 63/64, the remaining three are bunched with Pillar 2 at 65.
+    got = _deferred_withdrawal_tax(p2, p3a, 63, ones, cfg)[0]
+    assert got == pytest.approx(2 * tax(20_000) + tax(450_000 + 3 * 20_000))
+    # From 65: everything in one event (progressive => more than taxing separately).
+    got = _deferred_withdrawal_tax(p2, p3a, 65, ones, cfg)[0]
+    assert got == pytest.approx(tax(550_000))
+    # Indexation: doubling brackets and balances doubles the tax (homogeneity).
+    got2 = _deferred_withdrawal_tax(2 * p2, [2 * a for a in p3a], 65, 2 * ones, cfg)[0]
+    assert got2 == pytest.approx(2 * got)
+    # Empty pensions owe nothing.
+    assert _deferred_withdrawal_tax(np.zeros(1), [np.zeros(1)], 50, ones, cfg)[0] == 0.0
+
+
+def test_watermark_is_net_of_capital_withdrawal_tax():
+    """Paying the capital withdrawal tax at 65 must not by itself push a run below the watermark.
+
+    Start at 64 with a large Pillar 2. With a modest +3%/yr return, gross net worth after the
+    age-65 payout (and its ~10% tax) is below the gross starting net worth, which the old gross
+    watermark flagged as a downturn. After tax on both sides, the run has grown and is not below.
+    """
+    cfg = SimConfig(num_runs=1, duration_years=3, inflation_mean=0.0, inflation_std=0.0, start_age=64,
+                    dividend_yield=0.0, initial_liquid_wealth=100_000.0, initial_pillar_2=1_000_000.0,
+                    alloc_us_stocks=0.9, alloc_chf_cash=0.1, rebalance_strategy="Yearly",
+                    annual_base_expenses=1_000.0, monthly_ahv_pension=0.0, spending_strategy="Static")
+    returns = np.full((1, 36, 5), 0.0025)
+    h = run_simulation(cfg, returns, np.zeros((1, 3)))
+
+    assert h["initial_net_worth_after_tax"] < h["initial_net_worth"]
+    # The old (gross) comparison would flag year 1 as below the watermark ...
+    assert h["net_worth"][1, 0] < h["initial_net_worth"]
+    # ... but after-tax net worth has grown, so it is not a downturn.
+    assert h["net_worth"][1, 0] > h["initial_net_worth_after_tax"]
+    assert not h["below_watermark"][1, 0]
+
+
+def test_watermark_without_pensions_is_unchanged():
+    cfg = SimConfig(num_runs=1, duration_years=2, inflation_mean=0.0, inflation_std=0.0, start_age=50,
+                    dividend_yield=0.0, initial_liquid_wealth=1_000_000.0, alloc_us_stocks=1.0,
+                    annual_base_expenses=10_000.0)
+    h = run_simulation(cfg, np.zeros((1, 24, 5)), np.zeros((1, 2)))
+    assert h["initial_net_worth_after_tax"] == h["initial_net_worth"]
+    # Watermark is checked before the year's expenses: year 0 is exactly at start, year 1 below.
+    assert h["below_watermark"][:, 0].tolist() == [False, True]
+
