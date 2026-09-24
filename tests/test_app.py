@@ -28,6 +28,16 @@ def test_app_runs_with_defaults():
     tldr = [m.value for m in at.markdown if m.value.startswith("### ")]
     assert len(tldr) == 3 and all(any(k in t for k in ("BROKE", "RICH", "DEAD")) for t in tldr)
     assert sum(1 for m in at.metric if m.label == "Probability of Success") == 3
+    # Historic Backtesting column (column 0): Net Worth chart has Worst=Min/Best=Max,
+    # while Withdrawal Rate chart (chart 3 in column 0) has Best=Min/Worst=Max.
+    import json
+    hist_charts = [json.loads(c.proto.spec) for c in at.columns[0].get("plotly_chart")]
+    nw_names = [t["name"] for t in hist_charts[0]["data"] if t.get("showlegend") is not False]
+    wr_traces = [t for t in hist_charts[3]["data"]]
+    assert nw_names[:5] == ["Worst Cohort (Min)", "25th Pct", "50th Pct", "75th Pct", "Best Cohort (Max)"]
+    assert [t["name"] for t in wr_traces] == ["Best Cohort (Min)", "25th Pct", "50th Pct", "75th Pct", "Worst Cohort (Max)"]
+    assert wr_traces[0]["line"]["color"] == "purple"
+    assert wr_traces[-1]["line"]["color"] == "crimson"
 
 
 @pytest.mark.parametrize("spending", ["Static", "Dynamic (Floor & Ceiling)"])

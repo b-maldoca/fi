@@ -797,10 +797,16 @@ def render_results(history, config, num_runs, title, inflation_matrix, success_p
 
     # Withdrawal Rate Chart (relative to beginning-of-year portfolio value)
     withdrawal_rate_history = beginning_of_year_withdrawal_rate(history)
+    wr_pct_labels = (
+        ['Best Cohort (Min)', '25th Pct', '50th Pct', '75th Pct', 'Worst Cohort (Max)']
+        if is_historic_backtest
+        else pct_labels
+    )
+    wr_colors = colors[::-1]
 
     fig_wr = go.Figure()
     max_p_val = 5.0
-    for p, label, c in zip(percentiles, pct_labels, colors):
+    for p, label, c in zip(percentiles, wr_pct_labels, wr_colors):
         p_vals = np.percentile(withdrawal_rate_history, p, axis=1)
         # Cap values for visualization purposes when net worth approaches zero
         p_vals = np.minimum(p_vals, 100.0)
