@@ -56,3 +56,23 @@ def test_ppp_slider_help_matches_data_constant():
     # The advertised historic value must be selectable on the slider grid.
     steps = (HISTORIC_REAL_CHF_APPRECIATION * 100 - slider.min) / slider.step
     assert abs(steps - round(steps)) < 1e-9
+
+
+def test_monte_carlo_defaults_are_calibrated_to_history():
+    from src.historic_returns import HISTORIC_RETURNS_GOLD_CHF, HISTORIC_RETURNS_NON_US_CHF, HISTORIC_RETURNS_US_CHF
+    from src.simulation_engine import historic_lognormal_params
+    at = _run()
+    inputs = {n.label: n for n in at.number_input}
+    _, us_vol = historic_lognormal_params(HISTORIC_RETURNS_US_CHF)
+    _, exus_vol = historic_lognormal_params(HISTORIC_RETURNS_NON_US_CHF)
+    gold_mean, gold_vol = historic_lognormal_params(HISTORIC_RETURNS_GOLD_CHF)
+    assert inputs["Equities Volatility (%)"].value == pytest.approx(round((us_vol + exus_vol) / 2 * 100, 1))
+    assert inputs["Gold Volatility (%)"].value == pytest.approx(round(gold_vol * 100, 1))
+    assert inputs["Gold Nominal Mean (%)"].value == pytest.approx(round(gold_mean * 100, 1))
+    # Sanity: the 1922-2025 CHF history is far more volatile than the old 15% placeholder.
+    assert inputs["Equities Volatility (%)"].value > 18.0
+    # Every MC return/vol input advertises its historic counterpart.
+    for label in ("Inflation Mean (%)", "Inflation Volatility (%)", "US Stocks Nominal Mean (%)",
+                  "Non-US Stocks Nominal Mean (%)", "CHF Cash Nominal Mean (%)", "Gold Nominal Mean (%)",
+                  "Equities Volatility (%)", "Gold Volatility (%)"):
+        assert "Historic" in inputs[label].help, label

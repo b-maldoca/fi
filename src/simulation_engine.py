@@ -599,6 +599,23 @@ def run_simulation(config: SimConfig, return_matrix: np.ndarray, inflation_matri
     }
 
 
+def historic_lognormal_params(annual_returns: np.ndarray) -> tuple[float, float]:
+    """Monte Carlo parameters `(ann_ret, ann_vol)` that reproduce a historical annual series.
+
+    Inverse of the parameterisation in `generate_monte_carlo_returns`: there `ann_ret`
+    is the *arithmetic* mean of annual simple returns (E[1 + R] = 1 + ann_ret) and
+    `ann_vol` is the standard deviation of annual *log* returns. Feeding the simple-return
+    standard deviation instead would overstate risk (e.g. US stocks in CHF 1922-2025:
+    23.1% simple vs 22.2% log).
+    """
+    r = np.asarray(annual_returns, dtype=float)
+    if r.ndim != 1 or r.size < 2:
+        raise ValueError("annual_returns must be a 1-D series with at least 2 observations")
+    if np.any(r <= -1.0):
+        raise ValueError("annual returns must be greater than -100%")
+    return float(r.mean()), float(np.log1p(r).std(ddof=1))
+
+
 def generate_monte_carlo_returns(
     num_runs: int,
     duration_years: int,

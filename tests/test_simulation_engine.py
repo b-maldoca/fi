@@ -1653,6 +1653,33 @@ def test_monte_carlo_inflation_rng_independence_and_validation():
         generate_monte_carlo_returns(10, 10, -1.0, 0.06, 0.01, 0.06, 0.10, 0.15, 0.15, 0.60)
 
 
+def test_historic_lognormal_params_round_trips_through_mc_generator():
+    """Params estimated from history must regenerate that history's arithmetic mean and log-vol."""
+    import pytest
+    from src.historic_returns import HISTORIC_RETURNS_US_CHF
+    from src.simulation_engine import generate_monte_carlo_returns, historic_lognormal_params
+
+    mean, vol = historic_lognormal_params(HISTORIC_RETURNS_US_CHF)
+    assert mean == pytest.approx(float(np.mean(HISTORIC_RETURNS_US_CHF)))
+    # Log-vol is below simple-return vol for a volatile series (the old UI conflated them).
+    assert vol < float(np.std(HISTORIC_RETURNS_US_CHF, ddof=1))
+
+    mc = generate_monte_carlo_returns(4000, 20, mean, 0.06, 0.01, 0.05, 0.07, vol, 0.15, 0.5, seed=7)
+    annual = np.prod(1.0 + mc[:, :, 0].reshape(4000, 20, 12), axis=2) - 1.0
+    assert float(annual.mean()) == pytest.approx(mean, abs=0.003)
+    assert float(np.log1p(annual).std()) == pytest.approx(vol, abs=0.003)
+
+
+def test_historic_lognormal_params_validation():
+    import pytest
+    from src.simulation_engine import historic_lognormal_params
+
+    with pytest.raises(ValueError, match="at least 2"):
+        historic_lognormal_params(np.array([0.05]))
+    with pytest.raises(ValueError, match="greater than -100%"):
+        historic_lognormal_params(np.array([0.05, -1.0]))
+
+
 def test_year_0_liquid_wealth_and_taxes_at_age_60_to_64():
     from src.simulation_engine import _get_year_0_liquid_wealth, estimate_year_0_taxes, get_target_weights
     from src.tax_engine import calculate_capital_withdrawal_tax

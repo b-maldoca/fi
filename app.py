@@ -7,9 +7,12 @@ from src.historic_returns import (
     BITCOIN_NOMINAL_MEAN,
     BITCOIN_VOL,
     HISTORIC_REAL_CHF_APPRECIATION,
+    HISTORIC_RETURNS_CASH_CHF,
+    HISTORIC_RETURNS_GOLD_CHF,
     HISTORIC_RETURNS_NON_US_CHF,
     HISTORIC_RETURNS_US_CHF,
     HISTORIC_RETURNS_US_USD,
+    HISTORIC_SWISS_INFLATION,
     HISTORIC_YEARS,
     POLITIS_WHITE_BLOCK_YEARS,
     compute_effective_sample_size,
@@ -29,6 +32,7 @@ from src.simulation_engine import (
     estimate_year_0_taxes,
     generate_monte_carlo_inflation,
     generate_monte_carlo_returns,
+    historic_lognormal_params,
     run_simulation,
 )
 from src.tax_engine import ZURICH_CANTONAL_MULTIPLIER, ZURICH_CITY_MUNICIPAL_MULTIPLIER
@@ -316,20 +320,41 @@ _hist_span = f"{HISTORIC_YEARS[0]}–{HISTORIC_YEARS[-1]}"
 _us_usd_cagr = _cagr_pct(HISTORIC_RETURNS_US_USD)
 _us_chf_cagr = _cagr_pct(HISTORIC_RETURNS_US_CHF)
 _exus_chf_cagr = _cagr_pct(HISTORIC_RETURNS_NON_US_CHF)
+# Historic (arithmetic mean, log-vol) pairs in the exact parameterisation of generate_monte_carlo_returns.
+_hist_us_mean, _hist_us_vol = historic_lognormal_params(HISTORIC_RETURNS_US_CHF)
+_hist_exus_mean, _hist_exus_vol = historic_lognormal_params(HISTORIC_RETURNS_NON_US_CHF)
+_hist_gold_mean, _hist_gold_vol = historic_lognormal_params(HISTORIC_RETURNS_GOLD_CHF)
+_hist_cash_mean = float(np.mean(HISTORIC_RETURNS_CASH_CHF))
+_hist_infl_mean = float(np.mean(HISTORIC_SWISS_INFLATION))
+_hist_infl_std = float(np.std(HISTORIC_SWISS_INFLATION, ddof=1))
+# One volatility input drives both equity sleeves, so default it to the average of the two histories.
+_hist_eq_vol = (_hist_us_vol + _hist_exus_vol) / 2.0
+
+
+def _hist_help(mean: float | None = None, vol: float | None = None) -> str:
+    parts = []
+    if mean is not None:
+        parts.append(f"arithmetic mean {mean * 100:.1f}%")
+    if vol is not None:
+        parts.append(f"log-return volatility {vol * 100:.1f}%")
+    return f" Historic {_hist_span} in CHF: " + ", ".join(parts) + "."
+
 
 st.sidebar.subheader("Monte Carlo Parameters")
 st.sidebar.caption(
     "Note: Returns and inflation must be Nominal (unadjusted for inflation) and in CHF terms, and the means are "
     f"arithmetic. For reference ({_hist_span}, geometric CAGR): US Stocks {_us_usd_cagr:.1f}% in USD but "
-    f"{_us_chf_cagr:.1f}% in CHF due to currency drag; Non-US Stocks {_exus_chf_cagr:.1f}% in CHF."
+    f"{_us_chf_cagr:.1f}% in CHF due to currency drag; Non-US Stocks {_exus_chf_cagr:.1f}% in CHF. "
+    "Volatility and gold defaults are calibrated to that history; stock, cash and inflation means are "
+    "deliberately conservative forward-looking assumptions (historic values in each field's help)."
 )
 _min_ret_pct = -99.0  # generate_monte_carlo_returns requires returns > -100%
-inflation_mean = st.sidebar.number_input("Inflation Mean (%)", value=2.5, min_value=_min_ret_pct, step=0.1, format="%.1f", help="Expected average annual inflation rate for Monte Carlo.") / 100.0
-inflation_std = st.sidebar.number_input("Inflation Volatility (%)", value=1.0, min_value=0.0, step=0.1, format="%.1f", help="Expected volatility of inflation for Monte Carlo.") / 100.0
-ret_us = st.sidebar.number_input("US Stocks Nominal Mean (%)", value=7.0, min_value=_min_ret_pct, step=0.1, format="%.1f", help=f"Expected nominal arithmetic mean return for US Stocks in CHF. Historic S&P 500 CAGR {_hist_span}: {_us_usd_cagr:.1f}% in USD, {_us_chf_cagr:.1f}% in CHF.") / 100.0
-ret_non_us = st.sidebar.number_input("Non-US Stocks Nominal Mean (%)", value=6.0, min_value=_min_ret_pct, step=0.1, format="%.1f", help="Expected nominal mean return for Non-US Stocks in CHF terms.") / 100.0
-ret_cash = st.sidebar.number_input("CHF Cash Nominal Mean (%)", value=1.0, min_value=_min_ret_pct, step=0.1, format="%.1f", key="ret_cash_pct", help="Expected nominal mean return for CHF Cash (also used as the contractual taxable savings interest floor in Year 0 tax sync and Monte Carlo).") / 100.0
-ret_gold = st.sidebar.number_input("Gold Nominal Mean (%)", value=6.0, min_value=_min_ret_pct, step=0.1, format="%.1f", help="Expected nominal mean return for Gold in CHF terms.") / 100.0
+inflation_mean = st.sidebar.number_input("Inflation Mean (%)", value=2.5, min_value=_min_ret_pct, step=0.1, format="%.1f", help="Expected average annual inflation rate for Monte Carlo." + _hist_help(_hist_infl_mean)) / 100.0
+inflation_std = st.sidebar.number_input("Inflation Volatility (%)", value=1.0, min_value=0.0, step=0.1, format="%.1f", help="Expected volatility of inflation for Monte Carlo." + f" Historic {_hist_span}: {_hist_infl_std * 100:.1f}% (dominated by the 1920s deflation and the 1940s/1970s inflation spikes).") / 100.0
+ret_us = st.sidebar.number_input("US Stocks Nominal Mean (%)", value=7.0, min_value=_min_ret_pct, step=0.1, format="%.1f", help="Expected nominal arithmetic mean return for US Stocks in CHF." + _hist_help(_hist_us_mean) + f" (S&P 500 CAGR: {_us_usd_cagr:.1f}% in USD, {_us_chf_cagr:.1f}% in CHF.)") / 100.0
+ret_non_us = st.sidebar.number_input("Non-US Stocks Nominal Mean (%)", value=6.0, min_value=_min_ret_pct, step=0.1, format="%.1f", help="Expected nominal arithmetic mean return for Non-US Stocks in CHF terms." + _hist_help(_hist_exus_mean)) / 100.0
+ret_cash = st.sidebar.number_input("CHF Cash Nominal Mean (%)", value=1.0, min_value=_min_ret_pct, step=0.1, format="%.1f", key="ret_cash_pct", help="Expected nominal mean return for CHF Cash (also used as the contractual taxable savings interest floor in Year 0 tax sync and Monte Carlo)." + _hist_help(_hist_cash_mean)) / 100.0
+ret_gold = st.sidebar.number_input("Gold Nominal Mean (%)", value=round(_hist_gold_mean * 100.0, 1), min_value=_min_ret_pct, step=0.1, format="%.1f", help="Expected nominal arithmetic mean return for Gold in CHF terms. Default = history." + _hist_help(_hist_gold_mean)) / 100.0
 ret_btc = st.sidebar.number_input(
     "Bitcoin Nominal Mean (%)",
     value=float(BITCOIN_NOMINAL_MEAN * 100.0),
@@ -339,8 +364,8 @@ ret_btc = st.sidebar.number_input(
     help="Expected nominal arithmetic mean return for synthetic Bitcoin in CHF terms (applied across Historic Backtesting, Stationary Bootstrapping, and Monte Carlo).",
 ) / 100.0
 
-vol_eq = st.sidebar.number_input("Equities Volatility (%)", value=15.0, min_value=0.0, step=0.1, format="%.1f", help="Expected volatility for Stocks.") / 100.0
-vol_gold = st.sidebar.number_input("Gold Volatility (%)", value=15.0, min_value=0.0, step=0.1, format="%.1f", help="Expected volatility for Gold.") / 100.0
+vol_eq = st.sidebar.number_input("Equities Volatility (%)", value=round(_hist_eq_vol * 100.0, 1), min_value=0.0, step=0.1, format="%.1f", help="Annualized log-return volatility applied to both US and Non-US Stocks. Default = average of the two histories." + f" Historic {_hist_span} in CHF: US {_hist_us_vol * 100:.1f}%, Non-US {_hist_exus_vol * 100:.1f}%.") / 100.0
+vol_gold = st.sidebar.number_input("Gold Volatility (%)", value=round(_hist_gold_vol * 100.0, 1), min_value=0.0, step=0.1, format="%.1f", help="Annualized log-return volatility for Gold. Default = history." + _hist_help(vol=_hist_gold_vol)) / 100.0
 vol_btc = st.sidebar.number_input(
     "Bitcoin Volatility (%)",
     value=float(BITCOIN_VOL * 100.0),
