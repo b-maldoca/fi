@@ -411,7 +411,7 @@ real_chf_appreciation = st.sidebar.slider(
     min_value=-1.00,
     max_value=2.00,
     value=0.00,
-    step=0.05,
+    step=0.01,  # HISTORIC_REAL_CHF_APPRECIATION is rounded to 0.01pp and must be selectable
     format="%.2f%%",
     help=(
         "Expected long-run real appreciation of the Swiss Franc beyond inflation differentials "

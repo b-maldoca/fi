@@ -36,9 +36,9 @@ This project incorporates historical datasets from primary macroeconomic sources
    Swiss Consumer Price Index via the [Swiss Federal Statistical Office (FSO/BFS)](https://www.bfs.admin.ch).
 5. **Gold (USD -> CHF)** — [`data/gold_usd.csv`](data/gold_usd.csv), 1871–2025, monthly.
    Month-end [LBMA](https://prices.lbma.org.uk) London PM fix from Apr 1968; statutory fixed price (\$20.67, then \$35) before that, converted to CHF via `usd_chf.csv`.
-6. **Swiss Short-Term Cash Rate (CHF)** — [`data/ch_cash_rate.csv`](data/ch_cash_rate.csv), 1900–2025, annual (`wholesale_rate` and `retail_rate` floored at `0.0%`).
-   Built from the **Jordà–Schularick–Taylor Macrohistory Database R6** (`bill_rate` for Switzerland, 1900–2020) spliced with **SNB policy / SARON rates** (2021–2025), floored at `0.0%` (`retail_rate`) to reflect Swiss retail savings deposit pass-through during the 2015–2022 SNB negative-interest-rate era (1922–2025: `2.46%` nominal CAGR, `1.88%` vol, `+0.71%` real return after `1.74%` Swiss CPI). Note: actual Swiss retail savings rates typically sit *below* the wholesale bill/SARON rate, so this series is an optimistic proxy for a savings account.
-7. **US Inflation (CPI-U)** — [`data/us_cpi.csv`](data/us_cpi.csv), 1871–2025, monthly (via [wichtounet/swr-calculator](https://github.com/wichtounet/swr-calculator)).
+6. **Swiss Retail Cash Rate (CHF)** — [`data/ch_cash_rate.csv`](data/ch_cash_rate.csv), 1900–2025, annual (`retail_rate` drives the simulation; `wholesale_rate` kept for reference).
+   `retail_rate` is the **SNB interest rate on private-client savings deposits** ([data.snb.ch](https://data.snb.ch) cube `zikrepro`, `D1=S1`, annual mean of monthly observations) from 1933, and the **Jordà–Schularick–Taylor Macrohistory Database R6** Swiss `bill_rate` for 1900–1932 (on the 1933–1968 overlap the two agree to 0.007pp — JST itself uses the savings rate there). From 1969 JST switches to a volatile money-market rate (e.g. 1989: 9.7% vs 3.45% on savings) and the 2015–2022 SNB policy rate was negative while savings paid ≈ 0.0x%, so the retail series needs no artificial 0% floor (1922–2025: `2.49%` nominal CAGR, `1.42%` vol, `+0.74%` real return after `1.74%` Swiss CPI). `wholesale_rate` = JST `bill_rate` 1900–2020 + SNB policy / SARON 2021–2025. Over 1933–2025 the savings rate averaged 2.32% vs 2.30% for the previous wholesale-based proxy — the old proxy was not optimistic on average, but was far more volatile.
+7. **US Inflation (CPI-U)** — [`data/us_cpi.csv`](data/us_cpi.csv), 1871–2025, monthly: **FRED `CPIAUCNS`** (BLS CPI-U, not seasonally adjusted) from 1913, legacy [wichtounet/swr-calculator](https://github.com/wichtounet/swr-calculator) leg for 1871–1912 (the legacy series deviated from BLS by up to 0.74% on the overlap).
    Used **only** by `scripts/build_historic_returns.py` to derive the relative-PPP drift behind `HISTORIC_REAL_CHF_APPRECIATION`; it never enters the simulation directly.
 
 ### Return construction
@@ -48,7 +48,7 @@ This project incorporates historical datasets from primary macroeconomic sources
 CHF conversion is applied at the index level before differencing:
 $$\text{Return}^{\text{CHF}}_t = \frac{I^{\text{USD}}_t \times \text{FX}_t}{I^{\text{USD}}_{t-1} \times \text{FX}_{t-1}} - 1$$
 
-*   **Currency / PPP Assumption (`real_chf_appreciation`, default `0.00%/yr`)**: `HISTORIC_REAL_CHF_APPRECIATION` is **derived from the data at build time** (not hardcoded): over 1922–2025 the geometric `USD/CHF` drift and the relative-PPP drift implied by Swiss vs US CPI give $a_{\text{hist}} = 1 - \frac{1 + g_{\text{FX}}}{1 + g_{\text{PPP}}} \approx$ `+0.70%/yr` real CHF appreciation beyond PPP (a real FX drag on foreign-priced assets). The sidebar exposes **Real CHF Appreciation beyond PPP (%/yr)** defaulting to `0.00%` (PPP neutrality, scaling foreign-priced monthly returns by $\left(\frac{1 - a_{\text{target}}}{1 - a_{\text{hist}}}\right)^{1/12}$), while `+0.70%` reproduces the raw unadjusted 1922–2025 historical CHF returns.
+*   **Currency / PPP Assumption (`real_chf_appreciation`, default `0.00%/yr`)**: `HISTORIC_REAL_CHF_APPRECIATION` is **derived from the data at build time** (not hardcoded): over 1922–2025 the geometric `USD/CHF` drift and the relative-PPP drift implied by Swiss vs US CPI give $a_{\text{hist}} = 1 - \frac{1 + g_{\text{FX}}}{1 + g_{\text{PPP}}} \approx$ `+0.71%/yr` real CHF appreciation beyond PPP (a real FX drag on foreign-priced assets). The sidebar exposes **Real CHF Appreciation beyond PPP (%/yr)** defaulting to `0.00%` (PPP neutrality, scaling foreign-priced monthly returns by $\left(\frac{1 - a_{\text{target}}}{1 - a_{\text{hist}}}\right)^{1/12}$), while `+0.71%` reproduces the raw unadjusted 1922–2025 historical CHF returns.
 *   **Bitcoin–Equity Correlation Coupling (`btc_equity_corr`, default `0.50`)**: Because Bitcoin has no 40-year history, its monthly log-returns ($\mu = 7.0\%$, $\sigma = 50.0\%$ default across all 3 engines, Ito-corrected and user-configurable via `btc_mean` / `btc_vol`) are coupled to **per-path standardized** monthly US equity log-returns via a Gaussian copula:
     $$Z_{\text{BTC}, t} = \rho_{\text{BTC,EQ}} Z_{\text{US}, t} + \sqrt{1 - \rho_{\text{BTC,EQ}}^2}\,\varepsilon_t, \quad \varepsilon_t \sim \mathcal{N}(0, 1)$$
     Per-path standardization ($\text{mean}(Z_{\text{US}}) = 0$, $\text{std}(Z_{\text{US}}) = 1$ within each cohort/run) ensures US cohort drift never leaks into Bitcoin's expected log-return while eliminating the zero-correlation "free lunch" during equity market drawdowns (`2022`, `1929`, `1973–74`, `2008`) across $\rho \in [-0.50, 0.90]$.
@@ -58,7 +58,7 @@ $$\text{Return}^{\text{CHF}}_t = \frac{I^{\text{USD}}_t \times \text{FX}_t}{I^{\
 | US equities | 1922–2025 (all) | — |
 | Ex-US equities | 1970–2025 | 1922–1969 (JST) |
 | Gold | 1968–2025 | 1922–1967 (peg era) |
-| CHF Cash | — | 1922–2025 (`data/ch_cash_rate.csv` retail rate, floored at `0.0%`) |
+| CHF Cash | — | 1922–2025 (`data/ch_cash_rate.csv` retail rate: SNB savings deposits from 1933, annual) |
 | Bitcoin | — | synthetic throughout (**coupled to US equity shocks at $\rho = 0.50$**) |
 
 ### Rebuilding the data
@@ -79,8 +79,8 @@ python scripts/build_historic_returns.py # offline: regenerates src/historic_ret
 │                                       #   usd_chf.csv        month-end USD/CHF (SNB pre-1971, FRED after)
 │                                       #   ch_inflation.csv   Swiss CPI, monthly
 │                                       #   gold_usd.csv       LBMA PM fix, USD, monthly (1968+ real)
-│                                       #   ch_cash_rate.csv   JST Swiss bill rate + SNB policy/SARON (1900-2025)
-│                                       #   us_cpi.csv         US CPI-U, monthly (build-time PPP derivation only)
+│                                       #   ch_cash_rate.csv   CHF retail savings rate (JST <1933, SNB 1933+) + wholesale ref
+│                                       #   us_cpi.csv         US CPI-U, monthly, FRED from 1913 (build-time PPP only)
 ├── src/                                # Importable `src` package (no `sys.path` manipulation required)
 │   ├── __init__.py                     # Re-exports the public API (`from src import SimConfig, run_simulation`)
 │   ├── simulation_engine.py            # Core monthly decumulation simulation loop & Monte Carlo generator

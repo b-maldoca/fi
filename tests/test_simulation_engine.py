@@ -2380,6 +2380,40 @@ def test_historic_real_chf_appreciation_is_derived_from_data():
     assert 0.006 < HISTORIC_REAL_CHF_APPRECIATION < 0.008
 
 
+def test_cash_series_is_retail_savings_rate():
+    """retail_rate = SNB savings deposits from 1933 (never negative, no money-market spikes)."""
+    import os
+    import pandas as pd
+    from src.historic_returns import HISTORIC_RETURNS_CASH_CHF, HISTORIC_YEARS
+
+    cash = pd.read_csv(os.path.join(os.path.dirname(__file__), "..", "data", "ch_cash_rate.csv")).set_index("year")
+    assert (cash.retail_rate >= 0).all()
+    # Pre-1933 leg is JST, unchanged.
+    assert (cash.loc[:1932, "retail_rate"] == cash.loc[:1932, "wholesale_rate"]).all()
+    # 1989 money-market spike (~9.7%) is not what a saver earned (~3.5%).
+    assert cash.loc[1989, "wholesale_rate"] > 0.09
+    assert 0.03 < cash.loc[1989, "retail_rate"] < 0.04
+    # 2015-2022: negative wholesale, small positive savings rate (no artificial 0% floor needed).
+    assert (cash.loc[2015:2022, "wholesale_rate"] < 0).all()
+    assert (cash.loc[2015:2022, "retail_rate"] > 0).all()
+    # The generated annual series is built from retail_rate.
+    i1989 = int(np.where(HISTORIC_YEARS == 1989)[0][0])
+    assert abs(HISTORIC_RETURNS_CASH_CHF[i1989] - cash.loc[1989, "retail_rate"]) < 1e-3
+
+
+def test_us_cpi_uses_bls_cpiaucns_from_1913():
+    import os
+    import pandas as pd
+
+    cpi = pd.read_csv(os.path.join(os.path.dirname(__file__), "..", "data", "us_cpi.csv"),
+                      header=None, names=["m", "y", "v"])
+    v = cpi.set_index(["y", "m"]).v
+    assert v[(1913, 1)] == 9.8      # BLS CPI-U base month
+    assert v[(2025, 12)] > 300
+    assert cpi.y.min() == 1871  # legacy pre-BLS leg retained
+    assert not cpi.duplicated(["y", "m"]).any()
+
+
 def test_target_weights_computed_once_per_year(monkeypatch):
     # get_target_weights re-runs the Year 0 tax estimate; run_simulation must not
     # call it every month (it used to: 12x per year).

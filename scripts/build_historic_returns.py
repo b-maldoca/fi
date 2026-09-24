@@ -136,7 +136,7 @@ assert monthly_gold.notna().all(), 'gap in gold monthly series'
 print(f'gold: {sum(gold_smoothed.values())} years pegged/smoothed, '
       f'{len(years)-sum(gold_smoothed.values())} years real monthly (LBMA)')
 
-# ----------------------------------------------------- CHF cash (JST + SNB)
+# --------------------------------- CHF cash (JST pre-1933, SNB savings deposits 1933+)
 monthly_cash = pd.Series(index=months, dtype=float)
 for y in years:
     sel = [p for p in months if p.year == y]
@@ -276,17 +276,19 @@ header = f'''# =================================================================
 #    This REPLACES a synthetic uncorrelated lognormal RNG (6% / 15%) that was
 #    previously used even in "historic backtesting" mode.
 #
-# 6. CHF Cash -- data/ch_cash_rate.csv.
-#      {START_YEAR}-2020 : JST R6 Swiss short-term bill/money-market rate (`bill_rate`).
-#      2021-{last_year} : Time-weighted SNB policy / SARON money-market rate.
-#    Floored at 0.0% (`retail_rate`) to reflect Swiss retail savings / Cash Tent
-#    deposit accounts during the 2012-2022 negative wholesale policy rate era.
+# 6. CHF Cash -- data/ch_cash_rate.csv (`retail_rate`).
+#      {START_YEAR}-1932 : JST R6 Swiss `bill_rate` (in this era identical to the savings rate).
+#      1933-{last_year} : SNB savings-deposit rate for private clients (data.snb.ch cube
+#                         `zikrepro`, D1=S1), annual mean of monthly observations -- the rate a
+#                         Swiss retail saver actually earned. Never negative, so no 0% floor.
+#    The wholesale JST bill / SNB SARON rate is kept in the CSV (`wholesale_rate`) for reference.
 #
 # 7. Bitcoin -- SYNTHETIC (lognormal, 7% nominal / 50% vol default, correlated
 #    with US equities at default rho=0.50 via Gaussian copula on standardized
 #    monthly US equity log-returns).
 #
-# 8. US CPI -- data/us_cpi.csv, monthly, 1871-present (via wichtounet/swr-calculator).
+# 8. US CPI -- data/us_cpi.csv, monthly: FRED CPIAUCNS (BLS CPI-U, NSA) from 1913,
+#    legacy wichtounet/swr-calculator leg for 1871-1912.
 #    Used ONLY to derive HISTORIC_REAL_CHF_APPRECIATION (PPP residual); it does
 #    not enter any return series.
 #
@@ -315,7 +317,7 @@ MONTHLY_NON_US_CHF = np.array([
 {fmt(monthly_exus.values)}
 ])
 
-# CHF cash, retail short-term deposit yield (JST CHE bill_rate + SNB SARON, floored at 0%).
+# CHF cash, retail savings-deposit yield (JST CHE bill_rate pre-1933, SNB savings deposits 1933+).
 MONTHLY_CASH_CHF = np.array([
 {fmt(monthly_cash.values)}
 ])
@@ -489,7 +491,7 @@ def get_historic_return_matrix(
     Returns a return matrix of shape (num_runs, duration_months, 5) for 5 asset classes:
     0: US Stocks      (empirical S&P 500 total return in CHF, real monthly)
     1: Non-US Stocks  (JST GDP-weighted ex-US before {EXUS_REAL_FROM}, real monthly after)
-    2: CHF Cash       (empirical JST Swiss bill rate + SNB SARON, floored at 0% for retail)
+    2: CHF Cash       (empirical retail savings-deposit rate: JST pre-1933, SNB zikrepro 1933+)
     3: Gold           (LBMA in CHF; pegged before {GOLD_REAL_FROM})
     4: Bitcoin        (synthetic lognormal, correlated with US Stocks at rho=btc_equity_corr)
 

@@ -6,11 +6,15 @@ Produces, in data/:
   usd_chf.csv       month-end USD/CHF        1914-present  (SNB pre-1971, FRED DEXSZUS after)
   gold_usd.csv      month-end gold USD/oz    1871-present  (fixed peg pre-1968, LBMA PM fix after)
   jst_exus_usd.csv  annual ex-US equity TR   1900-1969     (GDP-weighted, from JST R6)
-  ch_cash_rate.csv  annual CHF cash rates    1900-present  (JST CHE bill_rate + SNB SARON, retail 0% floor)
+  ch_cash_rate.csv  annual CHF cash rates    1900-present  (retail: JST CHE bill_rate pre-1933, SNB savings
+                                                            deposit rate 1933+; wholesale: JST + SNB SARON)
+  us_cpi.csv        monthly US CPI-U          1871-present  (legacy swr-calculator leg pre-1913, FRED CPIAUCNS after)
 
-Sources (all free, verified 2026-09-23):
+Sources (all free, verified 2026-09-23; SNB savings + FRED CPI verified 2026-09-24):
   FRED  DEXSZUS  https://fred.stlouisfed.org/graph/fredgraph.csv?id=DEXSZUS
+  FRED  CPIAUCNS https://fred.stlouisfed.org/graph/fredgraph.csv?id=CPIAUCNS
   SNB   devkum   https://data.snb.ch/api/cube/devkum/data/csv/en
+  SNB   zikrepro https://data.snb.ch/api/cube/zikrepro/data/csv/en  (D1=S1: private-client savings deposits)
   LBMA           https://prices.lbma.org.uk/json/gold_pm.json
   JST R6         https://www.macrohistory.net/app/download/9834512469/JSTdatasetR6.xlsx
 """
@@ -28,9 +32,12 @@ CACHE = os.path.join(BASE, '.cache')
 os.makedirs(CACHE, exist_ok=True)
 
 FRED_DEXSZUS = 'https://fred.stlouisfed.org/graph/fredgraph.csv?id=DEXSZUS'
+FRED_CPIAUCNS = 'https://fred.stlouisfed.org/graph/fredgraph.csv?id=CPIAUCNS'
 SNB_DEVKUM = 'https://data.snb.ch/api/cube/devkum/data/csv/en'
+SNB_SAVINGS = 'https://data.snb.ch/api/cube/zikrepro/data/csv/en?dimSel=D0(M),D1(S1)&fromDate=1900-01'
 LBMA_GOLD = 'https://prices.lbma.org.uk/json/gold_pm.json'
 JST_R6 = 'https://www.macrohistory.net/app/download/9834512469/JSTdatasetR6.xlsx'
+LAST_YEAR = 2025  # last complete calendar year carried by the simulator
 
 
 def fetch(url, name, binary=False):
@@ -161,7 +168,7 @@ che_cash = jst[(jst.iso == 'CHE') & (jst.year >= 1900)][['year', 'bill_rate']].d
 che_cash['year'] = che_cash['year'].astype(int)
 che_cash = che_cash.rename(columns={'bill_rate': 'wholesale_rate'})
 
-# Spliced 2021-2025 time-weighted SNB policy / SARON money-market rates
+# Spliced 2021-2025 time-weighted SNB policy / SARON money-market rates (wholesale reference only)
 snb_modern_cash = pd.DataFrame([
     {'year': 2021, 'wholesale_rate': -0.0075},
     {'year': 2022, 'wholesale_rate': -0.0024},
@@ -170,8 +177,57 @@ snb_modern_cash = pd.DataFrame([
     {'year': 2025, 'wholesale_rate': 0.0018},
 ])
 cash_df = pd.concat([che_cash, snb_modern_cash], ignore_index=True).drop_duplicates('year', keep='last').sort_values('year')
-# Retail savings / Cash Tent deposit accounts floor negative wholesale SNB policy rates at 0.0%
-cash_df['retail_rate'] = np.maximum(0.0, cash_df['wholesale_rate'])
+
+# Retail leg: what a Swiss private client actually earns on a savings account. SNB zikrepro
+# D1=S1 is monthly from 1933. Pre-1969 it coincides with JST's CHE bill_rate to <0.05pp (JST
+# uses it as its proxy); from 1969 JST switches to a volatile money-market rate (e.g. 1989:
+# 9.7% vs 3.45% on savings), and during 2015-2022 wholesale was negative while savings paid
+# ~0.0x%, so no artificial 0% floor is needed any more.
+rows, started = [], False
+for line in fetch(SNB_SAVINGS, 'snb_zikrepro_savings.csv').splitlines():
+    p = [x.strip('"').strip() for x in line.split(';')]
+    if not started:
+        started = p[:1] == ['Date']
+        continue
+    if len(p) >= 4 and p[1] == 'M' and p[2] == 'S1' and p[3]:
+        rows.append((int(p[0][:4]), float(p[3]) / 100.0))
+sav = pd.DataFrame(rows, columns=['year', 'rate'])
+sav = sav[sav.year <= LAST_YEAR]
+months_per_year = sav.groupby('year').size()
+full_years = months_per_year[months_per_year == 12].index
+savings_annual = sav[sav.year.isin(full_years)].groupby('year').rate.mean()
+print(f'   SNB savings deposits: {savings_annual.index.min()}-{savings_annual.index.max()} '
+      f'({len(savings_annual)} full years), mean {savings_annual.mean()*100:.2f}%')
+assert (savings_annual >= 0).all(), 'negative savings deposit rate'
+cash_df = cash_df.set_index('year')
+cash_df['retail_rate'] = cash_df['wholesale_rate']  # pre-1933: JST (== savings rate in that era)
+common = cash_df.index.intersection(savings_annual.index)
+cash_df.loc[common, 'retail_rate'] = savings_annual.loc[common]
+pre = cash_df.index[(cash_df.index < 1969) & cash_df.index.isin(common)]
+print(f'   JST bill_rate vs SNB savings, {pre.min()}-{pre.max()}: mean abs diff '
+      f'{(cash_df.loc[pre, "wholesale_rate"] - savings_annual.loc[pre]).abs().mean()*100:.3f}pp')
+cash_df = cash_df.reset_index()
 cash_df.to_csv(os.path.join(DATA, 'ch_cash_rate.csv'), index=False, float_format='%.6f')
 print(f'   -> data/ch_cash_rate.csv  {cash_df.year.min()}-{cash_df.year.max()} ({len(cash_df)} years)')
+
+# --------------------------------------------------------------------------
+print('5. US CPI-U (monthly, build-time PPP derivation only)')
+cpi = pd.read_csv(io.StringIO(fetch(FRED_CPIAUCNS, 'cpiaucns.csv')), na_values=['.'])
+cpi.columns = ['date', 'v']
+cpi['date'] = pd.to_datetime(cpi.date)
+cpi = cpi.dropna()
+cpi = cpi[cpi.date.dt.year <= LAST_YEAR]
+cpi_modern = pd.Series(cpi.v.values, index=pd.PeriodIndex(cpi.date, freq='M'))
+print(f'   FRED CPIAUCNS: {cpi_modern.index.min()} -> {cpi_modern.index.max()} ({len(cpi_modern)})')
+# 1871-1912 predates the BLS index; keep the legacy leg (swr-calculator / Shiller) already in data/.
+legacy = pd.read_csv(os.path.join(DATA, 'us_cpi.csv'), header=None, names=['m', 'y', 'v'])
+legacy.index = pd.PeriodIndex(pd.to_datetime(dict(year=legacy.y, month=legacy.m, day=1)), freq='M')
+overlap = legacy.index.intersection(cpi_modern.index)
+if len(overlap):
+    rel = (legacy.v.loc[overlap] / cpi_modern.loc[overlap] - 1).abs()
+    print(f'   legacy vs FRED on {len(overlap)} overlapping months: max rel diff {rel.max()*100:.3f}%')
+us_cpi = pd.concat([legacy.v[legacy.index < cpi_modern.index.min()], cpi_modern]).sort_index()
+out = pd.DataFrame({'month': us_cpi.index.month, 'year': us_cpi.index.year, 'v': us_cpi.values})
+out.to_csv(os.path.join(DATA, 'us_cpi.csv'), index=False, header=False, float_format='%.3f')
+print(f'   -> data/us_cpi.csv  {us_cpi.index.min()} - {us_cpi.index.max()}  ({len(us_cpi)} months)')
 print('\nDone.')
