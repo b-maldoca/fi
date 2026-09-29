@@ -340,14 +340,16 @@ def _hist_help(mean: float | None = None, vol: float | None = None) -> str:
     return f" Historic {_hist_span} in CHF: " + ", ".join(parts) + "."
 
 
-st.sidebar.subheader("Monte Carlo Parameters")
-st.sidebar.caption(
-    "Note: Returns and inflation must be Nominal (unadjusted for inflation) and in CHF terms, and the means are "
-    f"arithmetic. For reference ({_hist_span}, geometric CAGR): US Stocks {_us_usd_cagr:.1f}% in USD but "
-    f"{_us_chf_cagr:.1f}% in CHF due to currency drag; Non-US Stocks {_exus_chf_cagr:.1f}% in CHF. "
-    "Stock means, volatilities, gold and inflation defaults are calibrated to that history (arithmetic means, "
-    "log-return vols for assets); only CHF cash stays forward-looking (today's near-zero savings rates and Year 0 "
-    "taxable interest), with historic values in each field's help."
+st.sidebar.subheader(
+    "Monte Carlo Parameters",
+    help=(
+        "Note: Returns and inflation must be Nominal (unadjusted for inflation) and in CHF terms, and the means are "
+        f"arithmetic. For reference ({_hist_span}, geometric CAGR): US Stocks {_us_usd_cagr:.1f}% in USD but "
+        f"{_us_chf_cagr:.1f}% in CHF due to currency drag; Non-US Stocks {_exus_chf_cagr:.1f}% in CHF. "
+        "Stock means, volatilities, gold and inflation defaults are calibrated to that history (arithmetic means, "
+        "log-return vols for assets); only CHF cash stays forward-looking (today's near-zero savings rates and Year 0 "
+        "taxable interest), with historic values in each field's help."
+    ),
 )
 _min_ret_pct = -99.0  # generate_monte_carlo_returns requires returns > -100%
 inflation_mean = st.sidebar.number_input("Inflation Mean (%)", value=round(_hist_infl_mean * 100.0, 1), min_value=_min_ret_pct, step=0.1, format="%.1f", help="Expected average annual inflation rate for Monte Carlo. Default = history." + _hist_help(_hist_infl_mean)) / 100.0

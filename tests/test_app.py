@@ -98,3 +98,7 @@ def test_monte_carlo_defaults_are_calibrated_to_history():
                   "Non-US Stocks Nominal Mean (%)", "CHF Cash Nominal Mean (%)", "Gold Nominal Mean (%)",
                   "Equities Volatility (%)", "Gold Volatility (%)"):
         assert "Historic" in inputs[label].help, label
+    mc_sub = next(s for s in at.subheader if s.value == "Monte Carlo Parameters")
+    assert "Note: Returns and inflation must be Nominal" in mc_sub.proto.help
+    assert not at.sidebar.caption
+
