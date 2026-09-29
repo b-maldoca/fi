@@ -38,6 +38,9 @@ def test_app_runs_with_defaults():
     assert [t["name"] for t in wr_traces] == ["Best Cohort (Min)", "25th Pct", "50th Pct", "75th Pct", "Worst Cohort (Max)"]
     assert wr_traces[0]["line"]["color"] == "purple"
     assert wr_traces[-1]["line"]["color"] == "crimson"
+    alloc_names = [t["name"] for t in hist_charts[4]["data"]]
+    assert alloc_names == ["CHF Cash", "US Stocks", "Non-US Stocks", "Gold", "Bitcoin", "Pillar 2 & 3a"]
+
 
 
 @pytest.mark.parametrize("spending", ["Static", "Dynamic (Floor & Ceiling)"])

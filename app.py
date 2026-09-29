@@ -827,10 +827,11 @@ def render_results(history, config, num_runs, title, inflation_matrix, success_p
     st.subheader("Withdrawal Rate", help="This chart displays the percentage of your current net worth consumed by expenses and taxes each year.")
     st.plotly_chart(fig_wr, width='stretch')
 
-    # Asset Allocation Development Chart (Liquid Assets + Pillar 2 + Pillar 3a)
+    # Asset Allocation Development Chart (Liquid Assets + Pillar 2 & 3a)
     median_assets_by_class = np.median(history['liquid_assets_by_class'], axis=1)  # shape: (years, 5)
-    median_p2 = np.median(history['pillar_2'], axis=1) if 'pillar_2' in history else np.zeros(len(years))
-    median_p3a = np.median(history['pillar_3a'], axis=1) if 'pillar_3a' in history else np.zeros(len(years))
+    p2_hist = history['pillar_2'] if 'pillar_2' in history else np.zeros((len(years), 1))
+    p3a_hist = history['pillar_3a'] if 'pillar_3a' in history else np.zeros((len(years), 1))
+    median_pensions = np.median(p2_hist + p3a_hist, axis=1)
 
     fig_alloc = go.Figure()
 
@@ -840,8 +841,7 @@ def render_results(history, config, num_runs, title, inflation_matrix, success_p
         ('Non-US Stocks', median_assets_by_class[:, 1], 'darkcyan'),
         ('Gold', median_assets_by_class[:, 3], 'gold'),
         ('Bitcoin', median_assets_by_class[:, 4], 'purple'),
-        ('Pillar 3a', median_p3a, 'mediumpurple'),
-        ('Pillar 2', median_p2, 'darkorange'),
+        ('Pillar 2 & 3a', median_pensions, 'darkorange'),
     ]
 
     for name, values, color in all_series:
@@ -864,7 +864,7 @@ def render_results(history, config, num_runs, title, inflation_matrix, success_p
         legend=dict(orientation="h", yanchor="top", y=-0.22, xanchor="center", x=0.5),
         margin=dict(t=15, b=65, l=10, r=10)
     )
-    st.subheader("Asset Allocation Development", help="This stacked chart visualizes the median nominal balance of all asset categories (taxable liquid investments, Pillar 2, and Pillar 3a) over time, showing how your net worth breakdown glides and rebalances throughout retirement.")
+    st.subheader("Asset Allocation Development", help="This stacked chart visualizes the median nominal balance of all asset categories (taxable liquid investments and combined Pillar 2 & 3a pensions) over time, showing how your net worth breakdown glides and rebalances throughout retirement.")
     st.plotly_chart(fig_alloc, width='stretch')
 
     analysis_name = "Cohort Analysis" if is_historic_backtest else "Run Analysis"
