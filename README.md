@@ -17,7 +17,11 @@ Phase 1 focuses on the **post-retirement decumulation phase** for a single indiv
 *   **Rebalancing & Pfau Cash Tent Glidepath**: Supports Cash Tent (rising equity glidepath from a multi-year cash buffer of expenses + estimated taxes; the allocation held during year *y* is the glidepath weight for year *y*, reaching the base weights after exactly `tent_duration_years`), Monthly, Quarterly, Yearly, Threshold-based, and Never rebalancing strategies.
 *   **Smart Cash Buffer**: Optional defensive strategy during market downturns (net worth below inflation-adjusted starting watermark) to pause rebalancing and spend CHF Cash first before selling equities. The watermark comparison (also used by Dynamic Floor & Ceiling spending and "Years Below") is **after tax**: both current and starting net worth deduct the capital withdrawal tax still owed on Pillar 2 / 3a balances under the simulator's own payout schedule, so paying that tax at 60–65 is not mistaken for a market downturn.
 *   **Flexible Spending Strategies**: Choose between **Static** (inflation-adjusted base expenses), **Dynamic (Floor & Ceiling)**, and **Vanguard Dynamic** spending (tax-inclusive UI Target Withdrawal Rate bi-directionally synchronized with Year 0 base expenses and estimated taxes using live tax/yield inputs).
-*   **Configurable Success Criteria**: Set target ending net worth (e.g., preserve 50% of inflation-adjusted starting wealth) and evaluate survival and wealth preservation metrics.
+*   **Configurable Success Criteria & Failure Timing Analysis**: Set target ending net worth (e.g., preserve 50% of inflation-adjusted starting wealth) and distinguish early-retirement ruin from late-life depletion or target shortfall via:
+    *   **Depletion Rate (`NW ≤ 0`) vs. Target Shortfall (`0 < Final Real NW ≤ Target`)** and **Pre-AHV Liquid Depletion (`Liquid ≤ 0` before Age 65)**.
+    *   **Depletion Rate (`NW ≤ 0`) & Depletion Age (Min / Med)** paired with **Shortfall Rate (`Real NW ≤ Target`) & Shortfall Age (Min / Med)** KPIs tracking earliest and median timing when portfolios exhaust wealth or first breach target ending wealth.
+    *   **Portfolio Survival by Age** (Kaplan–Meier style curve plotting `Solvent (NW > 0)`, `Liquid Solvent (Liquid > 0)`, and `Above Target` across ages, with an `Age 65 (AHV + P2)` regime marker).
+    *   **Top 10 Best/Worst Cohort & Run tables** with `Outcome`, `Depletion Age`, `Yrs in Shortfall`, `Shortfall Age`, `Final NW (Real/Nom)`, `Min NW (Real)` and `Yrs Below` columns (interactive `column_config` tooltips on every header). Best paths are sorted by `Final NW (Real)` descending. Worst paths are ranked by **outcome severity** relative to the configurable success criterion: **Depleted** (earliest depletion first) → **Failed** (survived but ended at/below the criterion; lowest real ending NW first) → **Recovered** (breached the criterion during retirement but ended above it; most years in shortfall first) → **Never breached** (lowest real ending NW first). The sort order is stated in a caption above each table (Streamlit has no API to preset the interactive header sort arrow).
 
 ## Data Sources & Provenance
 
@@ -85,7 +89,7 @@ python scripts/build_historic_returns.py # offline: regenerates src/historic_ret
 │   ├── __init__.py                     # Re-exports the public API (`from src import SimConfig, run_simulation`)
 │   ├── simulation_engine.py            # Core monthly decumulation simulation loop & Monte Carlo generator
 │   ├── tax_engine.py                   # Swiss Federal & Canton Zurich tax and AHV calculations
-│   ├── metrics.py                      # Pure result metrics (success mask, real wealth, TL;DR outcome, withdrawal rates)
+│   ├── metrics.py                      # Pure result metrics (success mask, survival curves, depletion/shortfall timing, outcome severity ranking, real wealth, TL;DR outcome, withdrawal rates)
 │   └── historic_returns.py             # GENERATED: monthly/annual return series & bootstrap generators
 ├── scripts/
 │   ├── fetch_source_data.py            # Network: FRED, SNB, LBMA, JST -> normalised CSVs in data/

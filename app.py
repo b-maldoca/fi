@@ -23,9 +23,18 @@ from src.historic_returns import (
 from src.metrics import (
     beginning_of_year_withdrawal_rate,
     classify_outcome,
+    classify_path_outcomes,
     compute_success_mask,
+    compute_survival_curves,
     cumulative_inflation,
+    format_depletion_label,
+    format_shortfall_label,
+    min_real_net_worth,
+    min_real_spending_pct,
     real_final_net_worth,
+    summarize_failure_timing,
+    worst_path_order,
+    years_in_shortfall,
 )
 from src.simulation_engine import (
     SimConfig,
@@ -626,6 +635,64 @@ def render_results(history, config, num_runs, title, inflation_matrix, success_p
     pct_years_below_watermark = (avg_years_below_watermark / config.duration_years) * 100.0
     col_r1_2.metric("Avg Years Below Start NW", f"{avg_years_below_watermark:.1f} ({pct_years_below_watermark:.1f}%)", help="Average number of years per simulation where the portfolio drops below the inflation-adjusted starting net worth. If the Dynamic Expense Floor feature is enabled, this is exactly equal to the number of times the expenses are reduced.")
 
+    # Row 1b: Failure Decomposition (Depletion Rate & Age)
+    failure_stats = summarize_failure_timing(history, inflation_matrix, success_pct, config.start_age)
+    min_real_exp_pct = min_real_spending_pct(history, inflation_matrix, config.annual_base_expenses)
+    col_r1b_1, col_r1b_2 = st.columns(2)
+    col_r1b_1.metric(
+        "Depletion Rate (NW ≤ 0)",
+        f"{failure_stats['depletion_rate_pct']:.1f}%",
+        help=(
+            "Decomposes non-successful runs by severity:\n"
+            f"- Total Net Worth Depletion (NW ≤ 0): {failure_stats['depletion_rate_pct']:.1f}% (portfolio runs completely out of money)\n"
+            f"- Pre-AHV Liquid Depletion (Liquid ≤ 0 before Age 65): {failure_stats['pre_65_depletion_rate_pct']:.1f}% (accessible liquid wealth exhausted while Pillar 2/3a are still locked)\n"
+            f"- Target Shortfall (0 < Final Real NW ≤ {success_pct:.1f}%): {failure_stats['shortfall_rate_pct']:.1f}% (survives full {config.duration_years}y horizon without going broke, but finishes below target ending wealth)"
+        ),
+    )
+    if failure_stats['earliest_depletion_age'] is not None:
+        depletion_age_val = f"Age {int(failure_stats['earliest_depletion_age'])} / {failure_stats['median_depletion_age']:.0f}"
+        depletion_age_help = (
+            f"Among runs that hit Net Worth ≤ 0 ({failure_stats['depletion_rate_pct']:.1f}% of runs): "
+            f"Earliest depletion occurs at Age {int(failure_stats['earliest_depletion_age'])} (Year {failure_stats['earliest_depletion_year']}), "
+            f"and Median depletion occurs at Age {failure_stats['median_depletion_age']:.1f} (Year {failure_stats['median_depletion_year']:.1f})."
+        )
+    else:
+        depletion_age_val = "None (0 broke)"
+        depletion_age_help = (
+            f"No simulation runs depleted total net worth (NW ≤ 0) over the {config.duration_years}-year horizon. "
+            f"Pre-AHV liquid depletion rate (< Age 65): {failure_stats['pre_65_depletion_rate_pct']:.1f}%."
+        )
+    col_r1b_2.metric("Depletion Age (Min / Med)", depletion_age_val, help=depletion_age_help)
+
+    # Row 1c: Target Shortfall (Rate & Age)
+    col_r1c_1, col_r1c_2 = st.columns(2)
+    col_r1c_1.metric(
+        "Shortfall Rate (Real NW ≤ Target)",
+        f"{failure_stats['shortfall_occurrence_rate_pct']:.1f}%",
+        help=(
+            f"Share of runs where real net worth dropped to or below the {success_pct:g}% success criterion (% of inflation-adjusted starting NW) "
+            f"at any point during the {config.duration_years}-year retirement horizon.\n\n"
+            f"- Target Shortfall Occurrence: {failure_stats['shortfall_occurrence_rate_pct']:.1f}% (breached target at least once)\n"
+            f"- Final Target Shortfall: {failure_stats['shortfall_rate_pct']:.1f}% (ended horizon below target without total ruin)\n"
+            f"- Total Depletion (NW ≤ 0): {failure_stats['depletion_rate_pct']:.1f}% (exhausted all wealth)"
+        ),
+    )
+    if failure_stats['earliest_shortfall_age'] is not None:
+        shortfall_age_val = f"Age {int(failure_stats['earliest_shortfall_age'])} / {failure_stats['median_shortfall_age']:.0f}"
+        shortfall_age_help = (
+            f"Among runs where real net worth dropped to or below the {success_pct:g}% success criterion "
+            f"({failure_stats['shortfall_occurrence_rate_pct']:.1f}% of runs): "
+            f"First breached at earliest Age {int(failure_stats['earliest_shortfall_age'])} (Year {failure_stats['earliest_shortfall_year']}), "
+            f"with median shortfall at Age {failure_stats['median_shortfall_age']:.1f} (Year {failure_stats['median_shortfall_year']:.1f})."
+        )
+    else:
+        shortfall_age_val = "None (100% kept)"
+        shortfall_age_help = (
+            f"Real net worth stayed strictly above {success_pct:g}% of inflation-adjusted starting wealth "
+            f"across all {config.duration_years} simulation years for every run."
+        )
+    col_r1c_2.metric("Shortfall Age (Min / Med)", shortfall_age_val, help=shortfall_age_help)
+
     total_outflows_per_run = np.sum(history['expenses_paid'] + history['taxes_paid'], axis=0)
     median_total_withdrawals = np.median(total_outflows_per_run)
 
@@ -753,6 +820,61 @@ def render_results(history, config, num_runs, title, inflation_matrix, success_p
     st.subheader("Net Worth Trajectory", help="This chart displays the value of your assets over time.")
     st.plotly_chart(fig, width='stretch')
 
+    # Portfolio Survival by Age Chart (Kaplan-Meier style survival curve)
+    survival_curves = compute_survival_curves(history, inflation_matrix, success_pct)
+    fig_surv = go.Figure()
+    fig_surv.add_trace(go.Scatter(
+        x=years,
+        y=survival_curves["solvent_pct"],
+        mode='lines',
+        name='Solvent (NW > 0)',
+        line=dict(color='forestgreen', width=3),
+        hovertemplate="<b>Solvent (NW > 0)</b><br>Age: %{x}<br>Survival: %{y:.1f}%<extra></extra>",
+    ))
+    fig_surv.add_trace(go.Scatter(
+        x=years,
+        y=survival_curves["liquid_solvent_pct"],
+        mode='lines',
+        name='Liquid Solvent (Liquid > 0)',
+        line=dict(color='darkorange', width=2, dash='dot'),
+        hovertemplate="<b>Liquid Solvent (Liquid > 0)</b><br>Age: %{x}<br>Survival: %{y:.1f}%<extra></extra>",
+    ))
+    fig_surv.add_trace(go.Scatter(
+        x=years,
+        y=survival_curves["above_target_pct"],
+        mode='lines',
+        name=f'Above Target ({success_pct:.0f}% Start NW)',
+        line=dict(color='royalblue', width=2.5, dash='dash'),
+        hovertemplate=f"<b>Above Target ({success_pct:.0f}% Start NW)</b><br>Age: %{{x}}<br>Share: %{{y:.1f}}%<extra></extra>",
+    ))
+    if config.start_age < 65 < config.start_age + config.duration_years:
+        fig_surv.add_vline(
+            x=65,
+            line_width=1.5,
+            line_dash="dash",
+            line_color="gray",
+            annotation_text="Age 65 (AHV + P2)",
+            annotation_position="bottom left",
+        )
+    fig_surv.update_layout(
+        xaxis_title="Age",
+        yaxis_title="Share of Runs (%)",
+        yaxis=dict(tickformat=".0f", range=[0, 102]),
+        hovermode="x unified",
+        legend=dict(orientation="h", yanchor="top", y=-0.22, xanchor="center", x=0.5),
+        margin=dict(t=15, b=65, l=10, r=10),
+    )
+    st.subheader(
+        "Portfolio Survival by Age",
+        help=(
+            "Shows when portfolio failures occur over retirement rather than only at the final year:\n"
+            "- Solvent (NW > 0): % of paths that have never run out of total net worth up to each age.\n"
+            "- Liquid Solvent (Liquid > 0): % of paths that have never exhausted accessible liquid wealth (captures Pre-AHV bridge insolvency before Age 65 while Pillar 2/3a are locked).\n"
+            "- Above Target: % of paths whose real net worth exceeds your target ending wealth criterion at each age."
+        ),
+    )
+    st.plotly_chart(fig_surv, width='stretch')
+
     # Income Breakdown Chart
     median_divs = np.median(history['income_dividends'], axis=1)
     median_ahv = np.median(history['income_ahv'], axis=1)
@@ -870,16 +992,43 @@ def render_results(history, config, num_runs, title, inflation_matrix, success_p
     analysis_name = "Cohort Analysis" if is_historic_backtest else "Run Analysis"
     id_col_name = "Cohort" if is_historic_backtest else "Run"
 
-    st.subheader(analysis_name, help="Best and worst paths based on the final net worth.")
+    worst_order_help = (
+        "Worst paths are ranked by outcome severity (shown in the **Outcome** column), most severe group first:\n"
+        "1. **Depleted** (net worth reached ≤ 0): earliest Depletion Age first.\n"
+        f"2. **Failed** (survived, but Final NW (Real) ≤ {success_pct:g}% of starting NW): lowest Final NW (Real) first.\n"
+        f"3. **Recovered** (dropped to ≤ {success_pct:g}% during retirement but finished above it): most Yrs in Shortfall first.\n"
+        "4. **Never breached**: lowest Final NW (Real) first.\n"
+        "Remaining ties are broken by lowest Final NW (Real)."
+    )
+    st.subheader(
+        analysis_name,
+        help=(
+            "Best paths are sorted by Final NW (Real), highest first.\n\n"
+            + worst_order_help
+            + "\n\n"
+            f"- **{id_col_name}**: {'Historical retirement cohort calendar years' if is_historic_backtest else 'Simulation run identifier'}.\n"
+            f"- **Outcome**: Severity group of the path relative to the {success_pct:g}% success criterion (Depleted / Failed / Recovered / Never breached).\n"
+            "- **Depletion Age**: Age and simulation year when total net worth first depleted to ≤ 0 CHF ('Age X (Yr Y)'), 'Liq Age X (Yr Y)' if accessible liquid wealth was exhausted before Age 65 while pensions were locked, or 'Survived'.\n"
+            f"- **Yrs in Shortfall**: Number of years real net worth was at or below the {success_pct:g}% success criterion.\n"
+            f"- **Shortfall Age**: Age and simulation year when real net worth first dropped to or below the {success_pct:g}% success criterion ('Age X (Yr Y)'), even if the path later recovered, or 'Never' if the criterion was maintained throughout retirement.\n"
+            "- **Final NW (Real)**: Ending net worth in today's purchasing power (deflated by this path's realized cumulative Swiss CPI inflation).\n"
+            "- **Final NW (Nom)**: Ending net worth in future nominal Swiss Francs (unadjusted for inflation).\n"
+            "- **Min NW (Real)**: Lowest real net worth (today's purchasing power) reached at any year-end during retirement.\n"
+            "- **Yrs Below**: Total years spent below the inflation-adjusted starting net worth watermark."
+        ),
+    )
 
     final_nw = net_worth_history[-1, :]
-    min_nw = np.min(net_worth_history, axis=0)
+    min_nw_real = min_real_net_worth(net_worth_history, inflation_matrix)
     years_below = np.sum(history['below_watermark'], axis=0)
+    yrs_in_shortfall = years_in_shortfall(net_worth_history, initial_nw, inflation_matrix, success_pct)
+    outcomes = classify_path_outcomes(history, inflation_matrix, success_pct)
+    depletion_years = failure_stats["depletion_years"]
+    liquid_depletion_years = failure_stats["liquid_depletion_years"]
+    shortfall_years = failure_stats["shortfall_years"]
 
-    # Find best and worst indices efficiently
-    sorted_indices = np.argsort(final_nw)
-    worst_indices = sorted_indices[:10]
-    best_indices = sorted_indices[::-1][:10]
+    worst_indices = worst_path_order(history, inflation_matrix, success_pct)[:10]
+    best_indices = np.argsort(final_nw_inf_adj)[::-1][:10]
 
     def build_df(indices):
         data = []
@@ -892,28 +1041,103 @@ def render_results(history, config, num_runs, title, inflation_matrix, success_p
                 run_id = f"Run {idx + 1}"
             data.append({
                 id_col_name: run_id,
+                "Outcome": str(outcomes[idx]),
+                "Depletion Age": format_depletion_label(idx, depletion_years, liquid_depletion_years, config.start_age),
+                "Yrs in Shortfall": int(yrs_in_shortfall[idx]),
+                "Shortfall Age": format_shortfall_label(idx, shortfall_years, config.start_age),
                 "Final NW (Real)": final_nw_inf_adj[idx],
                 "Final NW (Nom)": final_nw[idx],
-                "Min NW (Nom)": min_nw[idx],
+                "Min NW (Real)": min_nw_real[idx],
                 "Yrs Below": int(years_below[idx])
             })
         return pd.DataFrame(data)
 
-    st.markdown(f"##### Top 10 Best {id_col_name}s" if is_historic_backtest else "##### Top 10 Best Runs")
-    df_best = build_df(best_indices)
-    st.dataframe(df_best.style.format({
+    table_fmt = {
         "Final NW (Real)": "{:,.0f}",
         "Final NW (Nom)": "{:,.0f}",
-        "Min NW (Nom)": "{:,.0f}"
-    }), hide_index=True, width='stretch')
+        "Min NW (Real)": "{:,.0f}",
+    }
 
-    st.markdown(f"##### Top 10 Worst {id_col_name}s" if is_historic_backtest else "##### Top 10 Worst Runs")
+    column_config = {
+        id_col_name: st.column_config.TextColumn(
+            id_col_name,
+            help=(
+                "Calendar years spanned by this contiguous historical retirement cohort (e.g. 1928 - 1977)."
+                if is_historic_backtest
+                else "Simulation run identifier for this stochastic future path."
+            ),
+        ),
+        "Outcome": st.column_config.TextColumn(
+            "Outcome",
+            help=(
+                "Severity group used to rank the worst paths: "
+                "'Depleted' = net worth reached ≤ 0; "
+                f"'Failed' = survived but finished at or below the {success_pct:g}% success criterion; "
+                f"'Recovered' = dropped to or below the criterion during retirement but finished above it; "
+                "'Never breached' = stayed above the criterion every year."
+            ),
+        ),
+        "Depletion Age": st.column_config.TextColumn(
+            "Depletion Age",
+            help=(
+                "Retirement age and simulation year when total net worth first reached ≤ 0 CHF ('Age X (Yr Y)'). "
+                "'Liq Age X (Yr Y)' indicates accessible liquid wealth was exhausted before Age 65 while Pillar 2/3a pensions were locked. "
+                "'Survived' means portfolio remained solvent throughout the entire retirement horizon."
+            ),
+        ),
+        "Shortfall Age": st.column_config.TextColumn(
+            "Shortfall Age",
+            help=(
+                f"Retirement age and simulation year when real net worth first dropped to or below the success "
+                f"criterion ({success_pct:g}% of inflation-adjusted starting net worth), shown as 'Age X (Yr Y)'. "
+                f"Counts any breach, even if the path later recovered. 'Never' if net worth stayed strictly above "
+                f"the criterion throughout the entire retirement horizon."
+            ),
+        ),
+        "Yrs in Shortfall": st.column_config.NumberColumn(
+            "Yrs in Shortfall",
+            format="%d",
+            help=f"Number of years (not necessarily consecutive) this path's real net worth was at or below the {success_pct:g}% success criterion.",
+        ),
+        "Final NW (Real)": st.column_config.NumberColumn(
+            "Final NW (Real)",
+            format="%,.0f CHF",
+            help="Ending net worth in today's purchasing power (deflated by this path's realized cumulative Swiss CPI inflation).",
+        ),
+        "Final NW (Nom)": st.column_config.NumberColumn(
+            "Final NW (Nom)",
+            format="%,.0f CHF",
+            help="Ending net worth in future nominal Swiss Francs (unadjusted for inflation). Bankrupt paths include accrued 5% annual debt penalty interest.",
+        ),
+        "Min NW (Real)": st.column_config.NumberColumn(
+            "Min NW (Real)",
+            format="%,.0f CHF",
+            help="Lowest real net worth (today's purchasing power) reached at any year-end during the retirement horizon, i.e. the depth of the worst trough.",
+        ),
+        "Yrs Below": st.column_config.NumberColumn(
+            "Yrs Below",
+            format="%d",
+            help="Total number of years this path spent below the inflation-adjusted starting net worth watermark (triggering defensive spending cuts or smart cash buffer rules).",
+        ),
+    }
+
+    st.markdown(f"##### Top 10 Best {id_col_name}s")
+    st.caption("Sorted by **Final NW (Real)**, highest first.")
+    df_best = build_df(best_indices)
+    st.dataframe(df_best.style.format(table_fmt), column_config=column_config, hide_index=True, width='stretch')
+
+    st.markdown(f"##### Top 10 Worst {id_col_name}s")
+    st.caption(
+        "Sorted by **Outcome** severity, then within each group: "
+        "**Depleted** → earliest Depletion Age · "
+        "**Failed** → lowest Final NW (Real) · "
+        "**Recovered** → most Yrs in Shortfall · "
+        "**Never breached** → lowest Final NW (Real). "
+        "Remaining ties: lowest Final NW (Real).",
+        help=worst_order_help,
+    )
     df_worst = build_df(worst_indices)
-    st.dataframe(df_worst.style.format({
-        "Final NW (Real)": "{:,.0f}",
-        "Final NW (Nom)": "{:,.0f}",
-        "Min NW (Nom)": "{:,.0f}"
-    }), hide_index=True, width='stretch')
+    st.dataframe(df_worst.style.format(table_fmt), column_config=column_config, hide_index=True, width='stretch')
 
 
 hist_eff_caption = _build_hist_eff_caption(history_hist, config_hist, hist_inflation_matrix, success_pct)

@@ -28,18 +28,46 @@ def test_app_runs_with_defaults():
     tldr = [m.value for m in at.markdown if m.value.startswith("### ")]
     assert len(tldr) == 3 and all(any(k in t for k in ("BROKE", "RICH", "DEAD")) for t in tldr)
     assert sum(1 for m in at.metric if m.label == "Probability of Success") == 3
-    # Historic Backtesting column (column 0): Net Worth chart has Worst=Min/Best=Max,
-    # while Withdrawal Rate chart (chart 3 in column 0) has Best=Min/Worst=Max.
+    assert sum(1 for m in at.metric if m.label == "Depletion Rate (NW ≤ 0)") == 3
+    assert sum(1 for m in at.metric if m.label == "Depletion Age (Min / Med)") == 3
+    assert sum(1 for m in at.metric if m.label == "Shortfall Rate (Real NW ≤ Target)") == 3
+    assert sum(1 for m in at.metric if m.label == "Shortfall Age (Min / Med)") == 3
+    # Historic Backtesting column (column 0):
+    # chart 0 = Net Worth Trajectory, chart 1 = Portfolio Survival by Age,
+    # chart 2 = Income vs Required Cash, chart 3 = Annual Withdrawal Breakdown,
+    # chart 4 = Withdrawal Rate, chart 5 = Asset Allocation Development.
     import json
     hist_charts = [json.loads(c.proto.spec) for c in at.columns[0].get("plotly_chart")]
+    assert len(hist_charts) == 6
     nw_names = [t["name"] for t in hist_charts[0]["data"] if t.get("showlegend") is not False]
-    wr_traces = [t for t in hist_charts[3]["data"]]
+    surv_names = [t["name"] for t in hist_charts[1]["data"]]
+    wr_traces = [t for t in hist_charts[4]["data"]]
     assert nw_names[:5] == ["Worst Cohort (Min)", "25th Pct", "50th Pct", "75th Pct", "Best Cohort (Max)"]
+    assert surv_names == ["Solvent (NW > 0)", "Liquid Solvent (Liquid > 0)", "Above Target (50% Start NW)"]
     assert [t["name"] for t in wr_traces] == ["Best Cohort (Min)", "25th Pct", "50th Pct", "75th Pct", "Worst Cohort (Max)"]
     assert wr_traces[0]["line"]["color"] == "purple"
     assert wr_traces[-1]["line"]["color"] == "crimson"
-    alloc_names = [t["name"] for t in hist_charts[4]["data"]]
+    alloc_names = [t["name"] for t in hist_charts[5]["data"]]
     assert alloc_names == ["CHF Cash", "US Stocks", "Non-US Stocks", "Gold", "Bitcoin", "Pillar 2 & 3a"]
+    for df in at.dataframe:
+        assert "Depletion Age" in df.value.columns
+        assert "Shortfall Age" in df.value.columns
+        assert "Min Real Exp" not in df.value.columns
+        assert bool(df.proto.columns)
+    # Tables alternate Best / Worst per column. Best: Final NW (Real) descending.
+    # Worst: Outcome severity groups in order, each group sorted by its own key.
+    severity = ["Depleted", "Failed", "Recovered", "Never breached"]
+    for i, df in enumerate(at.dataframe):
+        v = df.value
+        assert {"Outcome", "Yrs in Shortfall", "Min NW (Real)"} <= set(v.columns)
+        assert "Min NW (Nom)" not in v.columns
+        if i % 2 == 0:
+            assert v["Final NW (Real)"].is_monotonic_decreasing
+            continue
+        groups = [severity.index(o) for o in v["Outcome"]]
+        assert groups == sorted(groups)
+        recovered = v[v["Outcome"] == "Recovered"]
+        assert recovered["Yrs in Shortfall"].is_monotonic_decreasing
 
 
 
