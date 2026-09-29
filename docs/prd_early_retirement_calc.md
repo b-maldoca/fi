@@ -106,10 +106,11 @@ The application must allow the user to input the following parameters:
 The core simulator executes monthly steps with annual tax and spending evaluations:
 
 #### A. Income Tax (Zurich & Federal)
-*   Calculate combined taxable income:
+*   Calculate combined taxable income (`max(0, dividends + interest + annual_ahv_received - ahv_contrib)`):
     *   Dividends from taxable equity investments (`(US Stocks + Non-US Stocks) * dividend_yield`).
     *   Interest from CHF Cash holdings (`CHF Cash * max(0.0, realized_annual_cash_return)`, where `realized_annual_cash_return` is compounded from the actual 12 monthly returns of the CHF Cash sleeve in `return_matrix[:, (m - 11):(m + 1), 2]`, and `config.cash_rate` is used for Year 0 tax pre-estimates). This eliminates phantom taxable interest during `0%` ZIRP/NIRP years.
     *   **Pillar 1 (AHV) Pension payments** received from age 65 onward (`12 * monthly_ahv_pension * inflation_factor`, fully taxable).
+    *   **Less mandatory non-worker AHV/IV/EO contributions (`ahv_contrib`)** paid before age 65, which are fully deductible from taxable income under **Art. 33 Abs. 1 lit. d DBG** (federal) and **§ 31 Abs. 1 lit. d StG ZH** (Canton Zurich).
     *   *(Deferred to Phase 2: Pre-retirement Base + Bonus + Vesting GSUs and working-phase Pillar 2/3a contribution deductions).*
 *   Apply the progressive Federal Income Tax rate (Single tariff), capped at the constitutional maximum of **11.5% of taxable income** (Art. 128 BV): `min(tariff(x), 0.115 * x)`.
 *   Apply the progressive Zurich Cantonal and Municipal Income Tax rates (base rate multiplied by `cantonal_multiplier` (95% for 2026) + `municipal_multiplier` (e.g., 119% for Zurich City)). These Zurich City values (`ZURICH_CANTONAL_MULTIPLIER = 0.95`, `ZURICH_CITY_MUNICIPAL_MULTIPLIER = 1.19`) are the shared defaults of the tax functions, `SimConfig`, and the UI. *Note: all base tariffs (federal Art. 36 DBG, Zurich § 35 income and § 47 wealth) are the **2026** tables, reverse-engineered from and unit-tested against the official ESTV tax calculator for Zurich City (income, wealth and capital-withdrawal taxes match to within CHF 1–2; the calculator's CHF 100/1,000 rounding, the CHF 25 federal minimum and the CHF 24 Zurich personal tax are deliberately not modelled).*
@@ -129,7 +130,7 @@ The core simulator executes monthly steps with annual tax and spending evaluatio
 #### C. Swiss Pension System (The 3 Pillars)
 *   **Pillar 1 (AHV)**:
     *   *(Deferred to Phase 2: Mandatory employee contributions during the pre-retirement working phase).*
-    *   **Crucial (Phase 1)**: Calculate mandatory AHV contributions for *non-working* individuals post-retirement up to age 65 (`current_age < 65`). Based on `determining_wealth = taxable_wealth + 20 * imputed_pension_income` (min 530 CHF/year, max 26,500 CHF/year using official 2025 brackets).
+    *   **Crucial (Phase 1)**: Calculate mandatory AHV contributions for *non-working* individuals post-retirement up to age 65 (`current_age < 65`). Based on `determining_wealth = taxable_wealth + 20 * imputed_pension_income` (min 530 CHF/year, max 26,500 CHF/year using official 2025/2026 brackets), and deducted from taxable income (Art. 33 Abs. 1 lit. d DBG / § 31 Abs. 1 lit. d StG ZH).
     *   Model monthly payout starting at official retirement age (65). The user's input representing today's monthly pension value is adjusted for cumulative CPI inflation from Year 0 (including all years before age 65), added directly to CHF Cash each month, and taxed annually as income.
 *   **Pillar 2**:
     *   Model monthly growth of the **Freizügigkeitskonto** (assumed to be 100% invested in equities proportional to target US/Non-US allocation).
@@ -196,7 +197,7 @@ The tool presents results side-by-side across all three simulation modes (**Hist
 | :--- | :--- | :--- |
 | **No Capital Gains Tax** | Capital gains on private assets (e.g., selling stocks) are 100% tax-free. | Only dividends/interest add to taxable income. |
 | **Wealth Tax** | Canton Zurich taxes net wealth globally. | High net worth individuals pay significant wealth tax, which acts as a drag on portfolio growth during decumulation. |
-| **AHV for Non-Workers** | Early retirees must pay AHV contributions based on their wealth and pension income. | Can cost up to ~26,500 CHF/year per person if assets are high. |
+| **AHV for Non-Workers** | Early retirees (`< 65`) must pay AHV/IV/EO contributions based on their wealth and 20× pension income, which are deductible from taxable income (Art. 33 Abs. 1 lit. d DBG / § 31 Abs. 1 lit. d StG ZH). | Costs 530 to 26,500 CHF/year per person, partially offset by reducing taxable dividend/interest income. |
 | **Pillar 2 Buy-ins** | Voluntary contributions to BVG are tax-deductible. | Excellent tax optimization strategy in high-earning years (Phase 2). |
 | **Capital Withdrawal Tax** | Pillar 2 & 3a withdrawals are taxed separately from normal income: federal at 1/5 of the tariff (Art. 38 DBG); Zurich at the rate for a notional pension of 1/20 of the lump sum, minimum 2% simple tax (§ 37 StG ZH). | ≈ 4.8% (CHF 100k) to ≈ 10.9% (CHF 1M) all-in in Zurich City; staggering withdrawals over multiple years (different accounts) lowers the rate. |
 | **Bracket Indexation** | Art. 39 DBG and § 48 StG ZH require federal and Zurich income/wealth bracket edges to be indexed to the CPI. | Over a 50-year horizon this is material: freezing brackets instead overstates median lifetime real taxes by roughly a third. Modelled at 100% by default, adjustable. |

@@ -187,20 +187,21 @@ def estimate_year_0_taxes(config: SimConfig) -> float:
     """Estimates Year 0 total taxes (income, wealth, AHV non-worker) for initial Cash Tent and TWR calculation."""
     init_wealth = _get_year_0_liquid_wealth(config)
 
+    taxable_wealth = max(0.0, init_wealth - config.annual_base_expenses)
+    wealth_tax = float(calculate_wealth_tax(taxable_wealth, config.cantonal_multiplier, config.municipal_multiplier))
+    ahv_contrib = float(calculate_ahv_non_worker(taxable_wealth)) if config.start_age < 65 else 0.0
+
     equities = max(0.0, init_wealth * (config.alloc_us_stocks + config.alloc_non_us_stocks))
     dividends = equities * config.dividend_yield
     cash = max(0.0, init_wealth * config.alloc_chf_cash)
     interest = cash * max(0.0, config.cash_rate)
     annual_ahv = 12 * config.monthly_ahv_pension if config.start_age >= 65 else 0.0
-    
-    taxable_income = dividends + interest + annual_ahv
+
+    # Mandatory AHV/IV/EO non-worker contributions are deductible from taxable income
+    # (Art. 33 Abs. 1 lit. d DBG / § 31 Abs. 1 lit. d StG ZH).
+    taxable_income = max(0.0, dividends + interest + annual_ahv - ahv_contrib)
     income_tax = float(calculate_income_tax(taxable_income, config.cantonal_multiplier, config.municipal_multiplier))
-    
-    taxable_wealth = max(0.0, init_wealth - config.annual_base_expenses)
-    wealth_tax = float(calculate_wealth_tax(taxable_wealth, config.cantonal_multiplier, config.municipal_multiplier))
-    
-    ahv_contrib = float(calculate_ahv_non_worker(taxable_wealth)) if config.start_age < 65 else 0.0
-    
+
     return income_tax + wealth_tax + ahv_contrib
 
 
@@ -575,10 +576,6 @@ def run_simulation(config: SimConfig, return_matrix: np.ndarray, inflation_matri
             realized_cash_ret = np.prod(1.0 + return_matrix[:, (m - 11) : (m + 1), 2], axis=1) - 1.0
             interest = cash * np.maximum(0.0, realized_cash_ret)
             
-            taxable_income = dividends + interest + annual_ahv_received
-            
-            income_tax = _indexed_tax(calculate_income_tax, taxable_income, bracket_factors, config.cantonal_multiplier, config.municipal_multiplier)
-            
             total_liquid_end = np.sum(liquid_assets, axis=1)
             # Wealth Tax and AHV non-worker tax are assessed on wealth *after* deducting living expenses
             taxable_wealth = np.maximum(0, total_liquid_end - current_expenses)
@@ -588,6 +585,11 @@ def run_simulation(config: SimConfig, return_matrix: np.ndarray, inflation_matri
             ahv_mask = current_age < 65
             ahv_contrib = np.zeros(num_runs)
             ahv_contrib[ahv_mask] = _indexed_tax(calculate_ahv_non_worker, taxable_wealth[ahv_mask], bracket_factors[ahv_mask])
+            
+            # Mandatory AHV/IV/EO non-worker contributions are deductible from taxable income
+            # (Art. 33 Abs. 1 lit. d DBG / § 31 Abs. 1 lit. d StG ZH).
+            taxable_income = np.maximum(0.0, dividends + interest + annual_ahv_received - ahv_contrib)
+            income_tax = _indexed_tax(calculate_income_tax, taxable_income, bracket_factors, config.cantonal_multiplier, config.municipal_multiplier)
             
             # Capital withdrawal tax was already deducted at source in month 0
             total_taxes = income_tax + wealth_tax + ahv_contrib

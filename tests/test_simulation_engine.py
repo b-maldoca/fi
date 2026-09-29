@@ -2001,22 +2001,24 @@ def test_bracket_indexation_matches_homogeneity_identity():
     equities = assets[1] + taxes * (assets[1] / np.sum(assets)) + expenses * (assets[1] / np.sum(assets))
 
     # Since return_matrix has 0% cash return, realized cash interest is 0.0 (no phantom 1% tax drag).
-    taxable_income = equities * config.dividend_yield
     taxable_wealth = max(0.0, total_liquid_end - expenses)
+    ahv_contrib = f * calculate_ahv_non_worker(taxable_wealth / f)
+    taxable_income = max(0.0, equities * config.dividend_yield - ahv_contrib)
 
     expected = (
         f * calculate_income_tax(taxable_income / f, config.cantonal_multiplier, config.municipal_multiplier)
         + f * calculate_wealth_tax(taxable_wealth / f, config.cantonal_multiplier, config.municipal_multiplier)
-        + f * calculate_ahv_non_worker(taxable_wealth / f)
+        + ahv_contrib
     )
 
     assert np.isclose(taxes, expected, rtol=1e-6)
 
     # And the identity must differ from the frozen-bracket tariff under real inflation.
+    unindexed_ahv = calculate_ahv_non_worker(taxable_wealth)
     unindexed = (
-        calculate_income_tax(taxable_income, config.cantonal_multiplier, config.municipal_multiplier)
+        calculate_income_tax(max(0.0, equities * config.dividend_yield - unindexed_ahv), config.cantonal_multiplier, config.municipal_multiplier)
         + calculate_wealth_tax(taxable_wealth, config.cantonal_multiplier, config.municipal_multiplier)
-        + calculate_ahv_non_worker(taxable_wealth)
+        + unindexed_ahv
     )
     assert unindexed > expected
 
@@ -2487,4 +2489,58 @@ def test_watermark_without_pensions_is_unchanged():
     assert h["initial_net_worth_after_tax"] == h["initial_net_worth"]
     # Watermark is checked before the year's expenses: year 0 is exactly at start, year 1 below.
     assert h["below_watermark"][:, 0].tolist() == [False, True]
+
+
+def test_ahv_non_worker_contribution_is_deducted_from_taxable_income():
+    """Mandatory AHV/IV/EO non-worker contributions are deductible from taxable income
+    under Art. 33 Abs. 1 lit. d DBG and § 31 Abs. 1 lit. d StG ZH."""
+    import pytest
+    from src.simulation_engine import estimate_year_0_taxes
+    from src.tax_engine import calculate_ahv_non_worker, calculate_income_tax, calculate_wealth_tax
+
+    cfg = SimConfig(
+        num_runs=1,
+        duration_years=1,
+        inflation_mean=0.0,
+        inflation_std=0.0,
+        start_age=45,
+        dividend_yield=0.04,
+        initial_liquid_wealth=3_000_000.0,
+        alloc_us_stocks=1.0,
+        annual_base_expenses=80_000.0,
+    )
+    h = run_simulation(cfg, np.zeros((1, 12, 5)), np.zeros((1, 1)))
+
+    taxable_wealth = 3_000_000.0 - 80_000.0
+    ahv_contrib = float(calculate_ahv_non_worker(taxable_wealth))
+    wealth_tax = float(calculate_wealth_tax(taxable_wealth, cfg.cantonal_multiplier, cfg.municipal_multiplier))
+    gross_income = 3_000_000.0 * 0.04
+    net_taxable_income = max(0.0, gross_income - ahv_contrib)
+    expected_income_tax = float(
+        calculate_income_tax(net_taxable_income, cfg.cantonal_multiplier, cfg.municipal_multiplier)
+    )
+    unreduced_income_tax = float(
+        calculate_income_tax(gross_income, cfg.cantonal_multiplier, cfg.municipal_multiplier)
+    )
+
+    assert expected_income_tax < unreduced_income_tax
+    assert h["taxes_paid"][0, 0] == pytest.approx(expected_income_tax + wealth_tax + ahv_contrib)
+    assert estimate_year_0_taxes(cfg) == pytest.approx(expected_income_tax + wealth_tax + ahv_contrib)
+
+    # When AHV contribution exceeds dividends + interest, taxable income is clamped at 0.0.
+    cfg_low_div = SimConfig(
+        num_runs=1,
+        duration_years=1,
+        inflation_mean=0.0,
+        inflation_std=0.0,
+        start_age=45,
+        dividend_yield=0.001,  # 3,000 CHF dividends < ~7,314 CHF AHV contribution
+        initial_liquid_wealth=3_000_000.0,
+        alloc_us_stocks=1.0,
+        annual_base_expenses=80_000.0,
+    )
+    h_low = run_simulation(cfg_low_div, np.zeros((1, 12, 5)), np.zeros((1, 1)))
+    assert h_low["taxes_paid"][0, 0] == pytest.approx(wealth_tax + ahv_contrib)
+    assert estimate_year_0_taxes(cfg_low_div) == pytest.approx(wealth_tax + ahv_contrib)
+
 
