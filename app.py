@@ -890,7 +890,7 @@ def render_results(history, config, num_runs, title, inflation_matrix, success_p
     fig_income.add_trace(go.Bar(x=years, y=median_ahv, name='AHV Pension', marker_color='orange'))
     fig_income.add_trace(go.Bar(x=years, y=capital_sold, name='Capital Sold', marker_color='red'))
 
-    fig_income.add_trace(go.Scatter(x=years, y=inf_adj_start_withdrawal_trajectory, mode='lines', name='Inflation-Adj Start', line=dict(color='black', width=2, dash='dash')))
+    fig_income.add_trace(go.Scatter(x=years, y=inf_adj_start_withdrawal_trajectory, mode='lines', name='Inflation-Adj Start', line=dict(color='forestgreen', width=2.5)))
 
     fig_income.update_layout(
         xaxis_title="Age",
@@ -936,7 +936,7 @@ def render_results(history, config, num_runs, title, inflation_matrix, success_p
             x=years,
             y=inf_adj_start_withdrawal_trajectory,
             mode='lines',
-            line=dict(color='black', width=2, dash='dash'),
+            line=dict(color='forestgreen', width=2.5),
         ),
     ])
     fig_withdrawal.update_layout(
