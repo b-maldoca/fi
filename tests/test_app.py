@@ -41,9 +41,30 @@ def test_app_runs_with_defaults():
     assert len(hist_charts) == 6
     nw_names = [t["name"] for t in hist_charts[0]["data"] if t.get("showlegend") is not False]
     surv_names = [t["name"] for t in hist_charts[1]["data"]]
+    inc_hist_names = [t["name"] for t in hist_charts[2]["data"]]
+    wb_hist_names = [t["name"] for t in hist_charts[3]["data"]]
+    all_charts = [json.loads(c.proto.spec) for c in at.get("plotly_chart")]
+    assert len(all_charts) == 18
+    wb_boot_names = [t["name"] for t in all_charts[9]["data"]]
+    wb_mc_names = [t["name"] for t in all_charts[15]["data"]]
     wr_traces = [t for t in hist_charts[4]["data"]]
     assert nw_names[:5] == ["Worst Cohort (Min)", "25th Pct", "50th Pct", "75th Pct", "Best Cohort (Max)"]
     assert surv_names == ["Solvent (NW > 0)", "Liquid Solvent (Liquid > 0)", "Above Target (50% Start NW)"]
+    assert inc_hist_names == ["Dividends", "AHV Pension", "Capital Sold", "Inflation-Adj Start"]
+    assert wb_hist_names == [
+        "Living Expenses (50th Pct)",
+        "Taxes Paid (50th Pct)",
+        "Living Expenses (Worst Cohort (Min))",
+        "Taxes Paid (Worst Cohort (Min))",
+        "Inflation-Adj Start",
+    ]
+    assert wb_boot_names == wb_mc_names == [
+        "Living Expenses (50th Pct)",
+        "Taxes Paid (50th Pct)",
+        "Living Expenses (5th Pct)",
+        "Taxes Paid (5th Pct)",
+        "Inflation-Adj Start",
+    ]
     assert [t["name"] for t in wr_traces] == ["Best Cohort (Min)", "25th Pct", "50th Pct", "75th Pct", "Worst Cohort (Max)"]
     assert wr_traces[0]["line"]["color"] == "purple"
     assert wr_traces[-1]["line"]["color"] == "crimson"

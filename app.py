@@ -614,6 +614,8 @@ def render_results(history, config, num_runs, title, inflation_matrix, success_p
     cum_inflation = cumulative_inflation(inflation_matrix)
     median_cum_inflation = np.median(cum_inflation, axis=0)
     inf_adj_start_nw_trajectory = initial_nw * median_cum_inflation
+    initial_withdrawal = config.annual_base_expenses + estimate_year_0_taxes(config)
+    inf_adj_start_withdrawal_trajectory = initial_withdrawal * median_cum_inflation
     st.markdown(f"**Nominal Starting NW:** {initial_nw:,.0f} CHF")
     if hist_eff_caption:
         visibility_style = "visible" if is_historic_backtest else "hidden"
@@ -888,7 +890,7 @@ def render_results(history, config, num_runs, title, inflation_matrix, success_p
     fig_income.add_trace(go.Bar(x=years, y=median_ahv, name='AHV Pension', marker_color='orange'))
     fig_income.add_trace(go.Bar(x=years, y=capital_sold, name='Capital Sold', marker_color='red'))
 
-    fig_income.add_trace(go.Scatter(x=years, y=median_expenses + median_taxes, mode='lines', name='Total Cash Needed', line=dict(color='black', width=2, dash='dash')))
+    fig_income.add_trace(go.Scatter(x=years, y=inf_adj_start_withdrawal_trajectory, mode='lines', name='Inflation-Adj Start', line=dict(color='black', width=2, dash='dash')))
 
     fig_income.update_layout(
         xaxis_title="Age",
@@ -899,13 +901,43 @@ def render_results(history, config, num_runs, title, inflation_matrix, success_p
         legend=dict(orientation="h", yanchor="top", y=-0.22, xanchor="center", x=0.5),
         margin=dict(t=15, b=65, l=10, r=10)
     )
-    st.subheader("Income vs Required Cash", help="This chart displays the median cash flows across all simulated portfolio paths for each year.")
+    st.subheader("Income vs Required Cash", help="This chart displays the median cash flows across all simulated portfolio paths for each year, along with the inflation-adjusted starting withdrawal trajectory.")
     st.plotly_chart(fig_income, width='stretch')
 
-    # Annual Withdrawal Breakdown Chart
+    # Annual Withdrawal Breakdown Chart (50th Pct bars + Worst Cohort / 5th Pct stacked lines + Inflation-Adj Start)
+    bad_pct = 0 if is_historic_backtest else 5
+    bad_label = 'Worst Cohort (Min)' if is_historic_backtest else '5th Pct'
+    bad_expenses = np.percentile(history['expenses_paid'], bad_pct, axis=1)
+    bad_taxes = np.percentile(history['taxes_paid'], bad_pct, axis=1)
+
     fig_withdrawal = go.Figure(data=[
-        go.Bar(name='Living Expenses', x=years, y=median_expenses, marker_color='royalblue'),
-        go.Bar(name='Taxes Paid', x=years, y=median_taxes, marker_color='crimson')
+        go.Bar(name='Living Expenses (50th Pct)', x=years, y=median_expenses, marker_color='royalblue'),
+        go.Bar(name='Taxes Paid (50th Pct)', x=years, y=median_taxes, marker_color='crimson'),
+        go.Scatter(
+            name=f'Living Expenses ({bad_label})',
+            x=years,
+            y=bad_expenses,
+            mode='lines',
+            stackgroup='bad',
+            fill='none',
+            line=dict(color='navy', width=2.5, dash='dash'),
+        ),
+        go.Scatter(
+            name=f'Taxes Paid ({bad_label})',
+            x=years,
+            y=bad_taxes,
+            mode='lines',
+            stackgroup='bad',
+            fill='none',
+            line=dict(color='darkred', width=2.5, dash='dot'),
+        ),
+        go.Scatter(
+            name='Inflation-Adj Start',
+            x=years,
+            y=inf_adj_start_withdrawal_trajectory,
+            mode='lines',
+            line=dict(color='black', width=2, dash='dash'),
+        ),
     ])
     fig_withdrawal.update_layout(
         barmode='stack',
@@ -916,7 +948,14 @@ def render_results(history, config, num_runs, title, inflation_matrix, success_p
         legend=dict(orientation="h", yanchor="top", y=-0.22, xanchor="center", x=0.5),
         margin=dict(t=15, b=65, l=10, r=10)
     )
-    st.subheader("Annual Withdrawal Breakdown", help="This stacked chart displays the median annual withdrawals (living expenses and taxes paid) across all simulated portfolio paths over time.")
+    st.subheader(
+        "Annual Withdrawal Breakdown",
+        help=(
+            "This stacked chart displays the median (50th Pct, bars) and worst/bad-case "
+            f"({bad_label}, stacked lines) annual withdrawals (living expenses and taxes paid) "
+            "across all simulated portfolio paths over time, along with the inflation-adjusted starting withdrawal reference line."
+        ),
+    )
     st.plotly_chart(fig_withdrawal, width='stretch')
 
     # Withdrawal Rate Chart (relative to beginning-of-year portfolio value)
