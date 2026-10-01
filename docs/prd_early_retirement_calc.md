@@ -165,10 +165,11 @@ The application uses a two-stage reproducible data pipeline (`scripts/fetch_sour
 ### 4.3. Outputs & Visualizations
 
 The tool presents results side-by-side across all three simulation modes (**Historic Backtesting**, **Historic Bootstrapping**, **Monte Carlo**):
-*   **TL;DR Status Indicator**: A quick overarching assessment of the median outcome, based on the **median of per-run real final net worth** (each run's nominal final net worth deflated by that run's own cumulative inflation, `src/metrics.py::classify_outcome`). Comparing the nominal median against a multiple of the *median price level* would pair values from different runs and can mislabel outcomes.
+*   **TL;DR Status Indicator**: A quick overarching assessment of the median outcome (with a hover tooltip explaining all four statuses), based on the **median of per-run real final net worth** (each run's nominal final net worth deflated by that run's own cumulative inflation, `src/metrics.py::classify_outcome`). Comparing the nominal median against a multiple of the *median price level* would pair values from different runs and can mislabel outcomes.
     *   **BROKE**: Median real final net worth $\le 0$ (You run out of money).
-    *   **RICH**: Median real final net worth $\ge 3\times$ initial net worth (`RICH_MULTIPLE = 3.0`; real wealth grows massively).
-    *   **DEAD**: Median real final net worth is positive but below $3\times$ the initial net worth (Safe, but real wealth depletes or grows modestly).
+    *   **SHORTFALL**: Median real final net worth is $> 0\text{ CHF}$ (solvent), but $\le$ the configured target ending wealth criterion (`success_pct`% of inflation-adjusted starting net worth).
+    *   **DEAD**: Median real final net worth hits the configured success criterion ($> \text{success\_pct}\%$ of inflation-adjusted starting net worth) but is below $3\times$ the initial net worth.
+    *   **RICH**: Median real final net worth hits the success criterion and is $\ge 3\times$ initial net worth (`RICH_MULTIPLE = 3.0`; real wealth grows massively).
 *   **Net Worth Trajectory Chart**: A chart showing the progression of assets over the simulation horizon.
     *   Plots individual runs (faint "spaghetti" lines for all contiguous cohorts in Historic Backtesting, capped at 100 runs for performant rendering in Bootstrapping and Monte Carlo) to show dispersion.
     *   For **Historic Backtesting**, overlays **Worst Cohort (Min), 25th, 50th (median), 75th, and Best Cohort (Max)** (`[0, 25, 50, 75, 100]`) rather than 5th/95th percentiles that cannot be non-parametrically estimated at $N_{\text{eff}} \approx 2.1\text{–}2.6$. For **Historic Bootstrapping** and **Monte Carlo**, overlays **5th, 25th, 50th (median), 75th, and 95th** percentiles (`[5, 25, 50, 75, 95]`). Both include a dashed **Inflation-Adj Start NW** reference line.

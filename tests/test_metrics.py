@@ -59,10 +59,15 @@ def test_classify_outcome_uses_median_of_real_values():
     # The old logic compared the nominal median (400) with 3x the *median* price level
     # (1.0) and reported RICH, although the median run is only 1x real.
     assert classify_outcome(final, initial, inf) == "DEAD"
-    assert classify_outcome(final * 10, initial, inf) == "RICH"
-    assert classify_outcome(np.array([-1.0, 0.0, 5.0]), initial, np.zeros((3, 1))) == "BROKE"
-    # Boundary: exactly RICH_MULTIPLE x counts as RICH
-    assert classify_outcome(np.full(3, RICH_MULTIPLE * initial), initial, np.zeros((3, 1))) == "RICH"
+    assert classify_outcome(final, initial, inf, success_pct=50.0) == "DEAD"
+    # Median real final NW is 100.0 (100% of initial): <= 100% criterion is SHORTFALL, > 99% is DEAD
+    assert classify_outcome(final, initial, inf, success_pct=100.0) == "SHORTFALL"
+    assert classify_outcome(final, initial, inf, success_pct=150.0) == "SHORTFALL"
+    assert classify_outcome(final, initial, inf, success_pct=99.0) == "DEAD"
+    assert classify_outcome(final * 10, initial, inf, success_pct=50.0) == "RICH"
+    assert classify_outcome(np.array([-1.0, 0.0, 5.0]), initial, np.zeros((3, 1)), success_pct=50.0) == "BROKE"
+    # Boundary: exactly RICH_MULTIPLE x counts as RICH (when above success_pct)
+    assert classify_outcome(np.full(3, RICH_MULTIPLE * initial), initial, np.zeros((3, 1)), success_pct=50.0) == "RICH"
 
 
 def test_beginning_of_year_withdrawal_rate():

@@ -25,8 +25,10 @@ def test_app_runs_with_defaults():
     assert not at.error, [e.value for e in at.error]
     headers = [h.value for h in at.main.header]
     assert headers == ["Historic Backtesting", "Historic Bootstrapping", "Monte Carlo"]
-    tldr = [m.value for m in at.markdown if m.value.startswith("### ")]
-    assert len(tldr) == 3 and all(any(k in t for k in ("BROKE", "RICH", "DEAD")) for t in tldr)
+    tldr_els = [m for m in at.markdown if m.value.startswith("### ")]
+    tldr = [m.value for m in tldr_els]
+    assert len(tldr) == 3 and all(any(k in t for k in ("BROKE", "SHORTFALL", "RICH", "DEAD")) for t in tldr)
+    assert all(all(k in m.proto.help for k in ("RICH", "DEAD", "SHORTFALL", "BROKE")) for m in tldr_els)
     assert sum(1 for m in at.metric if m.label == "Probability of Success") == 3
     assert sum(1 for m in at.metric if m.label == "Depletion Rate (NW ≤ 0)") == 3
     assert sum(1 for m in at.metric if m.label == "Depletion Age (Min / Med)") == 3

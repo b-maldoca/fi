@@ -41,18 +41,31 @@ def real_final_net_worth(final_net_worth: np.ndarray, inflation_matrix: np.ndarr
     return np.asarray(final_net_worth) / cumulative_inflation(inflation_matrix)[:, -1]
 
 
-def classify_outcome(final_net_worth: np.ndarray, initial_net_worth: float, inflation_matrix: np.ndarray) -> str:
-    """TL;DR label for the median run: 'BROKE', 'RICH', or 'DEAD'.
+def classify_outcome(
+    final_net_worth: np.ndarray,
+    initial_net_worth: float,
+    inflation_matrix: np.ndarray,
+    success_pct: float = 0.0,
+) -> str:
+    """TL;DR label for the median run: 'BROKE', 'SHORTFALL', 'DEAD', or 'RICH'.
 
-    BROKE: median ending net worth <= 0. RICH: median *real* ending net worth
-    >= RICH_MULTIPLE x starting net worth. DEAD: anything in between (you die
-    before the money runs out, without growing real wealth massively).
+    - BROKE: median ending net worth <= 0 (or median real ending net worth <= 0).
+    - SHORTFALL: median real ending net worth is > 0 CHF but <= (success_pct / 100) * initial_net_worth
+      (does not hit the target ending wealth criterion).
+    - RICH: median real ending net worth > target and >= RICH_MULTIPLE * initial_net_worth.
+    - DEAD: median real ending net worth > target and < RICH_MULTIPLE * initial_net_worth.
     Uses per-run real values rather than mixing a nominal median with a median
     price level, which are generally not from the same run.
     """
     if np.median(final_net_worth) <= 0:
         return "BROKE"
-    if np.median(real_final_net_worth(final_net_worth, inflation_matrix)) >= RICH_MULTIPLE * initial_net_worth:
+    med_real = float(np.median(real_final_net_worth(final_net_worth, inflation_matrix)))
+    if med_real <= 0:
+        return "BROKE"
+    target_real = (success_pct / 100.0) * initial_net_worth
+    if med_real <= target_real:
+        return "SHORTFALL"
+    if med_real >= RICH_MULTIPLE * initial_net_worth:
         return "RICH"
     return "DEAD"
 

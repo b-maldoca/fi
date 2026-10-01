@@ -21,6 +21,7 @@ from src.historic_returns import (
     get_historic_return_matrix,
 )
 from src.metrics import (
+    RICH_MULTIPLE,
     beginning_of_year_withdrawal_rate,
     classify_outcome,
     classify_path_outcomes,
@@ -572,7 +573,27 @@ def _build_hist_eff_caption(history, config, inflation_matrix, success_pct) -> s
     )
 
 
-_TLDR_BADGES = {"BROKE": "🛑 **BROKE**", "RICH": "🚀 **RICH**", "DEAD": "🪦 **DEAD**"}
+_TLDR_BADGES = {
+    "BROKE": "🛑 **BROKE**",
+    "SHORTFALL": "⚠️ **SHORTFALL**",
+    "DEAD": "🪦 **DEAD**",
+    "RICH": "🚀 **RICH**",
+}
+
+
+def _tldr_help(success_pct: float) -> str:
+    target_desc = (
+        f"{success_pct:.0f}% of inflation-adjusted starting net worth"
+        if success_pct > 0.0
+        else "0 CHF (plain survival)"
+    )
+    return (
+        "TL;DR summary of the median portfolio outcome at the end of the retirement horizon:\n"
+        f"- 🚀 RICH: Median real (inflation-adjusted) ending net worth is ≥ {RICH_MULTIPLE:.0f}× starting net worth (and above target).\n"
+        f"- 🪦 DEAD: Median real ending net worth hits your success criterion (> {target_desc}) but is < {RICH_MULTIPLE:.0f}× starting net worth.\n"
+        f"- ⚠️ SHORTFALL: Median real ending net worth is > 0 CHF (solvent) but does not hit your success criterion (≤ {target_desc}).\n"
+        "- 🛑 BROKE: Median ending net worth is ≤ 0 CHF (the median path runs out of money before the end of the horizon)."
+    )
 
 
 def render_results(history, config, num_runs, title, inflation_matrix, success_pct, hist_eff_caption: str = ""):
@@ -627,7 +648,10 @@ def render_results(history, config, num_runs, title, inflation_matrix, success_p
             unsafe_allow_html=True,
         )
 
-    st.markdown(f"### {_TLDR_BADGES[classify_outcome(final_net_worth, initial_nw, inflation_matrix)]}")
+    st.markdown(
+        f"### {_TLDR_BADGES[classify_outcome(final_net_worth, initial_nw, inflation_matrix, success_pct)]}",
+        help=_tldr_help(success_pct),
+    )
 
     # Row 1: Success Rate & Watermark Metric
     col_r1_1, col_r1_2 = st.columns(2)
