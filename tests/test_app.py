@@ -129,13 +129,18 @@ def test_monte_carlo_defaults_are_calibrated_to_history():
         HISTORIC_RETURNS_NON_US_CHF,
         HISTORIC_RETURNS_US_CHF,
         HISTORIC_SWISS_INFLATION,
+        ppp_adjusted_annual_returns,
     )
     from src.simulation_engine import historic_lognormal_params
     at = _run()
     inputs = {n.label: n for n in at.number_input}
-    us_mean, us_vol = historic_lognormal_params(HISTORIC_RETURNS_US_CHF)
-    exus_mean, exus_vol = historic_lognormal_params(HISTORIC_RETURNS_NON_US_CHF)
-    gold_mean, gold_vol = historic_lognormal_params(HISTORIC_RETURNS_GOLD_CHF)
+    # The PPP slider defaults to 0.00%, so the MC means are calibrated on the PPP-neutral history,
+    # i.e. the same series the Historic and Bootstrapping engines run under by default.
+    slider = next(s for s in at.slider if s.label.startswith("Real CHF Appreciation"))
+    assert slider.value == 0.0
+    us_mean, us_vol = historic_lognormal_params(ppp_adjusted_annual_returns(HISTORIC_RETURNS_US_CHF, 0.0))
+    exus_mean, exus_vol = historic_lognormal_params(ppp_adjusted_annual_returns(HISTORIC_RETURNS_NON_US_CHF, 0.0))
+    gold_mean, gold_vol = historic_lognormal_params(ppp_adjusted_annual_returns(HISTORIC_RETURNS_GOLD_CHF, 0.0))
     infl_mean = float(np.mean(HISTORIC_SWISS_INFLATION))
     infl_std = float(np.std(HISTORIC_SWISS_INFLATION, ddof=1))
     assert inputs["Inflation Mean (%)"].value == pytest.approx(round(infl_mean * 100, 1))
@@ -145,6 +150,9 @@ def test_monte_carlo_defaults_are_calibrated_to_history():
     assert inputs["Equities Volatility (%)"].value == pytest.approx(round((us_vol + exus_vol) / 2 * 100, 1))
     assert inputs["Gold Volatility (%)"].value == pytest.approx(round(gold_vol * 100, 1))
     assert inputs["Gold Nominal Mean (%)"].value == pytest.approx(round(gold_mean * 100, 1))
+    # PPP-neutral means sit above the raw history, which still embeds the historic FX drag.
+    raw_us_mean, _ = historic_lognormal_params(HISTORIC_RETURNS_US_CHF)
+    assert us_mean > raw_us_mean
     # Sanity: the 1922-2025 CHF history is far more volatile than the old 15% placeholder.
     assert inputs["Equities Volatility (%)"].value > 18.0
     # Every MC return/vol input advertises its historic counterpart.
@@ -152,7 +160,38 @@ def test_monte_carlo_defaults_are_calibrated_to_history():
                   "Non-US Stocks Nominal Mean (%)", "CHF Cash Nominal Mean (%)", "Gold Nominal Mean (%)",
                   "Equities Volatility (%)", "Gold Volatility (%)"):
         assert "Historic" in inputs[label].help, label
+    for label in ("US Stocks Nominal Mean (%)", "Non-US Stocks Nominal Mean (%)", "Gold Nominal Mean (%)"):
+        assert "beyond PPP" in inputs[label].help, label
     mc_sub = next(s for s in at.subheader if s.value == "Monte Carlo Parameters")
     assert "Note: Returns and inflation must be Nominal" in mc_sub.proto.help
     assert not at.sidebar.caption
 
+
+def test_monte_carlo_default_means_follow_ppp_slider():
+    """Setting the slider to the historic value must reproduce the raw-history means (vols unchanged)."""
+    from src.historic_returns import (
+        HISTORIC_REAL_CHF_APPRECIATION,
+        HISTORIC_RETURNS_GOLD_CHF,
+        HISTORIC_RETURNS_NON_US_CHF,
+        HISTORIC_RETURNS_US_CHF,
+    )
+    from src.simulation_engine import historic_lognormal_params
+
+    def setup(at):
+        slider = next(s for s in at.slider if s.label.startswith("Real CHF Appreciation"))
+        slider.set_value(round(HISTORIC_REAL_CHF_APPRECIATION * 100, 2))
+
+    at = _run(setup)
+    assert not at.exception, [e.value for e in at.exception]
+    inputs = {n.label: n for n in at.number_input}
+    us_mean, us_vol = historic_lognormal_params(HISTORIC_RETURNS_US_CHF)
+    exus_mean, exus_vol = historic_lognormal_params(HISTORIC_RETURNS_NON_US_CHF)
+    gold_mean, gold_vol = historic_lognormal_params(HISTORIC_RETURNS_GOLD_CHF)
+    assert inputs["US Stocks Nominal Mean (%)"].value == pytest.approx(round(us_mean * 100, 1))
+    assert inputs["Non-US Stocks Nominal Mean (%)"].value == pytest.approx(round(exus_mean * 100, 1))
+    assert inputs["Gold Nominal Mean (%)"].value == pytest.approx(round(gold_mean * 100, 1))
+    assert inputs["Equities Volatility (%)"].value == pytest.approx(round((us_vol + exus_vol) / 2 * 100, 1))
+    assert inputs["Gold Volatility (%)"].value == pytest.approx(round(gold_vol * 100, 1))
+    # The PPP slider must be rendered before the Monte Carlo section so its value can drive the defaults.
+    labels = [s.value for s in at.sidebar.subheader]
+    assert labels.index("Currency / PPP Assumption") < labels.index("Monte Carlo Parameters")

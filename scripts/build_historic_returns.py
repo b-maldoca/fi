@@ -451,6 +451,26 @@ def _apply_fx_ppp_adjustment(
     return matrix
 
 
+def ppp_adjusted_annual_returns(
+    annual_returns: np.ndarray,
+    real_chf_appreciation: float,
+) -> np.ndarray:
+    """Annual CHF returns of a foreign-priced sleeve under a target real CHF appreciation beyond PPP.
+
+    Annual counterpart of `_apply_fx_ppp_adjustment`: compounding the twelve adjusted monthly
+    returns of a year gives exactly `(1 + R) * (1 - target) / (1 - HISTORIC_REAL_CHF_APPRECIATION) - 1`.
+    Used to calibrate the Monte Carlo default means on the same FX assumption that the
+    Historic Backtesting and Bootstrapping engines run under. Annual log-return volatility
+    is invariant to this rescaling, so only the means move.
+    """
+    if real_chf_appreciation >= 1.0:
+        raise ValueError(
+            f"real_chf_appreciation ({{real_chf_appreciation}}) must be strictly less than 1.0."
+        )
+    ann_adj = (1.0 - real_chf_appreciation) / (1.0 - HISTORIC_REAL_CHF_APPRECIATION)
+    return (1.0 + np.asarray(annual_returns, dtype=float)) * ann_adj - 1.0
+
+
 def compute_effective_sample_size(
     total_years: int,
     duration_years: int,

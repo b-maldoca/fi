@@ -47,6 +47,7 @@ from .historic_returns import (
     generate_bootstrapped_returns,
     get_historic_inflation_matrix,
     get_historic_return_matrix,
+    ppp_adjusted_annual_returns,
 )
 from .metrics import (
     OUTCOME_DEPLETED,
@@ -149,6 +150,7 @@ __all__ = [
     "compute_effective_sample_size",
     "get_historic_return_matrix",
     "get_historic_inflation_matrix",
+    "ppp_adjusted_annual_returns",
     "generate_bootstrapped_data",
     "generate_bootstrapped_returns",
     "generate_bootstrapped_inflation",

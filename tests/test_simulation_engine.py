@@ -2172,6 +2172,41 @@ def test_real_chf_appreciation_ppp_adjustment_and_validation():
         assert np.isclose(ppp_yr0 / raw_yr0, expected_ann_adj, atol=1e-10)
 
 
+def test_ppp_adjusted_annual_returns_matches_monthly_engine_adjustment():
+    """The annual helper used to calibrate MC defaults must equal compounding the engine's
+    monthly PPP adjustment, so Monte Carlo and the historic engines share one FX assumption."""
+    import pytest
+    from src.historic_returns import (
+        HISTORIC_REAL_CHF_APPRECIATION,
+        HISTORIC_RETURNS_GOLD_CHF,
+        HISTORIC_RETURNS_NON_US_CHF,
+        HISTORIC_RETURNS_US_CHF,
+        get_historic_return_matrix,
+        ppp_adjusted_annual_returns,
+    )
+    from src.simulation_engine import historic_lognormal_params
+
+    total_years = len(HISTORIC_RETURNS_US_CHF)
+    for target in (0.0, -0.01, 0.015, HISTORIC_REAL_CHF_APPRECIATION):
+        mat = get_historic_return_matrix(total_years, seed=0, real_chf_appreciation=target)
+        for col, annual in ((0, HISTORIC_RETURNS_US_CHF), (1, HISTORIC_RETURNS_NON_US_CHF), (3, HISTORIC_RETURNS_GOLD_CHF)):
+            compounded = np.prod(1.0 + mat[0, :, col].reshape(total_years, 12), axis=1) - 1.0
+            assert np.allclose(compounded, ppp_adjusted_annual_returns(annual, target), atol=1e-8)
+
+    # At the historic value the helper is the identity.
+    assert np.allclose(ppp_adjusted_annual_returns(HISTORIC_RETURNS_US_CHF, HISTORIC_REAL_CHF_APPRECIATION), HISTORIC_RETURNS_US_CHF)
+
+    # PPP neutrality lifts the arithmetic mean of foreign sleeves but leaves the log-volatility unchanged.
+    raw_mean, raw_vol = historic_lognormal_params(HISTORIC_RETURNS_US_CHF)
+    adj_mean, adj_vol = historic_lognormal_params(ppp_adjusted_annual_returns(HISTORIC_RETURNS_US_CHF, 0.0))
+    expected_mean = (1.0 + raw_mean) / (1.0 - HISTORIC_REAL_CHF_APPRECIATION) - 1.0
+    assert adj_mean == pytest.approx(expected_mean)
+    assert adj_vol == pytest.approx(raw_vol)
+
+    with pytest.raises(ValueError, match="real_chf_appreciation"):
+        ppp_adjusted_annual_returns(HISTORIC_RETURNS_US_CHF, 1.0)
+
+
 def test_stationary_bootstrap_politis_romano_and_effective_sample_size():
     from src.historic_returns import (
         HISTORIC_RETURNS_US_CHF,

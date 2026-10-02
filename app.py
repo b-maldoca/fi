@@ -19,6 +19,7 @@ from src.historic_returns import (
     generate_bootstrapped_data,
     get_historic_inflation_matrix,
     get_historic_return_matrix,
+    ppp_adjusted_annual_returns,
 )
 from src.metrics import (
     RICH_MULTIPLE,
@@ -330,44 +331,79 @@ _hist_span = f"{HISTORIC_YEARS[0]}–{HISTORIC_YEARS[-1]}"
 _us_usd_cagr = _cagr_pct(HISTORIC_RETURNS_US_USD)
 _us_chf_cagr = _cagr_pct(HISTORIC_RETURNS_US_CHF)
 _exus_chf_cagr = _cagr_pct(HISTORIC_RETURNS_NON_US_CHF)
-# Historic (arithmetic mean, log-vol) pairs in the exact parameterisation of generate_monte_carlo_returns.
-_hist_us_mean, _hist_us_vol = historic_lognormal_params(HISTORIC_RETURNS_US_CHF)
-_hist_exus_mean, _hist_exus_vol = historic_lognormal_params(HISTORIC_RETURNS_NON_US_CHF)
-_hist_gold_mean, _hist_gold_vol = historic_lognormal_params(HISTORIC_RETURNS_GOLD_CHF)
+
+# The PPP assumption is read before the Monte Carlo defaults are derived so that all
+# three engines share one FX assumption: Historic Backtesting and Bootstrapping rescale
+# the foreign-priced monthly series by it, and the Monte Carlo default means for the
+# same sleeves are calibrated on that rescaled history.
+st.sidebar.subheader("Currency / PPP Assumption")
+real_chf_appreciation = st.sidebar.slider(
+    "Real CHF Appreciation beyond PPP (%/yr)",
+    min_value=-1.00,
+    max_value=2.00,
+    value=0.00,
+    step=0.01,  # HISTORIC_REAL_CHF_APPRECIATION is rounded to 0.01pp and must be selectable
+    format="%.2f%%",
+    help=(
+        "Expected long-run real appreciation of the Swiss Franc beyond inflation differentials "
+        "(Relative Purchasing Power Parity) applied to foreign-priced sleeves (US Stocks, Non-US Stocks, Gold) "
+        "in Historic Backtesting and Block Bootstrapping, and used to calibrate the Monte Carlo default means "
+        "for the same sleeves so all three engines share one FX assumption.\n\n"
+        "- 0.00% (default): Relative PPP holds going forward (no excess real currency drag).\n"
+        f"- +{HISTORIC_REAL_CHF_APPRECIATION * 100:.2f}%: Reproduces the raw {_hist_span} historical real CHF "
+        "appreciation beyond US-CH CPI differentials."
+    ),
+) / 100.0
+
+# Historic (arithmetic mean, log-vol) pairs in the exact parameterisation of generate_monte_carlo_returns,
+# with the foreign-priced sleeves rescaled to the PPP assumption above (log-vol is invariant to that).
+_hist_us_mean, _hist_us_vol = historic_lognormal_params(
+    ppp_adjusted_annual_returns(HISTORIC_RETURNS_US_CHF, real_chf_appreciation)
+)
+_hist_exus_mean, _hist_exus_vol = historic_lognormal_params(
+    ppp_adjusted_annual_returns(HISTORIC_RETURNS_NON_US_CHF, real_chf_appreciation)
+)
+_hist_gold_mean, _hist_gold_vol = historic_lognormal_params(
+    ppp_adjusted_annual_returns(HISTORIC_RETURNS_GOLD_CHF, real_chf_appreciation)
+)
 _hist_cash_mean = float(np.mean(HISTORIC_RETURNS_CASH_CHF))
 _hist_infl_mean = float(np.mean(HISTORIC_SWISS_INFLATION))
 _hist_infl_std = float(np.std(HISTORIC_SWISS_INFLATION, ddof=1))
 # One volatility input drives both equity sleeves, so default it to the average of the two histories.
 _hist_eq_vol = (_hist_us_vol + _hist_exus_vol) / 2.0
+_ppp_basis = f"at {real_chf_appreciation * 100:+.2f}%/yr real CHF appreciation beyond PPP"
 
 
-def _hist_help(mean: float | None = None, vol: float | None = None) -> str:
+def _hist_help(mean: float | None = None, vol: float | None = None, foreign: bool = False) -> str:
     parts = []
     if mean is not None:
         parts.append(f"arithmetic mean {mean * 100:.1f}%")
     if vol is not None:
         parts.append(f"log-return volatility {vol * 100:.1f}%")
-    return f" Historic {_hist_span} in CHF: " + ", ".join(parts) + "."
+    basis = f" ({_ppp_basis})" if foreign else ""
+    return f" Historic {_hist_span} in CHF{basis}: " + ", ".join(parts) + "."
 
 
 st.sidebar.subheader(
     "Monte Carlo Parameters",
     help=(
         "Note: Returns and inflation must be Nominal (unadjusted for inflation) and in CHF terms, and the means are "
-        f"arithmetic. For reference ({_hist_span}, geometric CAGR): US Stocks {_us_usd_cagr:.1f}% in USD but "
+        f"arithmetic. For reference ({_hist_span}, raw geometric CAGR): US Stocks {_us_usd_cagr:.1f}% in USD but "
         f"{_us_chf_cagr:.1f}% in CHF due to currency drag; Non-US Stocks {_exus_chf_cagr:.1f}% in CHF. "
         "Stock means, volatilities, gold and inflation defaults are calibrated to that history (arithmetic means, "
-        "log-return vols for assets); only CHF cash stays forward-looking (today's near-zero savings rates and Year 0 "
-        "taxable interest), with historic values in each field's help."
+        "log-return vols for assets); the US, Non-US and Gold means are taken from the history rescaled to the "
+        "Currency / PPP Assumption above, so all three engines share one FX assumption. Only CHF cash stays "
+        "forward-looking (today's near-zero savings rates and Year 0 taxable interest), with historic values in each "
+        "field's help."
     ),
 )
 _min_ret_pct = -99.0  # generate_monte_carlo_returns requires returns > -100%
 inflation_mean = st.sidebar.number_input("Inflation Mean (%)", value=round(_hist_infl_mean * 100.0, 1), min_value=_min_ret_pct, step=0.1, format="%.1f", help="Expected average annual inflation rate for Monte Carlo. Default = history." + _hist_help(_hist_infl_mean)) / 100.0
 inflation_std = st.sidebar.number_input("Inflation Volatility (%)", value=round(_hist_infl_std * 100.0, 1), min_value=0.0, step=0.1, format="%.1f", help="Expected volatility of inflation for Monte Carlo. Default = history." + f" Historic {_hist_span}: {_hist_infl_std * 100:.1f}% (dominated by the 1920s deflation and the 1940s/1970s inflation spikes).") / 100.0
-ret_us = st.sidebar.number_input("US Stocks Nominal Mean (%)", value=round(_hist_us_mean * 100.0, 1), min_value=_min_ret_pct, step=0.1, format="%.1f", help="Expected nominal arithmetic mean return for US Stocks in CHF. Default = history." + _hist_help(_hist_us_mean) + f" (S&P 500 CAGR: {_us_usd_cagr:.1f}% in USD, {_us_chf_cagr:.1f}% in CHF.)") / 100.0
-ret_non_us = st.sidebar.number_input("Non-US Stocks Nominal Mean (%)", value=round(_hist_exus_mean * 100.0, 1), min_value=_min_ret_pct, step=0.1, format="%.1f", help="Expected nominal arithmetic mean return for Non-US Stocks in CHF terms. Default = history." + _hist_help(_hist_exus_mean)) / 100.0
+ret_us = st.sidebar.number_input("US Stocks Nominal Mean (%)", value=round(_hist_us_mean * 100.0, 1), min_value=_min_ret_pct, step=0.1, format="%.1f", help="Expected nominal arithmetic mean return for US Stocks in CHF. Default = history under the PPP assumption above." + _hist_help(_hist_us_mean, foreign=True) + f" (Raw S&P 500 CAGR: {_us_usd_cagr:.1f}% in USD, {_us_chf_cagr:.1f}% in CHF.)") / 100.0
+ret_non_us = st.sidebar.number_input("Non-US Stocks Nominal Mean (%)", value=round(_hist_exus_mean * 100.0, 1), min_value=_min_ret_pct, step=0.1, format="%.1f", help="Expected nominal arithmetic mean return for Non-US Stocks in CHF terms. Default = history under the PPP assumption above." + _hist_help(_hist_exus_mean, foreign=True)) / 100.0
 ret_cash = st.sidebar.number_input("CHF Cash Nominal Mean (%)", value=1.0, min_value=_min_ret_pct, step=0.1, format="%.1f", key="ret_cash_pct", help="Expected nominal mean return for CHF Cash (also used as the contractual taxable savings interest floor in Year 0 tax sync and Monte Carlo)." + _hist_help(_hist_cash_mean)) / 100.0
-ret_gold = st.sidebar.number_input("Gold Nominal Mean (%)", value=round(_hist_gold_mean * 100.0, 1), min_value=_min_ret_pct, step=0.1, format="%.1f", help="Expected nominal arithmetic mean return for Gold in CHF terms. Default = history." + _hist_help(_hist_gold_mean)) / 100.0
+ret_gold = st.sidebar.number_input("Gold Nominal Mean (%)", value=round(_hist_gold_mean * 100.0, 1), min_value=_min_ret_pct, step=0.1, format="%.1f", help="Expected nominal arithmetic mean return for Gold in CHF terms. Default = history under the PPP assumption above." + _hist_help(_hist_gold_mean, foreign=True)) / 100.0
 ret_btc = st.sidebar.number_input(
     "Bitcoin Nominal Mean (%)",
     value=float(BITCOIN_NOMINAL_MEAN * 100.0),
@@ -417,24 +453,6 @@ boot_block_years = int(st.sidebar.slider(
     ),
 ))
 random_seed = int(st.sidebar.number_input("Random Seed", value=42, min_value=0, step=1, help="Random seed for reproducible Monte Carlo, Bootstrapping, and synthetic asset simulation paths."))
-
-st.sidebar.subheader("Currency / PPP Assumption")
-real_chf_appreciation = st.sidebar.slider(
-    "Real CHF Appreciation beyond PPP (%/yr)",
-    min_value=-1.00,
-    max_value=2.00,
-    value=0.00,
-    step=0.01,  # HISTORIC_REAL_CHF_APPRECIATION is rounded to 0.01pp and must be selectable
-    format="%.2f%%",
-    help=(
-        "Expected long-run real appreciation of the Swiss Franc beyond inflation differentials "
-        "(Relative Purchasing Power Parity) applied to foreign-priced sleeves (US Stocks, Non-US Stocks, Gold) "
-        "in Historic Backtesting and Block Bootstrapping.\n\n"
-        "- 0.00% (default): Relative PPP holds going forward (no excess real currency drag).\n"
-        f"- +{HISTORIC_REAL_CHF_APPRECIATION * 100:.2f}%: Reproduces the raw {_hist_span} historical real CHF "
-        "appreciation beyond US-CH CPI differentials."
-    ),
-) / 100.0
 
 try:
     hist_return_matrix = get_historic_return_matrix(
