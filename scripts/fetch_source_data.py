@@ -41,15 +41,17 @@ LAST_YEAR = 2025  # last complete calendar year carried by the simulator
 
 
 def fetch(url, name, binary=False):
-    """Download with a local cache so reruns are offline-friendly."""
+    """Download with an atomic local cache write so reruns are offline-friendly."""
     path = os.path.join(CACHE, name)
     if os.path.exists(path) and os.path.getsize(path) > 0:
         print(f'  [cache] {name}')
     else:
         print(f'  [fetch] {name} <- {url}')
         req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
-        with urllib.request.urlopen(req, timeout=120) as r, open(path, 'wb') as f:
+        tmp_path = f'{path}.tmp.{os.getpid()}'
+        with urllib.request.urlopen(req, timeout=120) as r, open(tmp_path, 'wb') as f:
             f.write(r.read())
+        os.replace(tmp_path, path)
     return open(path, 'rb').read() if binary else open(path, encoding='utf-8', errors='replace').read()
 
 
@@ -84,6 +86,7 @@ print(f'   SNB monthly avg (peg era): {fx_old.index.min()} -> {fx_old.index.max(
 
 fx = pd.concat([fx_old, fx_modern]).sort_index()
 fx = fx[~fx.index.duplicated(keep='last')]
+fx = fx[fx.index.year <= LAST_YEAR]
 out = pd.DataFrame({'month': fx.index.month, 'year': fx.index.year, 'v': fx.values})
 out.to_csv(os.path.join(DATA, 'usd_chf.csv'), index=False, header=False, float_format='%.4f')
 print(f'   -> data/usd_chf.csv  {fx.index.min()} - {fx.index.max()}  ({len(fx)} months)')
@@ -115,6 +118,7 @@ else:
     print('   WARNING: no legacy pre-1968 gold source found; series starts 1968-04')
     gold = gold_modern
 gold = gold[~gold.index.duplicated(keep='last')]
+gold = gold[gold.index.year <= LAST_YEAR]
 out = pd.DataFrame({'month': gold.index.month, 'year': gold.index.year, 'v': gold.values})
 out.to_csv(os.path.join(DATA, 'gold_usd.csv'), index=False, header=False, float_format='%.4f')
 print(f'   -> data/gold_usd.csv  {gold.index.min()} - {gold.index.max()}  ({len(gold)} months)')
@@ -200,9 +204,11 @@ print(f'   SNB savings deposits: {savings_annual.index.min()}-{savings_annual.in
       f'({len(savings_annual)} full years), mean {savings_annual.mean()*100:.2f}%')
 assert (savings_annual >= 0).all(), 'negative savings deposit rate'
 cash_df = cash_df.set_index('year')
+all_cash_years = sorted(set(cash_df.index) | set(savings_annual.index))
+cash_df = cash_df.reindex(all_cash_years)
 cash_df['retail_rate'] = cash_df['wholesale_rate']  # pre-1933: JST (== savings rate in that era)
-common = cash_df.index.intersection(savings_annual.index)
-cash_df.loc[common, 'retail_rate'] = savings_annual.loc[common]
+cash_df.loc[savings_annual.index, 'retail_rate'] = savings_annual
+common = cash_df.dropna(subset=['wholesale_rate']).index.intersection(savings_annual.index)
 pre = cash_df.index[(cash_df.index < 1969) & cash_df.index.isin(common)]
 print(f'   JST bill_rate vs SNB savings, {pre.min()}-{pre.max()}: mean abs diff '
       f'{(cash_df.loc[pre, "wholesale_rate"] - savings_annual.loc[pre]).abs().mean()*100:.3f}pp')

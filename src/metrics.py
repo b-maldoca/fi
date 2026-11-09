@@ -24,16 +24,28 @@ def compute_success_mask(
     initial_net_worth: float,
     inflation_matrix: np.ndarray,
     success_pct: float,
+    net_worth_history: np.ndarray | None = None,
 ) -> np.ndarray:
-    """Runs whose final net worth exceeds `success_pct`% of the inflation-adjusted start.
+    """Runs that never depleted (`NW > 0` every year) and whose final NW exceeds `success_pct`% of inflation-adjusted start.
 
     Each run is compared against its *own* realized price level, so a run with high
     inflation needs a higher nominal ending balance. `success_pct == 0` means
-    "ending net worth > 0", i.e. plain survival.
+    "never hit NW <= 0 and ending net worth > 0", i.e. plain survival without ruin.
+    `final_net_worth` may be passed as 1-D `(num_runs,)` (with optional 2-D `net_worth_history`)
+    or directly as 2-D `(duration_years, num_runs)`.
     """
+    arr = np.asarray(final_net_worth, dtype=float)
+    if arr.ndim == 2:
+        nw_hist = arr
+        final_nw = arr[-1, :]
+    else:
+        final_nw = arr
+        nw_hist = np.asarray(net_worth_history, dtype=float) if net_worth_history is not None else None
+
+    never_depleted = np.all(nw_hist > 0.0, axis=0) if nw_hist is not None else (final_nw > 0.0)
     final_price_level = cumulative_inflation(inflation_matrix)[:, -1]
     target = (success_pct / 100.0) * initial_net_worth * final_price_level
-    return np.asarray(final_net_worth) > target
+    return never_depleted & (final_nw > target)
 
 
 def real_final_net_worth(final_net_worth: np.ndarray, inflation_matrix: np.ndarray) -> np.ndarray:
@@ -49,7 +61,7 @@ def classify_outcome(
 ) -> str:
     """TL;DR label for the median run: 'BROKE', 'SHORTFALL', 'DEAD', or 'RICH'.
 
-    - BROKE: median ending net worth <= 0 (or median real ending net worth <= 0).
+    - BROKE: median real ending net worth <= 0.
     - SHORTFALL: median real ending net worth is > 0 CHF but <= (success_pct / 100) * initial_net_worth
       (does not hit the target ending wealth criterion).
     - RICH: median real ending net worth > target and >= RICH_MULTIPLE * initial_net_worth.
@@ -57,8 +69,6 @@ def classify_outcome(
     Uses per-run real values rather than mixing a nominal median with a median
     price level, which are generally not from the same run.
     """
-    if np.median(final_net_worth) <= 0:
-        return "BROKE"
     med_real = float(np.median(real_final_net_worth(final_net_worth, inflation_matrix)))
     if med_real <= 0:
         return "BROKE"
@@ -71,15 +81,28 @@ def classify_outcome(
 
 
 def beginning_of_year_withdrawal_rate(history: dict) -> np.ndarray:
-    """Annual outflow (expenses + taxes) as % of the reconstructed beginning-of-year net worth.
+    """Net annual portfolio withdrawal (`max(0, expenses + taxes - AHV)`) as % of beginning-of-year net worth.
 
-    Beginning-of-year net worth is approximated as end-of-year net worth plus that
-    year's outflows (ignoring the year's market return). Denominators are floored
-    at 1 CHF so depleted portfolios do not divide by zero.
+    Uses `initial_net_worth` for Year 0 (falling back to `net_worth[0] + net_outflows[0]`
+    if omitted) and `net_worth[t - 1]` for `t >= 1`. Denominators are floored at 1 CHF so
+    depleted portfolios do not divide by zero.
     """
-    outflows = history['expenses_paid'] + history['taxes_paid']
-    start_nw = np.maximum(history['net_worth'] + outflows, 1.0)
-    return outflows / start_nw * 100.0
+    nw = np.asarray(history['net_worth'], dtype=float)
+    ahv = np.asarray(history.get('income_ahv', 0.0), dtype=float)
+    net_outflows = np.maximum(0.0, np.asarray(history['expenses_paid'], dtype=float) + np.asarray(history['taxes_paid'], dtype=float) - ahv)
+
+    if 'initial_net_worth' in history:
+        y0_nw = np.full((1, nw.shape[1]), float(history['initial_net_worth']), dtype=float)
+    else:
+        y0_nw = nw[0:1, :] + net_outflows[0:1, :]
+
+    if nw.shape[0] > 1:
+        boy_nw = np.vstack([y0_nw, nw[:-1, :]])
+    else:
+        boy_nw = y0_nw
+
+    start_nw = np.maximum(boy_nw, 1.0)
+    return net_outflows / start_nw * 100.0
 
 
 def first_depletion_year(wealth_history: np.ndarray) -> np.ndarray:
@@ -147,7 +170,7 @@ def compute_survival_curves(
     ever_solvent_nw = np.minimum.accumulate(net_worth, axis=0) > 0.0
     ever_solvent_liq = np.minimum.accumulate(liquid_assets, axis=0) > 0.0
     target_trajectory = (success_pct / 100.0) * initial_nw * cum_inf
-    above_target = net_worth > target_trajectory
+    above_target = ever_solvent_nw & (net_worth > target_trajectory)
 
     return {
         "solvent_pct": np.mean(ever_solvent_nw, axis=1) * 100.0,
@@ -168,14 +191,15 @@ def summarize_failure_timing(
     final_nw = net_worth[-1, :]
     initial_nw = float(history['initial_net_worth'])
 
-    success_mask = compute_success_mask(final_nw, initial_nw, inflation_matrix, success_pct)
+    success_mask = compute_success_mask(final_nw, initial_nw, inflation_matrix, success_pct, net_worth_history=net_worth)
     depletion_years = first_depletion_year(net_worth)
     liquid_depletion_years = first_depletion_year(liquid_assets)
     shortfall_years = first_shortfall_year(net_worth, initial_nw, inflation_matrix, success_pct)
 
-    depletion_ages = start_age + depletion_years
-    liquid_depletion_ages = start_age + liquid_depletion_years
-    shortfall_ages = start_age + shortfall_years
+    # 1-based year `yr` corresponds to retirement year `idx = yr - 1` lived at `start_age + yr - 1`.
+    depletion_ages = start_age + depletion_years - 1.0
+    liquid_depletion_ages = start_age + liquid_depletion_years - 1.0
+    shortfall_ages = start_age + shortfall_years - 1.0
 
     depleted_mask = ~np.isnan(depletion_years)
     liquid_depleted_mask = ~np.isnan(liquid_depletion_years)
@@ -241,11 +265,11 @@ def format_depletion_label(
     dep_yr = depletion_years[run_idx]
     if not np.isnan(dep_yr):
         yr = int(dep_yr)
-        return f"Age {start_age + yr} (Yr {yr})"
+        return f"Age {start_age + yr - 1} (Yr {yr})"
     liq_yr = liquid_depletion_years[run_idx]
     if not np.isnan(liq_yr):
         yr = int(liq_yr)
-        return f"Liq Age {start_age + yr} (Yr {yr})"
+        return f"Liq Age {start_age + yr - 1} (Yr {yr})"
     return "Survived"
 
 
@@ -258,7 +282,7 @@ def format_shortfall_label(
     sf_yr = shortfall_years[run_idx]
     if not np.isnan(sf_yr):
         yr = int(sf_yr)
-        return f"Age {start_age + yr} (Yr {yr})"
+        return f"Age {start_age + yr - 1} (Yr {yr})"
     return "Never"
 
 
@@ -311,7 +335,7 @@ def classify_path_outcomes(
     net_worth = np.asarray(history['net_worth'], dtype=float)
     initial_nw = float(history['initial_net_worth'])
     depleted = ~np.isnan(first_depletion_year(net_worth))
-    success = compute_success_mask(net_worth[-1, :], initial_nw, inflation_matrix, success_pct)
+    success = compute_success_mask(net_worth[-1, :], initial_nw, inflation_matrix, success_pct, net_worth_history=net_worth)
     ever_shortfall = np.any(_shortfall_matrix(net_worth, initial_nw, inflation_matrix, success_pct), axis=0)
     return np.select(
         [depleted, ~success, ever_shortfall],

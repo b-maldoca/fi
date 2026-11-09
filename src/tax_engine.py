@@ -174,7 +174,7 @@ def calculate_ahv_non_worker(wealth: np.ndarray, imputed_pension_income: np.ndar
     """
     Calculate AHV mandatory contributions for non-working early retirees.
     Based on wealth and 20x imputed pension income (e.g., from an annuity).
-    Min 530 CHF, Max 26,500 CHF (2025 values).
+    Min 530 CHF, Max 26,500 CHF (2025/2026 values).
     """
     is_scalar = _is_scalar(wealth) and _is_scalar(imputed_pension_income)
 
@@ -182,18 +182,21 @@ def calculate_ahv_non_worker(wealth: np.ndarray, imputed_pension_income: np.ndar
     imputed_arr = np.maximum(0.0, np.asarray(imputed_pension_income, dtype=float))
 
     determining_wealth = wealth_arr + (20 * imputed_arr)
+    # Guard against 1-ULP IEEE-754 underflow in `(x / f) // 50_000` under bracket indexation
+    # (e.g. `350_000 * f / f == 349_999.99999999994`), without shifting integer CHF inputs.
+    w_scaled = determining_wealth * (1.0 + 1e-12)
 
     # 106 CHF per 50k step above 300k (up to 1.75M)
-    steps_mid = np.maximum(0.0, (determining_wealth - 300_000) // 50_000)
+    steps_mid = np.maximum(0.0, (w_scaled - 300_000) // 50_000)
     contrib_mid = 530.0 + steps_mid * 106.0
 
     # 159 CHF per 50k step above 1.75M
-    steps_high = np.maximum(0.0, (determining_wealth - 1_750_000) // 50_000)
+    steps_high = np.maximum(0.0, (w_scaled - 1_750_000) // 50_000)
     contrib_high = 3604.0 + steps_high * 159.0
 
     # Combine based on thresholds
-    contribution = np.where(determining_wealth < 350_000, 530.0,
-                            np.where(determining_wealth <= 1_750_000, contrib_mid, contrib_high))
+    contribution = np.where(w_scaled < 350_000, 530.0,
+                            np.where(w_scaled <= 1_750_000, contrib_mid, contrib_high))
 
     # Cap at max limit
     return _as_output(np.minimum(contribution, 26_500.0), is_scalar)

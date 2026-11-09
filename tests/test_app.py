@@ -52,12 +52,12 @@ def test_app_runs_with_defaults():
     wr_traces = [t for t in hist_charts[4]["data"]]
     assert nw_names[:5] == ["Worst Cohort (Min)", "25th Pct", "50th Pct", "75th Pct", "Best Cohort (Max)"]
     assert surv_names == ["Solvent (NW > 0)", "Liquid Solvent (Liquid > 0)", "Above Target (50% Start NW)"]
-    assert inc_hist_names == ["Dividends", "AHV Pension", "Capital Sold", "Inflation-Adj Start"]
+    assert inc_hist_names == ["Dividends", "Cash Interest", "AHV Pension", "Capital Sold", "Inflation-Adj Start"]
     assert wb_hist_names == [
         "Living Expenses (50th Pct)",
         "Taxes Paid (50th Pct)",
-        "Living Expenses (Worst Cohort (Min))",
-        "Taxes Paid (Worst Cohort (Min))",
+        "Living Expenses (Worst Cohort)",
+        "Taxes Paid (Worst Cohort)",
         "Inflation-Adj Start",
     ]
     assert wb_boot_names == wb_mc_names == [
@@ -67,6 +67,16 @@ def test_app_runs_with_defaults():
         "Taxes Paid (5th Pct)",
         "Inflation-Adj Start",
     ]
+    # Chart age axis uses the retirement age lived during each simulation year (40 .. 89).
+    x_vals = hist_charts[0]["data"][0]["x"]
+    if isinstance(x_vals, dict):
+        # Plotly binary array or list depending on version
+        import base64
+        import numpy as np
+        arr = np.frombuffer(base64.b64decode(x_vals["bdata"]), dtype=x_vals["dtype"])
+        assert (int(arr[0]), int(arr[-1])) == (40, 89)
+    else:
+        assert (x_vals[0], x_vals[-1]) == (40, 89)
     assert [t["name"] for t in wr_traces] == ["Best Cohort (Min)", "25th Pct", "50th Pct", "75th Pct", "Worst Cohort (Max)"]
     assert wr_traces[0]["line"]["color"] == "purple"
     assert wr_traces[-1]["line"]["color"] == "crimson"
@@ -195,3 +205,63 @@ def test_monte_carlo_default_means_follow_ppp_slider():
     # The PPP slider must be rendered before the Monte Carlo section so its value can drive the defaults.
     labels = [s.value for s in at.sidebar.subheader]
     assert labels.index("Currency / PPP Assumption") < labels.index("Monte Carlo Parameters")
+
+
+def test_user_edited_mc_return_preserved_when_ppp_slider_moves():
+    """Manually overriding US Stocks Nominal Mean (%) must survive subsequent PPP slider moves,
+    while unedited Non-US and Gold means continue to follow the PPP slider."""
+    from src.historic_returns import (
+        HISTORIC_REAL_CHF_APPRECIATION,
+        HISTORIC_RETURNS_GOLD_CHF,
+        HISTORIC_RETURNS_NON_US_CHF,
+    )
+    from src.simulation_engine import historic_lognormal_params
+
+    at = AppTest.from_file("app.py", default_timeout=APP_TIMEOUT_S)
+    at.run()
+    next(n for n in at.number_input if n.label == "US Stocks Nominal Mean (%)").set_value(7.0)
+    at.run()
+    slider = next(s for s in at.slider if s.label.startswith("Real CHF Appreciation"))
+    slider.set_value(round(HISTORIC_REAL_CHF_APPRECIATION * 100, 2))
+    at.run()
+
+    assert not at.exception, [e.value for e in at.exception]
+    inputs = {n.label: n for n in at.number_input}
+    exus_mean, _ = historic_lognormal_params(HISTORIC_RETURNS_NON_US_CHF)
+    gold_mean, _ = historic_lognormal_params(HISTORIC_RETURNS_GOLD_CHF)
+    assert inputs["US Stocks Nominal Mean (%)"].value == pytest.approx(7.0)
+    assert inputs["Non-US Stocks Nominal Mean (%)"].value == pytest.approx(round(exus_mean * 100, 1))
+    assert inputs["Gold Nominal Mean (%)"].value == pytest.approx(round(gold_mean * 100, 1))
+
+
+def test_vanguard_bidirectional_sync_and_sidebar_modes():
+    """Verify Annual Base Expenses <-> Target Withdrawal Rate sync, Threshold rebalancing,
+    zero Pillar 3a accounts, and Retirement Age == 65."""
+    at = AppTest.from_file("app.py", default_timeout=APP_TIMEOUT_S)
+    at.run()
+    initial_twr = next(n for n in at.number_input if n.label == "Target Withdrawal Rate (%)").value
+
+    # Increasing Annual Base Expenses increases Target Withdrawal Rate (%)
+    next(n for n in at.number_input if n.label == "Annual Base Expenses (CHF)").set_value(120_000)
+    at.run()
+    assert not at.exception, [e.value for e in at.exception]
+    new_twr = next(n for n in at.number_input if n.label == "Target Withdrawal Rate (%)").value
+    assert new_twr > initial_twr
+
+    # Lowering Target Withdrawal Rate (%) back down updates Annual Base Expenses (CHF)
+    next(n for n in at.number_input if n.label == "Target Withdrawal Rate (%)").set_value(2.50)
+    at.run()
+    assert not at.exception, [e.value for e in at.exception]
+    synced_exp = next(n for n in at.number_input if n.label == "Annual Base Expenses (CHF)").value
+    assert synced_exp < 120_000
+
+    # Exercise Threshold rebalancing, 0 Pillar 3a accounts, and Retirement Age = 65
+    next(s for s in at.selectbox if s.label == "Frequency").set_value("Threshold")
+    next(n for n in at.number_input if n.label == "Number of Pillar 3a Accounts").set_value(0)
+    next(n for n in at.number_input if n.label == "Retirement Age").set_value(65)
+    at.run()
+    assert not at.exception, [e.value for e in at.exception]
+    assert not at.error, [e.value for e in at.error]
+    p3a_bal = next(n for n in at.number_input if n.label == "Balance per Pillar 3a Account (CHF)")
+    assert p3a_bal.disabled
+

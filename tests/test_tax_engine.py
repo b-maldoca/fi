@@ -54,13 +54,19 @@ def test_capital_withdrawal_tax():
     assert tax[3] > tax[2]
 
 def test_negative_tax_inputs():
-    # Negative incomes/wealth must not produce negative taxes
+    # Negative incomes/wealth must not produce negative taxes (and AHV clamps at 530 CHF minimum)
     tax_inc = calculate_income_tax(np.array([-50_000, -100]))
     assert np.all(tax_inc == 0.0)
     tax_wealth = calculate_wealth_tax(np.array([-1_000_000, -50]))
     assert np.all(tax_wealth == 0.0)
     tax_cap = calculate_capital_withdrawal_tax(np.array([-200_000]))
     assert np.all(tax_cap == 0.0)
+    tax_ahv = calculate_ahv_non_worker(np.array([-500_000, 0.0]), np.array([-10_000, 0.0]))
+    assert np.all(tax_ahv == 530.0)
+    # 2D array shape preservation across all four functions
+    mat = np.array([[50_000.0, 200_000.0], [500_000.0, 1_000_000.0]])
+    for fn in (calculate_income_tax, calculate_wealth_tax, calculate_capital_withdrawal_tax, calculate_ahv_non_worker):
+        assert fn(mat).shape == (2, 2)
 
 def test_ahv_scalar_vs_array():
     scalar_res = calculate_ahv_non_worker(500_000.0)
@@ -92,7 +98,15 @@ def test_ahv_mixed_scalar_array():
     assert res.shape == (2,)
     assert res[0] < res[1]
     assert res[0] == 742.0
-    assert res[1] == 2014.0 or res[1] > res[0]
+    assert res[1] == 2014.0
+
+
+def test_ahv_step_boundary_exact_under_float64_scaling():
+    # Verify `(350_000 * f) / f` never drops from 636*f to 530*f due to 1-ULP float64 division rounding.
+    factors = np.linspace(1.01, 3.0, 500)
+    scaled_wealth = 350_000.0 * factors
+    indexed = factors * calculate_ahv_non_worker(scaled_wealth / factors)
+    assert np.allclose(indexed, 636.0 * factors)
 
 
 def test_zurich_capital_withdrawal_minimum_simple_tax_of_2pct():

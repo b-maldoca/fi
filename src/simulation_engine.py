@@ -70,7 +70,7 @@ class SimConfig:
 
     # Expected real CHF appreciation beyond Relative Purchasing Power Parity (PPP).
     # 0.0 = PPP neutrality (default); historic_returns.HISTORIC_REAL_CHF_APPRECIATION
-    # (derived from the data at build time, ~0.70%/yr) reproduces raw 1922-2025 history.
+    # (derived from the data at build time, ~0.71%/yr) reproduces raw 1922-2025 history.
     real_chf_appreciation: float = 0.0
 
     # Expected CHF Cash yield used for Year 0 tax estimation (and Cash Tent buffer sizing).
@@ -83,6 +83,11 @@ class SimConfig:
     seed: int = 42
 
     def __post_init__(self):
+        for int_name in ("num_runs", "duration_years", "start_age", "tent_duration_years", "seed"):
+            val = getattr(self, int_name)
+            if isinstance(val, bool) or not isinstance(val, (int, np.integer)):
+                raise ValueError(f"{int_name} ({val!r}) must be an integer.")
+
         if self.num_runs <= 0 or self.duration_years <= 0:
             raise ValueError(f"num_runs ({self.num_runs}) and duration_years ({self.duration_years}) must be positive integers.")
             
@@ -91,6 +96,39 @@ class SimConfig:
 
         if self.tent_duration_years < 0:
             raise ValueError(f"tent_duration_years ({self.tent_duration_years}) cannot be negative.")
+
+        if self.initial_pillar_3a_accounts is None:
+            self.initial_pillar_3a_accounts = []
+
+        float_fields = (
+            self.inflation_mean,
+            self.inflation_std,
+            self.dividend_yield,
+            self.dynamic_expense_floor_pct,
+            self.dynamic_expense_ceiling_pct,
+            self.vanguard_target_rate,
+            self.vanguard_floor_pct,
+            self.vanguard_ceiling_pct,
+            self.initial_liquid_wealth,
+            self.initial_pillar_2,
+            self.alloc_us_stocks,
+            self.alloc_non_us_stocks,
+            self.alloc_chf_cash,
+            self.alloc_gold,
+            self.alloc_bitcoin,
+            self.rebalance_threshold,
+            self.annual_base_expenses,
+            self.monthly_ahv_pension,
+            self.cantonal_multiplier,
+            self.municipal_multiplier,
+            self.bracket_indexation,
+            self.real_chf_appreciation,
+            self.cash_rate,
+            self.btc_equity_corr,
+            *self.initial_pillar_3a_accounts,
+        )
+        if not all(np.isfinite(x) for x in float_fields):
+            raise ValueError("All numeric SimConfig parameters must be finite (no NaN or inf).")
 
         if self.inflation_std < 0.0:
             raise ValueError(f"inflation_std ({self.inflation_std}) cannot be negative.")
@@ -115,9 +153,6 @@ class SimConfig:
         if self.vanguard_floor_pct > 1.0:
             # A cut of more than 100% would allow negative spending floors.
             raise ValueError(f"vanguard_floor_pct ({self.vanguard_floor_pct}) cannot exceed 1.0 (a 100% cut).")
-
-        if self.initial_pillar_3a_accounts is None:
-            self.initial_pillar_3a_accounts = []
             
         if self.initial_liquid_wealth < 0.0 or self.initial_pillar_2 < 0.0 or any(a < 0.0 for a in self.initial_pillar_3a_accounts):
             raise ValueError("Initial asset balances cannot be negative.")
@@ -148,6 +183,12 @@ class SimConfig:
 
         if self.spending_strategy not in VALID_SPENDING_STRATEGIES:
             raise ValueError(f"Invalid spending_strategy '{self.spending_strategy}'. Must be one of {sorted(VALID_SPENDING_STRATEGIES)}.")
+
+        if self.spending_strategy == "Dynamic (Floor & Ceiling)" and self.dynamic_expense_floor_pct > self.dynamic_expense_ceiling_pct:
+            raise ValueError(
+                f"dynamic_expense_floor_pct ({self.dynamic_expense_floor_pct}) cannot exceed "
+                f"dynamic_expense_ceiling_pct ({self.dynamic_expense_ceiling_pct})."
+            )
 
         if self.rebalance_strategy not in VALID_REBALANCE_STRATEGIES:
             raise ValueError(f"Invalid rebalance_strategy '{self.rebalance_strategy}'. Must be one of {sorted(VALID_REBALANCE_STRATEGIES)}.")
@@ -183,17 +224,41 @@ def _get_year_0_liquid_wealth(config: SimConfig) -> float:
     return init_wealth
 
 
-def estimate_year_0_taxes(config: SimConfig) -> float:
-    """Estimates Year 0 total taxes (income, wealth, AHV non-worker) for initial Cash Tent and TWR calculation."""
-    init_wealth = _get_year_0_liquid_wealth(config)
+def _cash_tent_weights_for_year(
+    base_weights: np.ndarray,
+    tent_duration_years: int,
+    year: int,
+    init_wealth: float,
+    annual_outflow: float,
+) -> np.ndarray:
+    """Computes Cash Tent weights for `year` given Year-0 liquid wealth and annual outflow."""
+    T = tent_duration_years
+    w_base_cash = float(base_weights[2])
+    if T <= 0 or year >= T or init_wealth <= 0:
+        return base_weights
+    w_peak = min(1.0, (T * annual_outflow) / init_wealth)
+    if w_peak <= w_base_cash:
+        return base_weights
+    cash_weight = w_peak - (year / T) * (w_peak - w_base_cash)
+    non_cash_base_total = 1.0 - w_base_cash
+    if non_cash_base_total <= 0:
+        return base_weights
+    non_cash_scale = (1.0 - cash_weight) / non_cash_base_total
+    weights = base_weights * non_cash_scale
+    weights[2] = cash_weight
+    return weights
 
+
+def _estimate_year_0_taxes_for_weights(
+    config: SimConfig, init_wealth: float, weights: np.ndarray
+) -> float:
     taxable_wealth = max(0.0, init_wealth - config.annual_base_expenses)
     wealth_tax = float(calculate_wealth_tax(taxable_wealth, config.cantonal_multiplier, config.municipal_multiplier))
     ahv_contrib = float(calculate_ahv_non_worker(taxable_wealth)) if config.start_age < 65 else 0.0
 
-    equities = max(0.0, init_wealth * (config.alloc_us_stocks + config.alloc_non_us_stocks))
+    equities = max(0.0, init_wealth * float(weights[0] + weights[1]))
     dividends = equities * config.dividend_yield
-    cash = max(0.0, init_wealth * config.alloc_chf_cash)
+    cash = max(0.0, init_wealth * float(weights[2]))
     interest = cash * max(0.0, config.cash_rate)
     annual_ahv = 12 * config.monthly_ahv_pension if config.start_age >= 65 else 0.0
 
@@ -203,6 +268,31 @@ def estimate_year_0_taxes(config: SimConfig) -> float:
     income_tax = float(calculate_income_tax(taxable_income, config.cantonal_multiplier, config.municipal_multiplier))
 
     return income_tax + wealth_tax + ahv_contrib
+
+
+def estimate_year_0_taxes(config: SimConfig) -> float:
+    """Estimates Year 0 total taxes (income, wealth, AHV non-worker) for initial Cash Tent and TWR calculation.
+
+    When `rebalance_strategy == 'Cash Tent'`, evaluates dividends and cash interest on Year 0's
+    actual Cash Tent allocation rather than post-tent base weights (using a 2-step fixed point).
+    """
+    init_wealth = _get_year_0_liquid_wealth(config)
+    base_weights = np.array([
+        config.alloc_us_stocks,
+        config.alloc_non_us_stocks,
+        config.alloc_chf_cash,
+        config.alloc_gold,
+        config.alloc_bitcoin,
+    ], dtype=float)
+
+    est_tax = _estimate_year_0_taxes_for_weights(config, init_wealth, base_weights)
+    if config.rebalance_strategy == "Cash Tent" and config.tent_duration_years > 0 and init_wealth > 0:
+        for _ in range(2):
+            w0 = _cash_tent_weights_for_year(
+                base_weights, config.tent_duration_years, 0, init_wealth, config.annual_base_expenses + est_tax
+            )
+            est_tax = _estimate_year_0_taxes_for_weights(config, init_wealth, w0)
+    return est_tax
 
 
 def get_target_weights(config: SimConfig, year: int) -> np.ndarray:
@@ -222,36 +312,16 @@ def get_target_weights(config: SimConfig, year: int) -> np.ndarray:
         return base_weights
         
     T = config.tent_duration_years
-    w_base_cash = config.alloc_chf_cash
-    
     if T <= 0 or year >= T:
         return base_weights
         
     init_wealth = _get_year_0_liquid_wealth(config)
-
     if init_wealth <= 0:
         return base_weights
         
     est_taxes = estimate_year_0_taxes(config)
     annual_outflow = config.annual_base_expenses + est_taxes
-    peak_cash_amount = T * annual_outflow
-    w_peak = min(1.0, peak_cash_amount / init_wealth)
-    
-    if w_peak <= w_base_cash:
-        return base_weights
-        
-    # Linear glide of cash weight from w_peak at year 0 down to w_base_cash at year T
-    cash_weight = w_peak - (year / T) * (w_peak - w_base_cash)
-    
-    non_cash_base_total = 1.0 - w_base_cash
-    if non_cash_base_total <= 0:
-        return base_weights
-        
-    non_cash_scale = (1.0 - cash_weight) / non_cash_base_total
-    
-    weights = base_weights * non_cash_scale
-    weights[2] = cash_weight  # CHF Cash is index 2
-    return weights
+    return _cash_tent_weights_for_year(base_weights, T, year, init_wealth, annual_outflow)
 
 
 def _indexed_tax(tax_fn, taxable_amount: np.ndarray, bracket_factors: np.ndarray, *args) -> np.ndarray:
@@ -368,13 +438,20 @@ def run_simulation(config: SimConfig, return_matrix: np.ndarray, inflation_matri
     history_taxes = np.zeros((duration_months // 12, num_runs))
     history_expenses = np.zeros((duration_months // 12, num_runs))
     history_income_divs = np.zeros((duration_months // 12, num_runs))
+    history_income_interest = np.zeros((duration_months // 12, num_runs))
     history_income_ahv = np.zeros((duration_months // 12, num_runs))
+    history_unfunded_deficit = np.zeros((duration_months // 12, num_runs))
     history_below_watermark = np.zeros((duration_months // 12, num_runs), dtype=bool)
     
     inflation_factors = np.ones(num_runs)
     bracket_factors = np.ones(num_runs)
     rng_inf = np.random.default_rng(config.seed + 10_000)
-    vanguard_prev_expenses = np.full(num_runs, config.annual_base_expenses, dtype=float)
+    init_vanguard_exp = (
+        config.annual_base_expenses
+        if config.annual_base_expenses > 0.0
+        else (config.vanguard_target_rate * initial_net_worth if config.spending_strategy == "Vanguard Dynamic" else 0.0)
+    )
+    vanguard_prev_expenses = np.full(num_runs, init_vanguard_exp, dtype=float)
     vanguard_prev_inflation = np.ones(num_runs, dtype=float)
     taxable_liquidation_amount = np.zeros(num_runs)
     capital_withdrawal_tax_this_year = np.zeros(num_runs)
@@ -402,42 +479,28 @@ def run_simulation(config: SimConfig, return_matrix: np.ndarray, inflation_matri
         else:
             rebalance_target_weights = current_target_weights
 
-        # 1. Inflation (Update once a year at month 0)
+        # 1. Start-of-Year Pension Liquidations (Month 0, evaluated at start-of-year bracket_factors)
         if month_of_year == 0:
-            if inflation_matrix is not None:
-                inflation = inflation_matrix[:, year]
-            else:
-                inflation = rng_inf.normal(config.inflation_mean, config.inflation_std, num_runs)
-            inflation_factors *= np.maximum(0.01, 1.0 + inflation)
-            bracket_factors *= np.maximum(0.01, 1.0 + config.bracket_indexation * inflation)
             taxable_liquidation_amount.fill(0)
             capital_withdrawal_tax_this_year.fill(0)
-            
-        # 2. Liquidations (Yearly at month 0)
-        if month_of_year == 0:
+
             if current_age < 65:
                 has_liquidated = np.zeros(num_runs, dtype=bool)
                 for i, p3a in enumerate(pillar_3a):
                     liquidation_age = 60 + i
                     mask = (current_age >= liquidation_age) & (p3a > 0) & (~has_liquidated)
-                    amount = p3a[mask]
-                    taxable_liquidation_amount[mask] += amount
-                    liquid_assets[mask] += np.outer(amount, current_target_weights)
+                    taxable_liquidation_amount[mask] += p3a[mask]
                     p3a[mask] = 0
                     has_liquidated[mask] = True
             else:
                 # Age >= 65: Liquidate ALL remaining accounts
                 for p3a in pillar_3a:
                     mask = p3a > 0
-                    amount = p3a[mask]
-                    taxable_liquidation_amount[mask] += amount
-                    liquid_assets[mask] += np.outer(amount, current_target_weights)
+                    taxable_liquidation_amount[mask] += p3a[mask]
                     p3a[mask] = 0
                 
             mask_p2 = (current_age >= 65) & (pillar_2 > 0)
-            amount_p2 = pillar_2[mask_p2]
-            taxable_liquidation_amount[mask_p2] += amount_p2
-            liquid_assets[mask_p2] += np.outer(amount_p2, current_target_weights)
+            taxable_liquidation_amount[mask_p2] += pillar_2[mask_p2]
             pillar_2[mask_p2] = 0
             
             # Calculate Capital Withdrawal Tax immediately upon liquidation
@@ -451,18 +514,34 @@ def run_simulation(config: SimConfig, return_matrix: np.ndarray, inflation_matri
                     config.cantonal_multiplier,
                     config.municipal_multiplier
                 )
-                
-                # Deduct immediately at source (proportionally as it was added)
-                liquid_assets -= np.outer(cap_tax, current_target_weights)
-                
+                net_proceeds = np.maximum(0.0, taxable_liquidation_amount - cap_tax)
+                # Pay off any negative CHF Cash debt from prior bridge deficits first so solvent
+                # portfolios never carry involuntary 5% margin debt alongside leveraged equities.
+                existing_debt = np.maximum(0.0, -liquid_assets[:, 2])
+                debt_repaid = np.minimum(net_proceeds, existing_debt)
+                liquid_assets[:, 2] += debt_repaid
+                surplus_proceeds = net_proceeds - debt_repaid
+                liquid_assets += np.outer(surplus_proceeds, current_target_weights)
+
                 # Track it for the annual history log
                 capital_withdrawal_tax_this_year += cap_tax
+
+        # 2. Annual Inflation & Bracket Indexation Update (Month 0, accruing over the year)
+        if month_of_year == 0:
+            if inflation_matrix is not None:
+                inflation = inflation_matrix[:, year]
+            else:
+                inflation = rng_inf.normal(config.inflation_mean, config.inflation_std, num_runs)
+            inflation_factors *= np.maximum(0.01, 1.0 + inflation)
+            bracket_factors *= np.maximum(0.01, 1.0 + config.bracket_indexation * inflation)
         
         # 3. Market Returns
         monthly_returns = return_matrix[:, m, :] # (num_runs, 5)
         
         # Apply 100% Equity returns to Pillar 2 and 3a (proportional to US/Non-US target alloc)
-        equity_monthly_returns = monthly_returns[:, 0] * weight_us + monthly_returns[:, 1] * weight_non_us
+        equity_monthly_returns = np.maximum(
+            -1.0, monthly_returns[:, 0] * weight_us + monthly_returns[:, 1] * weight_non_us
+        )
         
         pillar_2 *= (1 + equity_monthly_returns)
         for p3a in pillar_3a:
@@ -482,47 +561,43 @@ def run_simulation(config: SimConfig, return_matrix: np.ndarray, inflation_matri
         returns_to_apply = np.maximum(-1.0, returns_to_apply)
         liquid_assets *= (1 + returns_to_apply)
         
-        # 4. Rebalancing Check
-        do_rebalance = np.zeros(num_runs, dtype=bool)
-        
-        # 4.5. Monthly AHV Pension Addition
+        # 4. Monthly AHV Pension Addition
         if current_age >= 65:
             monthly_ahv = config.monthly_ahv_pension * inflation_factors
             liquid_assets[:, 2] += monthly_ahv # Add directly to CHF Cash
 
-        
-        total_liquid_val = np.sum(liquid_assets, axis=1)
-        is_solvent = total_liquid_val > 0
-        
-        if config.rebalance_strategy == 'Monthly':
-            do_rebalance[:] = True
-        elif config.rebalance_strategy == 'Quarterly' and month_of_year % 3 == 2:
-            do_rebalance[:] = True
-        elif config.rebalance_strategy in ('Yearly', 'Cash Tent') and month_of_year == 11:
-            do_rebalance[:] = True
-        elif config.rebalance_strategy == 'Threshold':
-            current_total = np.sum(liquid_assets, axis=1, keepdims=True)
-            current_total_safe = np.where(current_total > 0, current_total, 1.0)
-            current_weights = liquid_assets / current_total_safe
-            drift = np.max(np.abs(current_weights - current_target_weights), axis=1)
-            do_rebalance = (drift > config.rebalance_threshold)
+        # 4.5. Intra-Year Rebalancing Check (Months 0..10; Month 11 rebalances after annual tax/expenses)
+        if month_of_year < 11:
+            do_rebalance = np.zeros(num_runs, dtype=bool)
+            total_liquid_val = np.sum(liquid_assets, axis=1)
+            is_solvent = total_liquid_val > 0
 
-        # Do not rebalance bankrupt or depleted portfolios
-        do_rebalance &= is_solvent
+            if config.rebalance_strategy == 'Monthly':
+                do_rebalance[:] = True
+            elif config.rebalance_strategy == 'Quarterly' and month_of_year % 3 == 2:
+                do_rebalance[:] = True
+            elif config.rebalance_strategy == 'Threshold':
+                current_total = np.sum(liquid_assets, axis=1, keepdims=True)
+                current_total_safe = np.where(current_total > 0, current_total, 1.0)
+                current_weights = liquid_assets / current_total_safe
+                drift = np.max(np.abs(current_weights - current_target_weights), axis=1)
+                do_rebalance = (drift > config.rebalance_threshold)
+
+            do_rebalance &= is_solvent
+
+            if config.enable_smart_selling and np.any(do_rebalance):
+                current_p3a = sum(pillar_3a) if pillar_3a else np.zeros(num_runs)
+                # This year's liquidation already ran at month 0, so the remaining schedule starts next year.
+                current_nw_after_tax = (np.sum(liquid_assets, axis=1) + pillar_2 + current_p3a
+                                        - _deferred_withdrawal_tax(pillar_2, pillar_3a, current_age + 1, bracket_factors, config))
+                is_downturn = current_nw_after_tax < initial_net_worth_after_tax * inflation_factors
+                do_rebalance[is_downturn] = False
+
+            if np.any(do_rebalance):
+                total_to_rebalance = np.sum(liquid_assets[do_rebalance], axis=1, keepdims=True)
+                liquid_assets[do_rebalance] = total_to_rebalance * current_target_weights
             
-        if config.enable_smart_selling:
-            current_p3a = sum(pillar_3a) if pillar_3a else np.zeros(num_runs)
-            # This year's liquidation already ran at month 0, so the remaining schedule starts next year.
-            current_nw_after_tax = (np.sum(liquid_assets, axis=1) + pillar_2 + current_p3a
-                                    - _deferred_withdrawal_tax(pillar_2, pillar_3a, current_age + 1, bracket_factors, config))
-            is_downturn = current_nw_after_tax < initial_net_worth_after_tax * inflation_factors
-            do_rebalance[is_downturn] = False
-            
-        if np.any(do_rebalance):
-            total_to_rebalance = np.sum(liquid_assets[do_rebalance], axis=1, keepdims=True)
-            liquid_assets[do_rebalance] = total_to_rebalance * rebalance_target_weights
-            
-        # 5. Annual Taxation and Expenses
+        # 5. Annual Taxation, Expenses, and Year-End Rebalancing (Month 11)
         if month_of_year == 11:
             # Spending Model Adjustment
             total_p3a_current = sum(pillar_3a) if pillar_3a else np.zeros(num_runs)
@@ -565,7 +640,7 @@ def run_simulation(config: SimConfig, return_matrix: np.ndarray, inflation_matri
                                             
             annual_ahv_received = np.where(current_age >= 65, 12 * config.monthly_ahv_pension * inflation_factors, 0.0)
             
-            # Taxable Income = Dividends (yield on Equity portion)
+            # Taxable Income = Dividends (yield on Equity portion held during this year, BEFORE year-end glidepath rebalance)
             # US Stocks (0) and Non-US Stocks (1) generate dividends
             equities = np.maximum(0, liquid_assets[:, 0] + liquid_assets[:, 1])
             dividends = equities * config.dividend_yield
@@ -622,6 +697,25 @@ def run_simulation(config: SimConfig, return_matrix: np.ndarray, inflation_matri
             liquid_assets -= sell_amounts
             
             liquid_assets[:, 2] -= remaining_deficit
+
+            # 6. Year-End Rebalancing (sets the allocation held going into the next year)
+            do_rebalance_eoy = np.zeros(num_runs, dtype=bool)
+            post_sale_liquid = np.sum(liquid_assets, axis=1)
+            if config.rebalance_strategy in ('Monthly', 'Quarterly', 'Yearly', 'Cash Tent'):
+                do_rebalance_eoy[:] = True
+            elif config.rebalance_strategy == 'Threshold':
+                current_total = post_sale_liquid[:, None]
+                current_total_safe = np.where(current_total > 0, current_total, 1.0)
+                current_weights = liquid_assets / current_total_safe
+                drift = np.max(np.abs(current_weights - current_target_weights), axis=1)
+                do_rebalance_eoy = (drift > config.rebalance_threshold)
+
+            do_rebalance_eoy &= (post_sale_liquid > 0)
+            if config.enable_smart_selling:
+                do_rebalance_eoy[is_below_watermark] = False
+
+            if np.any(do_rebalance_eoy):
+                liquid_assets[do_rebalance_eoy] = post_sale_liquid[do_rebalance_eoy, None] * rebalance_target_weights
             
             # Record
             total_p3a = sum(pillar_3a) if pillar_3a else np.zeros(num_runs)
@@ -635,7 +729,9 @@ def run_simulation(config: SimConfig, return_matrix: np.ndarray, inflation_matri
             history_taxes[year, :] = total_taxes + capital_withdrawal_tax_this_year
             history_expenses[year, :] = current_expenses
             history_income_divs[year, :] = dividends
+            history_income_interest[year, :] = interest
             history_income_ahv[year, :] = annual_ahv_received
+            history_unfunded_deficit[year, :] = remaining_deficit
 
     return {
         'net_worth': history_net_worth,
@@ -646,7 +742,9 @@ def run_simulation(config: SimConfig, return_matrix: np.ndarray, inflation_matri
         'taxes_paid': history_taxes,
         'expenses_paid': history_expenses,
         'income_dividends': history_income_divs,
+        'income_interest': history_income_interest,
         'income_ahv': history_income_ahv,
+        'unfunded_deficit': history_unfunded_deficit,
         'below_watermark': history_below_watermark,
         'initial_net_worth': initial_net_worth,
         'initial_net_worth_after_tax': float(initial_net_worth_after_tax[0]),
@@ -698,11 +796,11 @@ def generate_monte_carlo_returns(
         raise ValueError(f"duration_years must be positive, got {duration_years}")
     if seed < 0:
         raise ValueError(f"seed must be non-negative, got {seed}")
-    if any(r <= -1.0 for r in (ret_us, ret_non_us, ret_cash, ret_gold, ret_btc)):
-        raise ValueError("Expected annual returns must be greater than -100% (-1.0)")
-    if any(v < 0.0 for v in (vol_eq, vol_gold, vol_btc)):
-        raise ValueError("Volatilities cannot be negative")
-    if any(not (-1.0 <= c <= 1.0) for c in (btc_equity_corr, exus_equity_corr, gold_equity_corr)):
+    if any(not np.isfinite(r) or r <= -1.0 for r in (ret_us, ret_non_us, ret_cash, ret_gold, ret_btc)):
+        raise ValueError("Expected annual returns must be greater than -100% (-1.0) and finite")
+    if any(not np.isfinite(v) or v < 0.0 for v in (vol_eq, vol_gold, vol_btc)):
+        raise ValueError("Volatilities cannot be negative and must be finite")
+    if any(not np.isfinite(c) or not (-1.0 <= c <= 1.0) for c in (btc_equity_corr, exus_equity_corr, gold_equity_corr)):
         raise ValueError("Asset correlations must be between -1.0 and 1.0")
 
     rng = np.random.default_rng(seed)
@@ -751,7 +849,9 @@ def generate_monte_carlo_inflation(
         raise ValueError(f"num_runs must be positive, got {num_runs}")
     if duration_years <= 0:
         raise ValueError(f"duration_years must be positive, got {duration_years}")
-    if inflation_std < 0.0:
+    if not np.isfinite(inflation_mean) or inflation_mean <= -1.0:
+        raise ValueError(f"inflation_mean must be finite and > -1.0, got {inflation_mean}")
+    if not np.isfinite(inflation_std) or inflation_std < 0.0:
         raise ValueError(f"inflation_std cannot be negative, got {inflation_std}")
     if seed < 0:
         raise ValueError(f"seed must be non-negative, got {seed}")

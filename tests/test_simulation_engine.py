@@ -2325,27 +2325,48 @@ def test_bitcoin_defaults_and_custom_params_across_engines():
         get_historic_return_matrix(10, seed=42, btc_vol=-0.1)
 
 
-def test_gaussian_copula_path_standardization_no_drift_leak():
-    from src.historic_returns import _generate_lognormal_monthly_returns
+def test_gaussian_copula_full_sample_standardization_preserves_long_horizon_moments():
+    from src.historic_returns import _generate_lognormal_monthly_returns, generate_bootstrapped_data
 
     rng1 = np.random.default_rng(999)
     rng2 = np.random.default_rng(999)
 
     # Create two synthetic US equity paths with identical standardized monthly shocks
-    # but wildly different secular drifts (-5%/mo vs +5%/mo).
+    # relative to their respective regime means (-5%/mo vs +5%/mo).
     base_shocks = np.sin(np.linspace(0.1, 20.0, 240)) * 0.04
     us_crash_cohort = np.expm1(-0.05 + base_shocks)[np.newaxis, :]
     us_boom_cohort = np.expm1(0.05 + base_shocks)[np.newaxis, :]
+    std_shocks = float(np.std(base_shocks))
 
     btc_crash = _generate_lognormal_monthly_returns(
-        rng1, 0.07, 0.50, (1, 240), us_monthly_slice=us_crash_cohort, btc_equity_corr=0.80
+        rng1,
+        0.07,
+        0.50,
+        (1, 240),
+        us_monthly_slice=us_crash_cohort,
+        btc_equity_corr=0.80,
+        ref_log_mean=-0.05 + float(np.mean(base_shocks)),
+        ref_log_std=std_shocks,
     )
     btc_boom = _generate_lognormal_monthly_returns(
-        rng2, 0.07, 0.50, (1, 240), us_monthly_slice=us_boom_cohort, btc_equity_corr=0.80
+        rng2,
+        0.07,
+        0.50,
+        (1, 240),
+        us_monthly_slice=us_boom_cohort,
+        btc_equity_corr=0.80,
+        ref_log_mean=0.05 + float(np.mean(base_shocks)),
+        ref_log_std=std_shocks,
     )
-    # Because per-path standardization centers each cohort's log-returns to mean 0 and std 1,
-    # the US cohort's secular drift does not leak into Bitcoin's expected return.
     assert np.allclose(btc_crash, btc_boom, atol=1e-12)
+
+    # Full-sample standardization (not per-path axis=-1) must preserve 50-year cumulative
+    # Bitcoin log-volatility (~0.50 * sqrt(50) = 3.54) and 50-year equity correlation (~0.50).
+    ret_boot, _ = generate_bootstrapped_data(1500, 50, seed=42, btc_equity_corr=0.50)
+    log_w_us = np.sum(np.log1p(ret_boot[:, :, 0]), axis=1)
+    log_w_btc = np.sum(np.log1p(ret_boot[:, :, 4]), axis=1)
+    assert 3.30 < float(np.std(log_w_btc)) < 3.80
+    assert float(np.corrcoef(log_w_us, log_w_btc)[0, 1]) > 0.40
 
 
 def test_run_simulation_matrix_shape_validation():
@@ -2577,5 +2598,253 @@ def test_ahv_non_worker_contribution_is_deducted_from_taxable_income():
     h_low = run_simulation(cfg_low_div, np.zeros((1, 12, 5)), np.zeros((1, 1)))
     assert h_low["taxes_paid"][0, 0] == pytest.approx(wealth_tax + ahv_contrib)
     assert estimate_year_0_taxes(cfg_low_div) == pytest.approx(wealth_tax + ahv_contrib)
+
+
+def test_pension_liquidation_repays_negative_cash_debt_first():
+    """When pre-65 liquid assets are exhausted into negative CHF Cash and Smart Cash Buffer
+    is enabled, Age-65 Pillar 2 proceeds must clear the negative cash debt first instead of
+    buying >100% leveraged equities funded by an involuntary 5% margin loan."""
+    cfg = SimConfig(
+        num_runs=1,
+        duration_years=3,
+        inflation_mean=0.0,
+        inflation_std=0.0,
+        start_age=64,
+        dividend_yield=0.0,
+        initial_liquid_wealth=20_000.0,
+        initial_pillar_2=500_000.0,
+        alloc_us_stocks=0.80,
+        alloc_chf_cash=0.20,
+        rebalance_strategy="Yearly",
+        enable_smart_selling=True,
+        annual_base_expenses=80_000.0,
+        monthly_ahv_pension=0.0,
+    )
+    h = run_simulation(cfg, np.zeros((1, 36, 5)), np.zeros((1, 3)))
+    # At end of Year 0 (age 64), liquid assets went negative (~-62k).
+    assert h["liquid_assets"][0, 0] < 0.0
+    assert h["unfunded_deficit"][0, 0] > 0.0
+    # At Age 65 (Year 1), Pillar 2 unlocks (~462k net of tax), clears the ~62k debt,
+    # and invests only the remaining surplus — so CHF Cash is non-negative and total
+    # sleeve weights never exceed 100% of liquid wealth.
+    assert h["liquid_assets"][1, 0] > 300_000.0
+    assert h["liquid_assets_by_class"][1, 0, 2] >= 0.0
+    assert h["liquid_assets_by_class"][1, 0, 0] <= h["liquid_assets"][1, 0] + 1e-6
+
+
+def test_month_11_dividend_tax_assessed_before_next_year_rebalance_and_cash_tent_year0_tax():
+    """Month-11 dividend/interest tax must be assessed on the portfolio actually held during
+    Year 0 before rebalancing into Year 1's Cash Tent weights, and estimate_year_0_taxes must
+    match simulated Year-0 taxes under Cash Tent."""
+    import pytest
+    from src.simulation_engine import estimate_year_0_taxes
+
+    # At 0% cash return, Year-0 dividends are computed on Year 0's exact Cash Tent equity weight,
+    # so simulated Year-0 taxes match estimate_year_0_taxes to floating-point precision.
+    cfg_zero_cash = SimConfig(
+        num_runs=1,
+        duration_years=2,
+        inflation_mean=0.0,
+        inflation_std=0.0,
+        start_age=50,
+        dividend_yield=0.04,
+        cash_rate=0.0,
+        initial_liquid_wealth=2_000_000.0,
+        alloc_us_stocks=0.80,
+        alloc_chf_cash=0.20,
+        rebalance_strategy="Cash Tent",
+        tent_duration_years=2,
+        annual_base_expenses=100_000.0,
+    )
+    h_zero = run_simulation(cfg_zero_cash, np.zeros((1, 24, 5)), np.zeros((1, 2)))
+    assert h_zero["taxes_paid"][0, 0] == pytest.approx(estimate_year_0_taxes(cfg_zero_cash), rel=1e-9)
+
+    # At 1% cash return, Year-0 cash compounding changes year-end cash by 1%, keeping Year-0
+    # taxes within ~0.15% (~25 CHF) of the start-of-year pre-estimate.
+    cfg = SimConfig(
+        num_runs=1,
+        duration_years=2,
+        inflation_mean=0.0,
+        inflation_std=0.0,
+        start_age=50,
+        dividend_yield=0.04,
+        cash_rate=0.01,
+        initial_liquid_wealth=2_000_000.0,
+        alloc_us_stocks=0.80,
+        alloc_chf_cash=0.20,
+        rebalance_strategy="Cash Tent",
+        tent_duration_years=2,
+        annual_base_expenses=100_000.0,
+    )
+    ret = np.zeros((1, 24, 5))
+    ret[:, :, 2] = (1.01) ** (1.0 / 12.0) - 1.0
+    h = run_simulation(cfg, ret, np.zeros((1, 2)))
+    assert h["taxes_paid"][0, 0] == pytest.approx(estimate_year_0_taxes(cfg), rel=2e-3)
+    assert h["income_interest"][0, 0] > 0.0
+
+
+def test_day_1_pension_liquidation_uses_unindexed_year_0_brackets():
+    """Immediate Day-1 (month 0) pension liquidations at retirement must use Year-0 unindexed
+    tax brackets (bracket_factors = 1.0), matching initial_net_worth_after_tax even when Year-0
+    realized inflation is high."""
+    import pytest
+    from src.tax_engine import calculate_capital_withdrawal_tax
+
+    cfg = SimConfig(
+        num_runs=1,
+        duration_years=1,
+        inflation_mean=0.10,
+        inflation_std=0.0,
+        start_age=65,
+        dividend_yield=0.0,
+        initial_liquid_wealth=0.0,
+        initial_pillar_2=500_000.0,
+        alloc_chf_cash=1.0,
+        annual_base_expenses=0.0,
+        monthly_ahv_pension=0.0,
+        bracket_indexation=1.0,
+    )
+    h = run_simulation(cfg, np.zeros((1, 12, 5)), np.full((1, 1), 0.20))
+    expected_cap_tax = float(
+        calculate_capital_withdrawal_tax(500_000.0, cfg.cantonal_multiplier, cfg.municipal_multiplier)
+    )
+    assert h["initial_net_worth_after_tax"] == pytest.approx(500_000.0 - expected_cap_tax)
+    # Only Year-0 wealth tax (on post-liquidation cash using indexed end-of-year brackets) is added at m=11.
+    assert h["net_worth"][0, 0] + h["taxes_paid"][0, 0] == pytest.approx(500_000.0)
+
+
+def test_dynamic_floor_and_ceiling_expanded_ceiling_and_validation():
+    import pytest
+
+    with pytest.raises(ValueError, match="dynamic_expense_floor_pct"):
+        SimConfig(
+            num_runs=1,
+            duration_years=1,
+            inflation_mean=0.0,
+            inflation_std=0.0,
+            start_age=50,
+            dividend_yield=0.0,
+            alloc_us_stocks=1.0,
+            spending_strategy="Dynamic (Floor & Ceiling)",
+            dynamic_expense_floor_pct=1.20,
+            dynamic_expense_ceiling_pct=0.90,
+        )
+
+    cfg = SimConfig(
+        num_runs=1,
+        duration_years=2,
+        inflation_mean=0.0,
+        inflation_std=0.0,
+        start_age=65,
+        dividend_yield=0.0,
+        initial_liquid_wealth=1_000_000.0,
+        alloc_us_stocks=1.0,
+        spending_strategy="Dynamic (Floor & Ceiling)",
+        annual_base_expenses=50_000.0,
+        dynamic_expense_floor_pct=0.80,
+        dynamic_expense_ceiling_pct=1.25,
+        monthly_ahv_pension=0.0,
+    )
+    ret = np.zeros((1, 24, 5))
+    ret[:, 0, 0] = 0.20  # +20% jump puts Year 0 strictly above starting watermark
+    h = run_simulation(cfg, ret, np.zeros((1, 2)))
+    assert h["expenses_paid"][0, 0] == pytest.approx(50_000.0 * 1.25)
+
+
+def test_vanguard_zero_base_expenses_and_zero_equity_pension_fallback():
+    import pytest
+
+    cfg = SimConfig(
+        num_runs=1,
+        duration_years=1,
+        inflation_mean=0.0,
+        inflation_std=0.0,
+        start_age=50,
+        dividend_yield=0.0,
+        initial_liquid_wealth=1_000_000.0,
+        initial_pillar_2=100_000.0,
+        alloc_chf_cash=1.0,  # 0% target equities -> triggers 50/50 US/ex-US pension fallback
+        spending_strategy="Vanguard Dynamic",
+        annual_base_expenses=0.0,
+        vanguard_target_rate=0.04,
+        vanguard_floor_pct=0.05,
+        vanguard_ceiling_pct=0.05,
+    )
+    ret = np.zeros((1, 12, 5))
+    ret[:, 0, 0] = 0.10  # +10% US stocks, 0% ex-US -> 50/50 pension grows +5%
+    h = run_simulation(cfg, ret, np.zeros((1, 1)))
+    assert h["pillar_2"][0, 0] == pytest.approx(105_000.0)
+    # Initial vanguard_prev_expenses = 0.04 * 1,100,000 = 44,000; target = 0.04 * 1,105,000 = 44,200 (within ±5% band)
+    assert h["expenses_paid"][0, 0] == pytest.approx(0.04 * 1_105_000.0)
+
+
+def test_sim_config_strict_type_and_finite_validation():
+    import pytest
+
+    base = dict(
+        num_runs=1,
+        duration_years=1,
+        inflation_mean=0.0,
+        inflation_std=0.0,
+        start_age=50,
+        dividend_yield=0.0,
+        alloc_us_stocks=1.0,
+    )
+    with pytest.raises(ValueError, match="must be an integer"):
+        SimConfig(**(base | {"num_runs": True}))  # type: ignore[arg-type]
+    with pytest.raises(ValueError, match="must be an integer"):
+        SimConfig(**(base | {"duration_years": 10.5}))  # type: ignore[arg-type]
+    with pytest.raises(ValueError, match="must be finite"):
+        SimConfig(**(base | {"annual_base_expenses": float("nan")}))
+    with pytest.raises(ValueError, match="must be finite"):
+        SimConfig(**(base | {"initial_liquid_wealth": float("inf")}))
+
+
+def test_package_exports_and_generated_historic_returns_in_sync():
+    import os
+    import re
+    import subprocess
+    import sys
+    import tempfile
+
+    import src
+
+    for sym in (
+        "historic_lognormal_params",
+        "MONTHLY_US_CHF",
+        "MONTHLY_NON_US_CHF",
+        "MONTHLY_GOLD_CHF",
+        "MONTHLY_CASH_CHF",
+    ):
+        assert sym in src.__all__
+        assert hasattr(src, sym)
+
+    repo_root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+    gen_path = os.path.join(repo_root, "src", "historic_returns.py")
+    with open(gen_path, encoding="utf-8") as f:
+        committed = re.sub(r"built \d{4}-\d{2}-\d{2}", "built DATE", f.read())
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        # Check build_historic_returns.py matches src/historic_returns.py modulo date stamp
+        script_path = os.path.join(repo_root, "scripts", "build_historic_returns.py")
+        with open(script_path, encoding="utf-8") as sf:
+            script_src = sf.read()
+        out_file = os.path.join(tmpdir, "historic_returns.py")
+        patched_script = os.path.join(tmpdir, "build_check.py")
+        with open(patched_script, "w", encoding="utf-8") as pf:
+            pf.write(
+                script_src.replace(
+                    "BASE = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))",
+                    f"BASE = {repo_root!r}",
+                ).replace(
+                    "SRC_FILE = os.path.join(BASE, 'src', 'historic_returns.py')",
+                    f"SRC_FILE = {out_file!r}",
+                )
+            )
+        subprocess.run([sys.executable, patched_script], check=True)
+        with open(out_file, encoding="utf-8") as f:
+            fresh = re.sub(r"built \d{4}-\d{2}-\d{2}", "built DATE", f.read())
+        assert fresh == committed
+
 
 

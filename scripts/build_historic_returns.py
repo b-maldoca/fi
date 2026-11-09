@@ -76,8 +76,8 @@ def smooth(annual_return):
 
 def chf_monthly_from_index(idx):
     """Month-on-month return of a USD index expressed in CHF."""
-    chf = (idx * fx).dropna()
-    return chf.pct_change()
+    chf = idx * fx
+    return chf.pct_change(fill_method=None)
 
 
 # ------------------------------------------------- US equities (real monthly)
@@ -284,8 +284,8 @@ header = f'''# =================================================================
 #    The wholesale JST bill / SNB SARON rate is kept in the CSV (`wholesale_rate`) for reference.
 #
 # 7. Bitcoin -- SYNTHETIC (lognormal, 7% nominal / 50% vol default, correlated
-#    with US equities at default rho=0.50 via Gaussian copula on standardized
-#    monthly US equity log-returns).
+#    with US equities at default rho=0.50 via Gaussian copula on full-sample
+#    standardized monthly US equity log-returns).
 #
 # 8. US CPI -- data/us_cpi.csv, monthly: FRED CPIAUCNS (BLS CPI-U, NSA) from 1913,
 #    legacy wichtounet/swr-calculator leg for 1871-1912.
@@ -396,6 +396,13 @@ POLITIS_WHITE_BLOCK_YEARS = 5
 HISTORIC_REAL_CHF_APPRECIATION = {real_chf_appreciation:.4f}
 FOREIGN_ASSET_COLS = (ASSET_US_STOCKS, ASSET_NON_US_STOCKS, ASSET_GOLD)
 
+# Full-sample (1922-{last_year}) monthly US equity log-return moments used to standardize
+# US shocks in the Bitcoin Gaussian copula without per-path sum-to-zero variance collapse
+# or look-ahead bias, while keeping unconditional E[z_us] == 0 (no secular drift leak).
+_US_LOG_RETURNS = np.log1p(MONTHLY_US_CHF)
+_US_LOG_MEAN = float(np.mean(_US_LOG_RETURNS))
+_US_LOG_STD = float(np.std(_US_LOG_RETURNS, ddof=1))
+
 
 def _generate_lognormal_monthly_returns(
     rng: np.random.Generator,
@@ -404,26 +411,27 @@ def _generate_lognormal_monthly_returns(
     shape: tuple | int,
     us_monthly_slice: np.ndarray | None = None,
     btc_equity_corr: float = 0.0,
+    ref_log_mean: float = _US_LOG_MEAN,
+    ref_log_std: float = _US_LOG_STD,
 ) -> np.ndarray:
     """Generates monthly returns using a lognormal model with Ito drift correction.
 
     When us_monthly_slice and a non-zero btc_equity_corr are provided, couples the standard
-    normal shocks to path-standardized monthly US equity log-returns with correlation
-    rho = btc_equity_corr, preserving Bitcoin's target drift and volatility in every cohort.
+    normal shocks to full-sample-standardized monthly US equity log-returns with correlation
+    rho = btc_equity_corr, preserving Bitcoin's target multi-decade drift, volatility, and
+    horizon-level equity correlation without secular US drift leak or look-ahead bias.
     """
-    if ann_ret <= -1.0:
-        raise ValueError(f"ann_ret ({{ann_ret}}) must be greater than -1.0.")
-    if ann_vol < 0.0:
-        raise ValueError(f"ann_vol ({{ann_vol}}) cannot be negative.")
-    if not (-1.0 <= btc_equity_corr <= 1.0):
+    if not np.isfinite(ann_ret) or ann_ret <= -1.0:
+        raise ValueError(f"ann_ret ({{ann_ret}}) must be greater than -1.0 and finite.")
+    if not np.isfinite(ann_vol) or ann_vol < 0.0:
+        raise ValueError(f"ann_vol ({{ann_vol}}) cannot be negative and must be finite.")
+    if not np.isfinite(btc_equity_corr) or not (-1.0 <= btc_equity_corr <= 1.0):
         raise ValueError(f"btc_equity_corr ({{btc_equity_corr}}) must be between -1.0 and 1.0.")
     drift = np.log(1.0 + ann_ret) - 0.5 * (ann_vol ** 2)
     eps = rng.normal(0.0, 1.0, shape)
     if us_monthly_slice is not None and abs(btc_equity_corr) > 1e-12:
         us_log = np.log(np.maximum(1e-8, 1.0 + us_monthly_slice))
-        us_mean = np.mean(us_log, axis=-1, keepdims=True)
-        us_std = np.maximum(1e-12, np.std(us_log, axis=-1, ddof=1, keepdims=True))
-        z_us = (us_log - us_mean) / us_std
+        z_us = (us_log - ref_log_mean) / max(1e-12, float(ref_log_std))
         z = btc_equity_corr * z_us + np.sqrt(max(0.0, 1.0 - btc_equity_corr ** 2)) * eps
     else:
         z = eps
@@ -438,9 +446,9 @@ def _apply_fx_ppp_adjustment(
     """Adjusts foreign-priced asset sleeves for target real CHF appreciation beyond PPP."""
     if real_chf_appreciation is None:
         return matrix
-    if real_chf_appreciation >= 1.0:
+    if not np.isfinite(real_chf_appreciation) or real_chf_appreciation >= 1.0:
         raise ValueError(
-            f"real_chf_appreciation ({{real_chf_appreciation}}) must be strictly less than 1.0."
+            f"real_chf_appreciation ({{real_chf_appreciation}}) must be finite and strictly less than 1.0."
         )
     ann_adj = (1.0 - real_chf_appreciation) / (1.0 - HISTORIC_REAL_CHF_APPRECIATION)
     month_adj = ann_adj ** (1.0 / 12.0)
@@ -463,9 +471,9 @@ def ppp_adjusted_annual_returns(
     Historic Backtesting and Bootstrapping engines run under. Annual log-return volatility
     is invariant to this rescaling, so only the means move.
     """
-    if real_chf_appreciation >= 1.0:
+    if not np.isfinite(real_chf_appreciation) or real_chf_appreciation >= 1.0:
         raise ValueError(
-            f"real_chf_appreciation ({{real_chf_appreciation}}) must be strictly less than 1.0."
+            f"real_chf_appreciation ({{real_chf_appreciation}}) must be finite and strictly less than 1.0."
         )
     ann_adj = (1.0 - real_chf_appreciation) / (1.0 - HISTORIC_REAL_CHF_APPRECIATION)
     return (1.0 + np.asarray(annual_returns, dtype=float)) * ann_adj - 1.0
@@ -482,6 +490,8 @@ def compute_effective_sample_size(
     """
     if duration_years <= 0 or total_years <= 0:
         raise ValueError("total_years and duration_years must be positive.")
+    if duration_years > total_years:
+        raise ValueError(f"duration_years ({{duration_years}}) cannot exceed total_years ({{total_years}}).")
     n_cohorts = max(1, total_years - duration_years + 1)
     n_eff = max(1.0, float(total_years) / float(duration_years))
     p_hat = float(np.clip(success_rate_pct / 100.0, 0.0, 1.0))
@@ -524,7 +534,7 @@ def get_historic_return_matrix(
         raise ValueError(f"Duration {{duration_years}} exceeds available historic data ({{total_years}} years).")
     if seed < 0:
         raise ValueError(f"seed ({{seed}}) must be a non-negative integer.")
-    if not (-1.0 <= btc_equity_corr <= 1.0):
+    if not np.isfinite(btc_equity_corr) or not (-1.0 <= btc_equity_corr <= 1.0):
         raise ValueError(f"btc_equity_corr ({{btc_equity_corr}}) must be between -1.0 and 1.0.")
 
     num_runs = total_years - duration_years + 1
@@ -538,7 +548,7 @@ def get_historic_return_matrix(
         matrix[i, :, ASSET_NON_US_STOCKS] = MONTHLY_NON_US_CHF[a:b]
         matrix[i, :, ASSET_CHF_CASH] = MONTHLY_CASH_CHF[a:b]
         matrix[i, :, ASSET_GOLD] = MONTHLY_GOLD_CHF[a:b]
-        rng = np.random.default_rng(seed + i)
+        rng = np.random.default_rng(np.random.SeedSequence([seed, 1, i]))
         matrix[i, :, ASSET_BITCOIN] = _generate_lognormal_monthly_returns(
             rng,
             btc_mean,
@@ -567,6 +577,36 @@ def get_historic_inflation_matrix(duration_years: int) -> np.ndarray:
     for i in range(num_runs):
         matrix[i, :] = HISTORIC_SWISS_INFLATION[i: i + duration_years]
     return matrix
+
+
+def _sample_bootstrap_year_indices(
+    rng: np.random.Generator,
+    num_runs: int,
+    duration_years: int,
+    total_years: int,
+    block_size_years: int,
+    stationary: bool,
+) -> np.ndarray:
+    """Samples calendar-year indices (shape `(num_runs, duration_years)`) for block bootstrapping."""
+    if stationary:
+        p_new_block = 1.0 / float(block_size_years)
+        year_idx = np.zeros((num_runs, duration_years), dtype=int)
+        year_idx[:, 0] = rng.integers(0, total_years, size=num_runs)
+        if duration_years > 1:
+            random_starts = rng.integers(0, total_years, size=(num_runs, duration_years - 1))
+            jump_mask = rng.random(size=(num_runs, duration_years - 1)) < p_new_block
+            for t in range(1, duration_years):
+                year_idx[:, t] = np.where(
+                    jump_mask[:, t - 1],
+                    random_starts[:, t - 1],
+                    (year_idx[:, t - 1] + 1) % total_years,
+                )
+        return year_idx
+    num_blocks = int(np.ceil(duration_years / block_size_years))
+    max_start_idx = total_years - block_size_years
+    start_indices = rng.integers(0, max_start_idx + 1, size=(num_runs, num_blocks))
+    offsets = np.arange(block_size_years)
+    return (start_indices[:, :, None] + offsets[None, None, :]).reshape(num_runs, -1)[:, :duration_years]
 
 
 def generate_bootstrapped_data(
@@ -602,33 +642,15 @@ def generate_bootstrapped_data(
         raise ValueError(f"seed ({{seed}}) must be a non-negative integer.")
     if block_size_years <= 0 or block_size_years > total_years:
         raise ValueError(f"block_size_years ({{block_size_years}}) must be between 1 and {{total_years}}.")
-    if not (-1.0 <= btc_equity_corr <= 1.0):
+    if not np.isfinite(btc_equity_corr) or not (-1.0 <= btc_equity_corr <= 1.0):
         raise ValueError(f"btc_equity_corr ({{btc_equity_corr}}) must be between -1.0 and 1.0.")
 
     rng = np.random.default_rng(seed)
     duration_months = duration_years * 12
     return_matrix = np.zeros((num_runs, duration_months, NUM_ASSETS))
-
-    if stationary:
-        p_new_block = 1.0 / float(block_size_years)
-        year_idx = np.zeros((num_runs, duration_years), dtype=int)
-        year_idx[:, 0] = rng.integers(0, total_years, size=num_runs)
-        if duration_years > 1:
-            random_starts = rng.integers(0, total_years, size=(num_runs, duration_years - 1))
-            jump_mask = rng.random(size=(num_runs, duration_years - 1)) < p_new_block
-            for t in range(1, duration_years):
-                year_idx[:, t] = np.where(
-                    jump_mask[:, t - 1],
-                    random_starts[:, t - 1],
-                    (year_idx[:, t - 1] + 1) % total_years,
-                )
-    else:
-        num_blocks = int(np.ceil(duration_years / block_size_years))
-        max_start_idx = total_years - block_size_years
-        start_indices = rng.integers(0, max_start_idx + 1, size=(num_runs, num_blocks))
-        offsets = np.arange(block_size_years)
-        year_idx = (start_indices[:, :, None] + offsets[None, None, :]
-                    ).reshape(num_runs, -1)[:, :duration_years]
+    year_idx = _sample_bootstrap_year_indices(
+        rng, num_runs, duration_years, total_years, block_size_years, stationary
+    )
 
     # Expand each sampled calendar year into its 12 real monthly observations.
     month_idx = (year_idx[:, :, None] * 12 + np.arange(12)[None, None, :]
@@ -685,15 +707,19 @@ def generate_bootstrapped_inflation(
     block_size_years: int = POLITIS_WHITE_BLOCK_YEARS,
     stationary: bool = True,
 ) -> np.ndarray:
-    """Inflation-matrix-only wrapper around generate_bootstrapped_data."""
-    _, inf_matrix = generate_bootstrapped_data(
-        num_runs,
-        duration_years,
-        seed=seed,
-        block_size_years=block_size_years,
-        stationary=stationary,
+    """Inflation-matrix-only wrapper sharing the exact block-sampling RNG path of generate_bootstrapped_data."""
+    total_years = len(HISTORIC_YEARS)
+    if duration_years <= 0 or num_runs <= 0:
+        raise ValueError(f"num_runs ({{num_runs}}) and duration_years ({{duration_years}}) must be positive integers.")
+    if seed < 0:
+        raise ValueError(f"seed ({{seed}}) must be a non-negative integer.")
+    if block_size_years <= 0 or block_size_years > total_years:
+        raise ValueError(f"block_size_years ({{block_size_years}}) must be between 1 and {{total_years}}.")
+    rng = np.random.default_rng(seed)
+    year_idx = _sample_bootstrap_year_indices(
+        rng, num_runs, duration_years, total_years, block_size_years, stationary
     )
-    return inf_matrix
+    return HISTORIC_SWISS_INFLATION[year_idx]
 '''
 
 with open(SRC_FILE, 'w') as f:

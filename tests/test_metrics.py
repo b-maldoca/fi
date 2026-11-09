@@ -68,24 +68,51 @@ def test_classify_outcome_uses_median_of_real_values():
     assert classify_outcome(np.array([-1.0, 0.0, 5.0]), initial, np.zeros((3, 1)), success_pct=50.0) == "BROKE"
     # Boundary: exactly RICH_MULTIPLE x counts as RICH (when above success_pct)
     assert classify_outcome(np.full(3, RICH_MULTIPLE * initial), initial, np.zeros((3, 1)), success_pct=50.0) == "RICH"
+    # Even-N edge case: nominal median (-15) <= 0, but per-run real values are [+20, -5] -> median real +7.5 > 5.0 target
+    assert classify_outcome(np.array([20.0, -50.0]), 10.0, np.array([[0.0], [9.0]]), success_pct=50.0) == "DEAD"
 
 
 def test_beginning_of_year_withdrawal_rate():
     history = {
+        'initial_net_worth': 1_000.0,
+        'net_worth': np.array([
+            [900.0, -50.0],
+            [850.0, -100.0],
+        ]),
+        'expenses_paid': np.array([
+            [80.0, 40.0],
+            [70.0, 40.0],
+        ]),
+        'taxes_paid': np.array([
+            [20.0, 10.0],
+            [20.0, 10.0],
+        ]),
+        'income_ahv': np.array([
+            [0.0, 0.0],
+            [45.0, 60.0],
+        ]),
+    }
+    wr = beginning_of_year_withdrawal_rate(history)
+    # Year 0: BOY NW = initial_net_worth = 1000 for both runs -> [100/1000 = 10%, 50/1000 = 5%].
+    # Year 1: Run 0 net outflow = max(0, 90 - 45) = 45, BOY NW = 900 -> 45 / 900 = 5%.
+    #         Run 1 net outflow = max(0, 50 - 60) = 0, BOY NW = max(-50, 1) = 1 -> 0%.
+    assert np.allclose(wr, [[10.0, 5.0], [5.0, 0.0]])
+
+    # Fallback when `initial_net_worth` and `income_ahv` are omitted (e.g. minimal dict):
+    minimal = {
         'net_worth': np.array([[900.0, -50.0]]),
         'expenses_paid': np.array([[80.0, 40.0]]),
         'taxes_paid': np.array([[20.0, 10.0]]),
     }
-    # Run 0: 100 / (900 + 100) = 10%. Run 1: start NW = 0 -> floored at 1 CHF.
-    assert np.allclose(beginning_of_year_withdrawal_rate(history), [[10.0, 5_000.0]])
+    assert np.allclose(beginning_of_year_withdrawal_rate(minimal), [[10.0, 5_000.0]])
 
 
 def test_first_depletion_year_and_format_label():
-    # 3 years, 4 runs:
+    # 3 years (ages 40, 41, 42 for start_age=40), 4 runs:
     # Run 0: never depletes
-    # Run 1: depletes in year 1 (index 0)
-    # Run 2: depletes in year 3 (index 2)
-    # Run 3: liquid depletes in year 2, total NW never depletes
+    # Run 1: depletes in year 1 (index 0, Age 40)
+    # Run 2: depletes in year 3 (index 2, Age 42)
+    # Run 3: liquid depletes in year 2 (index 1, Age 41), total NW never depletes
     nw = np.array([
         [100.0, 0.0, 80.0, 50.0],
         [90.0, -10.0, 30.0, 40.0],
@@ -103,19 +130,19 @@ def test_first_depletion_year_and_format_label():
     assert liq_yr[3] == 2.0
 
     assert format_depletion_label(0, dep_yr, liq_yr, 40) == "Survived"
-    assert format_depletion_label(1, dep_yr, liq_yr, 40) == "Age 41 (Yr 1)"
-    assert format_depletion_label(2, dep_yr, liq_yr, 40) == "Age 43 (Yr 3)"
-    assert format_depletion_label(3, dep_yr, liq_yr, 40) == "Liq Age 42 (Yr 2)"
+    assert format_depletion_label(1, dep_yr, liq_yr, 40) == "Age 40 (Yr 1)"
+    assert format_depletion_label(2, dep_yr, liq_yr, 40) == "Age 42 (Yr 3)"
+    assert format_depletion_label(3, dep_yr, liq_yr, 40) == "Liq Age 41 (Yr 2)"
 
 
 def test_summarize_failure_timing_and_survival_curves():
     import pytest
 
-    # 3 years, 4 runs, start_age = 60, initial_net_worth = 100, target = 50% (50 CHF real)
+    # 3 years (ages 60, 61, 62), 4 runs, start_age = 60, initial_net_worth = 100, target = 50% (50 CHF real)
     # Run 0: ends at 80 (Success)
     # Run 1: ends at 30, never <= 0 (Target Shortfall)
-    # Run 2: depletes in year 1 (Age 61, pre-65), ends at -20 (Depleted)
-    # Run 3: depletes in year 3 (Age 63), liquid depletes in year 2 (Age 62)
+    # Run 2: depletes in year 1 (Age 60, pre-65), ends at -20 (Depleted)
+    # Run 3: depletes in year 3 (Age 62), liquid depletes in year 2 (Age 61)
     history = {
         "net_worth": np.array([
             [90.0, 70.0, 0.0, 60.0],
@@ -135,9 +162,9 @@ def test_summarize_failure_timing_and_survival_curves():
     assert stats["depletion_rate_pct"] == pytest.approx(50.0)
     assert stats["shortfall_rate_pct"] == pytest.approx(25.0)
     assert stats["pre_65_depletion_rate_pct"] == pytest.approx(50.0)
-    assert stats["earliest_depletion_age"] == pytest.approx(61.0)
+    assert stats["earliest_depletion_age"] == pytest.approx(60.0)
     assert stats["earliest_depletion_year"] == 1
-    assert stats["median_depletion_age"] == pytest.approx(62.0)
+    assert stats["median_depletion_age"] == pytest.approx(61.0)
     assert stats["median_depletion_year"] == pytest.approx(2.0)
 
     curves = compute_survival_curves(history, inf, success_pct=50.0)
@@ -146,6 +173,40 @@ def test_summarize_failure_timing_and_survival_curves():
     assert np.allclose(curves["liquid_solvent_pct"], [75.0, 50.0, 50.0])
     # Above 50 CHF target: Year 1: runs 0, 1, 3 (75%); Year 2: only run 0 (25%); Year 3: only run 0 (25%)
     assert np.allclose(curves["above_target_pct"], [75.0, 25.0, 25.0])
+
+
+def test_age_64_bridge_depletion_and_post_bankruptcy_ahv_recovery_partition():
+    import pytest
+
+    # Start at age 64 (2 years: Age 64 pre-AHV, Age 65 AHV + Pillar 2):
+    # Run 0: liquid depletes during Age 64 (-30k) while Pillar 2 keeps total NW > 0 (+470k) -> pre-65 liquid depletion!
+    # Run 1: total NW depletes during Age 64 (-5k), then recovers via generous AHV at Age 65 (+60k > 50k target) -> MUST count as Depleted, NOT Success!
+    history = {
+        "net_worth": np.array([
+            [470.0, -5.0],
+            [450.0, 60.0],
+        ]),
+        "liquid_assets": np.array([
+            [-30.0, -5.0],
+            [450.0, 60.0],
+        ]),
+        "initial_net_worth": 100.0,
+    }
+    inf = np.zeros((2, 2))
+    success_mask = compute_success_mask(history["net_worth"][-1, :], 100.0, inf, 50.0, net_worth_history=history["net_worth"])
+    assert success_mask.tolist() == [True, False]
+
+    stats = summarize_failure_timing(history, inf, success_pct=50.0, start_age=64)
+    # Both runs depleted liquid wealth during Age 64 (< 65)!
+    assert stats["pre_65_depletion_rate_pct"] == pytest.approx(100.0)
+    assert format_depletion_label(0, stats["depletion_years"], stats["liquid_depletion_years"], 64) == "Liq Age 64 (Yr 1)"
+    assert format_depletion_label(1, stats["depletion_years"], stats["liquid_depletion_years"], 64) == "Age 64 (Yr 1)"
+    # Partition identity: Success (50%) + Depletion (50%) + Final Shortfall (0%) == 100%
+    assert (np.mean(success_mask) * 100.0 + stats["depletion_rate_pct"] + stats["shortfall_rate_pct"]) == pytest.approx(100.0)
+
+    curves = compute_survival_curves(history, inf, success_pct=50.0)
+    assert np.all(curves["above_target_pct"] <= curves["solvent_pct"])
+    assert curves["above_target_pct"][-1] == pytest.approx(50.0)
 
 
 def test_min_real_spending_pct():
@@ -164,11 +225,11 @@ def test_min_real_spending_pct():
 
 
 def test_first_shortfall_year_and_format_label():
-    # 3 years, 3 runs. NW_0 = 100, success_pct = 50%
+    # 3 years (ages 40, 41, 42), 3 runs. NW_0 = 100, success_pct = 50%
     # No inflation -> target is 50.0 every year.
     # Run 0: stays above 50 (80, 70, 60) -> Never
-    # Run 1: breaches target in year 2 (60, 45, 30) -> Year 2 (Age 42)
-    # Run 2: breaches target in year 1 (40, 30, 20) -> Year 1 (Age 41)
+    # Run 1: breaches target in year 2 (60, 45, 30) -> Year 2 (Age 41)
+    # Run 2: breaches target in year 1 (40, 30, 20) -> Year 1 (Age 40)
     nw = np.array([
         [80.0, 60.0, 40.0],
         [70.0, 45.0, 30.0],
@@ -181,8 +242,8 @@ def test_first_shortfall_year_and_format_label():
     assert sf_yr[2] == 1.0
 
     assert format_shortfall_label(0, sf_yr, 40) == "Never"
-    assert format_shortfall_label(1, sf_yr, 40) == "Age 42 (Yr 2)"
-    assert format_shortfall_label(2, sf_yr, 40) == "Age 41 (Yr 1)"
+    assert format_shortfall_label(1, sf_yr, 40) == "Age 41 (Yr 2)"
+    assert format_shortfall_label(2, sf_yr, 40) == "Age 40 (Yr 1)"
 
 
 def _severity_history():
@@ -230,3 +291,14 @@ def test_worst_path_order_respects_configurable_criterion():
     outcomes = classify_path_outcomes(history, inf, 0.0)
     assert list(outcomes[2:]) == [OUTCOME_NEVER_BREACHED] * 5
     assert list(worst_path_order(history, inf, 0.0)) == [1, 0, 3, 2, 6, 5, 4]
+
+
+def test_worst_path_order_tie_breaks_by_final_real_within_groups():
+    # Two Depleted runs tying on Yr 1 depletion (-20 vs -5 final), and two Recovered runs tying on 1 yr shortfall (70 vs 90 final).
+    nw = np.array([
+        [-1.0, -1.0, 40.0, 40.0],
+        [-5.0, -20.0, 90.0, 70.0],
+    ])
+    inf = np.zeros((4, 2))
+    order = worst_path_order({"net_worth": nw, "initial_net_worth": 100.0}, inf, 50.0)
+    assert list(order) == [1, 0, 3, 2]
