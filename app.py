@@ -497,7 +497,8 @@ if IS_AT:
             "The gross monthly ASVG state pension you expect from age 65, in today's EUR (adjusted annually for CPI "
             "inflation in the simulation). Paid 14 times a year (12 regular payments + 13th/14th special payments). "
             "6% health insurance is deducted; the 12 regular payments are taxed at the progressive tariff (with the "
-            "pensioner tax credit), the 13th/14th at 6% above EUR 620. Health self-insurance stops when it starts."
+            "pensioner tax credit), the 13th/14th at 6% above EUR 620 (tax-free for pensions up to EUR 1,307.50/month). "
+            "Verified against the BMF Brutto-Netto-Rechner. Health self-insurance stops when the pension starts."
         ),
     )
 else:

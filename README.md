@@ -6,7 +6,7 @@ Phase 1 focuses on the **post-retirement decumulation phase** for a single indiv
 
 ## Jurisdictions & Implementation Status
 
-Both countries are implemented in one app (milestones M1–M6); pick the country in the sidebar. Programmatically: `run_simulation(SimConfig(country="AT", ...), ...)` with the EUR return module. The [Features](#features) section below describes the Swiss model; the Austrian differences are summarised here and specified in PRD §8. Still open: golden tests against the official BMF calculators.
+Both countries are implemented in one app (milestones M1–M6); pick the country in the sidebar. Programmatically: `run_simulation(SimConfig(country="AT", ...), ...)` with the EUR return module. The [Features](#features) section below describes the Swiss model; the Austrian differences are summarised here and specified in PRD §8. Austrian pension taxation is verified against the official BMF Brutto-Netto-Rechner (within €0.13 for pensions from €1,100 to €95,000 a month).
 
 Legend: ✅ implemented · 🔁 country-agnostic, reused unchanged · ❌ not implemented
 
@@ -18,7 +18,7 @@ Legend: ✅ implemented · 🔁 country-agnostic, reused unchanged · ❌ not im
 | Historic return data 1922–2025 | ✅ `src/historic_returns.py` (CHF) | ✅ `src/historic_returns_eur.py` (EUR; **1922–1957 Swiss inflation and cash data, 1958–1999 cash PPP-translated from Swiss data**, see below) |
 | Spending strategies, rebalancing, Cash Tent, Smart Cash Buffer | ✅ | 🔁 (✅ Austrian Year-0 tax estimate; sales and rebalancing realize taxable gains) |
 | Metrics, charts, cohort tables, success criterion | ✅ (tax-component medians on hover) | 🔁 (✅ EUR / State Pension labels, no Pillar or Liquid Solvent series, KESt / income tax / health insurance on hover) |
-| Income tax | ✅ Federal + Zurich 2026, ESTV-verified | ✅ § 33 EStG 2026 tariff, pension taxation (6% health contribution, 13th/14th at 6%, pensioner credit) |
+| Income tax | ✅ Federal + Zurich 2026, ESTV-verified | ✅ § 33 EStG 2026 tariff, pension taxation (6% health contribution capped at the contribution ceiling, 13th/14th payment under § 67 incl. the €2,615 Freigrenze, pensioner credit), BMF-verified |
 | Wealth tax | ✅ Zurich | n/a (no wealth tax) |
 | Cost-basis tracking (average cost, basis = value on day 0; `realized_gains` / `unrealized_gains` outputs) | ✅ tracked, not taxed | ✅ (engine, shared) |
 | Capital gains tax | n/a (tax-free) | ✅ 27.5% KESt on stocks, gold ETC and Bitcoin, in-year loss offset, Regelbesteuerungsoption (the year-end sale is solved for the tax on its own gains) |
@@ -26,7 +26,7 @@ Legend: ✅ implemented · 🔁 country-agnostic, reused unchanged · ❌ not im
 | Mandatory contributions before 65 | ✅ AHV non-worker | ✅ Health self-insurance (§ 16 ASVG, €565.25/month in 2026, CPI-indexed; for life if no pension) |
 | State pension (single input from 65) | ✅ AHV (monthly, 12×/yr) | ✅ monthly gross, 14×/yr |
 | Pension lump sums | ✅ Pillar 2 / 3a with capital withdrawal tax | n/a (out of scope) |
-| Tax tests | ✅ golden tests vs. the ESTV calculator | ✅ hand-computed statutory examples / ❌ golden tests vs. the BMF calculators |
+| Tax tests | ✅ golden tests vs. the ESTV calculator | ✅ golden tests vs. the BMF Brutto-Netto-Rechner (pensions) + hand-computed statutory examples (capital income) |
 
 Requirements, agreed decisions (all design questions resolved): [PRD §8](docs/prd_early_retirement_calc.md#8-austria-jurisdiction-country-switch). Technical design and milestones: [Design Doc §7](docs/design_doc_early_retirement.md#7-multi-jurisdiction-design-austria).
 
@@ -158,7 +158,7 @@ Equities, gold and Bitcoin use the same sources as the CHF build, converted to E
 └── venv/                               # Python virtual environment (ignored by git)
 ```
 
-Still open for Austria (❌): golden tests against the official BMF calculators.
+Not covered by an official calculator: Austrian capital income (KESt / Regelbesteuerungsoption) — the BMF offers no online calculator for it, so it is tested with hand-computed statutory examples.
 
 ## Getting Started
 

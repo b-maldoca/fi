@@ -1,8 +1,9 @@
-"""Austrian tax rules (2026): hand-computed examples from the statutory formulas.
+"""Austrian tax rules (2026): hand-computed statutory examples and golden tests against the BMF.
 
-Golden tests against the official BMF calculators are still open (they need manual queries of the
-BMF web calculators); every expected value below is derived by hand from the § 33 EStG tariff,
-§ 27a EStG rates, the pensioner credit and the § 67 EStG special-payment rule.
+`test_pension_matches_bmf_2026` pins the pension taxation to the official BMF Brutto-Netto-Rechner
+(https://onlinerechner.haude.at/BMF-Brutto-Netto-Rechner/, year 2026, Beitragsgruppe "Pensionist",
+Wien, no children, queried 2026-11-10). The BMF has no online calculator for capital income, so
+KESt and the Regelbesteuerungsoption are covered by the hand-computed examples below.
 """
 
 import numpy as np
@@ -108,3 +109,42 @@ def test_indexed_brackets_equal_explicitly_scaled_thresholds():
     scaled_brackets = [(threshold * f, rate) for threshold, rate in at.AT_INCOME_BRACKETS]
     explicit = at._calculate_bracket_tax(income, scaled_brackets)
     assert f * calculate_income_tax_at(income / f) == pytest.approx(float(explicit))
+
+
+# BMF Brutto-Netto-Rechner 2026, pensioner: monthly gross -> (health insurance / yr, Lohnsteuer / yr,
+# net pension / yr). Covers the Freigrenze for the 13th/14th payment (EUR 1,300 vs 1,350), the
+# pensioner credit phase-out (1,500-3,000), every tariff bracket up to 55%, the health insurance
+# Hoechstbeitragsgrundlage (8,000+) and the § 67 bands above EUR 83,333 (95,000).
+BMF_PENSION_2026 = [
+    (1_100, 924.00, 0.00, 14_476.00),
+    (1_200, 1_008.00, 0.00, 15_792.00),
+    (1_300, 1_092.00, 0.00, 17_108.00),
+    (1_350, 1_134.00, 115.08, 17_650.92),
+    (1_500, 1_260.00, 132.00, 19_608.00),
+    (2_000, 1_680.00, 1_127.04, 25_192.96),
+    (2_500, 2_100.00, 3_457.68, 29_442.32),
+    (3_000, 2_520.00, 5_546.16, 33_933.84),
+    (4_000, 3_360.00, 9_909.24, 42_730.76),
+    (6_000, 5_040.00, 19_158.84, 59_801.16),
+    (8_000, 5_821.20, 30_375.86, 75_802.94),
+    (12_000, 5_821.20, 54_578.90, 107_599.90),
+    (95_000, 5_821.20, 636_315.42, 687_863.38),
+]
+
+
+@pytest.mark.parametrize("monthly_gross, bmf_health, bmf_tax, bmf_net", BMF_PENSION_2026)
+def test_pension_matches_bmf_2026(monthly_gross, bmf_health, bmf_tax, bmf_net):
+    t = calculate_annual_taxes_at(14 * monthly_gross, 0.0, 0.0, 0.0)
+    # The BMF rounds each monthly payment to cents; the model computes the year at once.
+    assert t["pension_health_insurance"] == pytest.approx(bmf_health, abs=0.01)
+    assert t["income_tax"] == pytest.approx(bmf_tax, abs=0.25)
+    assert 14 * monthly_gross - t["total"] == pytest.approx(bmf_net, abs=0.25)
+
+
+def test_special_payments_freigrenze_and_bands():
+    # Jahressechstel (two monthly gross payments) <= EUR 2,615 -> no tax on the 13th/14th payment.
+    assert special_payments_tax_at(2_444.0, 2_600.0) == 0.0
+    assert special_payments_tax_at(2_538.0, 2_700.0) == pytest.approx(0.06 * (2_538.0 - 620.0))
+    # Bands: 6% up to 25,000, 27% to 50,000, 35.75% to 83,333.33; the rest goes to the tariff.
+    expected = 0.06 * 24_380 + 0.27 * 25_000 + 0.3575 * 33_333.33
+    assert special_payments_tax_at(100_000.0) == pytest.approx(expected, abs=0.01)

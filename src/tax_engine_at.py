@@ -9,17 +9,24 @@ Tax year 2026, single, no children, no church contribution. Sources (verified 20
     taxed at the progressive tariff instead (all-or-nothing).
   * § 27 Abs. 8 EStG: realized losses offset gains, dividends and deemed distributions of the same
     calendar year (not bank interest); no loss carry-forward.
-  * Pensions: 6% health insurance contribution on the gross pension (since mid-2025); 13th/14th
-    payment (sonstige Bezuege, § 67 Abs. 1 EStG): first EUR 620/yr tax-free, the rest at 6% (within
-    the Jahressechstel, which two monthly payments never exceed); Pensionistenabsetzbetrag
-    (§ 33 Abs. 6 EStG) EUR 1,020, phasing out linearly between EUR 21,614 and EUR 31,494 of taxable
-    regular pension income.
+  * Pensions: 6% health insurance contribution on the gross pension (since mid-2025), capped at the
+    2026 Hoechstbeitragsgrundlage of EUR 6,930 per payment; 13th/14th payment (sonstige Bezuege,
+    § 67 Abs. 1 EStG, within the Jahressechstel, which two monthly payments never exceed): tax-free if
+    the Jahressechstel is at most EUR 2,615 (Freigrenze 2026), otherwise 0% on the first EUR 620,
+    6% on the next EUR 24,380, 27% on the next EUR 25,000, 35.75% on the next EUR 33,333.33 and the
+    tariff above; Pensionistenabsetzbetrag (§ 33 Abs. 6 EStG) EUR 1,020, phasing out linearly between
+    EUR 21,614 and EUR 31,494 of taxable regular pension income.
   * § 16 ASVG Selbstversicherung in der Krankenversicherung: EUR 565.25 per month (2026, OeGK).
 
+Verified against the official BMF Brutto-Netto-Rechner (pensioner, 2026) for monthly gross pensions
+from EUR 1,100 to EUR 95,000: health contribution, income tax and net pension match to within the
+calculator's monthly cent rounding (tests/test_tax_engine_at.py::test_pension_matches_bmf_2026).
+
 Deliberate simplifications (each small, and all keep the tax positively homogeneous of degree 1 in
-the money amounts, which `jurisdiction.indexed_tax`-style bracket indexation relies on): the EUR 2,100
-Freigrenze for sonstige Bezuege (only relevant for pensions below ~EUR 1,050/month) and the
-SV-Rueckerstattung (negative tax) are not modelled; the EUR 1M bracket edge is indexed like the others.
+the money amounts, which `jurisdiction.indexed_tax`-style bracket indexation relies on): the
+SV-Rueckerstattung (negative tax) is not modelled; every euro amount (incl. the EUR 1M bracket edge,
+the § 67 bands and the Hoechstbeitragsgrundlage, which by law follow different or no indexation) is
+indexed with the same bracket factor.
 
 All functions are vectorized and follow the `tax_engine` contract: scalar in -> float out, array in
 -> array out, negative amounts clamp to zero.
@@ -47,8 +54,19 @@ KEST_RATE_BANK_INTEREST = 0.25
 # Pensions.
 PENSION_PAYMENTS_PER_YEAR = 14          # 12 regular + 13th/14th special payment
 PENSION_HEALTH_INSURANCE_RATE = 0.06    # Krankenversicherungsbeitrag on the gross pension
-SPECIAL_PAYMENT_ALLOWANCE = 620.0       # § 67 Abs. 1 EStG, tax-free part of sonstige Bezuege
-SPECIAL_PAYMENT_RATE = 0.06
+PENSION_HEALTH_INSURANCE_MAX_BASE = 6_930.0  # Hoechstbeitragsgrundlage 2026 per payment (14x)
+# § 67 Abs. 1 EStG bands for sonstige Bezuege within the Jahressechstel. Format as tax brackets;
+# amounts above SPECIAL_PAYMENT_TARIFF_FROM are taxed at the regular tariff.
+SPECIAL_PAYMENT_BRACKETS = [
+    (0, 0.00),
+    (620, 0.06),
+    (25_000, 0.27),
+    (50_000, 0.3575),
+]
+SPECIAL_PAYMENT_TARIFF_FROM = 83_333.33
+SPECIAL_PAYMENT_ALLOWANCE = 620.0       # tax-free first band (kept for reference)
+SPECIAL_PAYMENT_RATE = 0.06             # rate of the second band
+SPECIAL_PAYMENT_FREIGRENZE = 2_615.0    # 2026: no tax on sonstige Bezuege if the Jahressechstel <= this
 PENSIONER_CREDIT = 1_020.0              # Pensionistenabsetzbetrag 2026
 PENSIONER_CREDIT_FULL_UP_TO = 21_614.0
 PENSIONER_CREDIT_ZERO_FROM = 31_494.0
@@ -76,10 +94,25 @@ def pensioner_credit_at(taxable_regular_pension):
     return _as_output(result, _is_scalar(taxable_regular_pension))
 
 
-def special_payments_tax_at(taxable_special_payments):
-    """13th/14th pension payment: first EUR 620 tax-free, the rest at 6%."""
+def special_payments_tax_at(taxable_special_payments, jahressechstel=None):
+    """§ 67 Abs. 1 EStG tax on the 13th/14th payment (after health insurance), up to EUR 83,333.33.
+
+    0% on the first EUR 620, 6% on the next 24,380, 27% on the next 25,000, 35.75% on the next
+    33,333.33; amounts above are taxed at the regular tariff (see `special_payments_overflow_at`).
+    No tax at all when `jahressechstel` (one sixth of the year's regular gross pay, i.e. two monthly
+    payments) is at most the EUR 2,615 Freigrenze; `None` skips that check.
+    """
     x = np.maximum(0.0, np.asarray(taxable_special_payments, dtype=float))
-    result = SPECIAL_PAYMENT_RATE * np.maximum(0.0, x - SPECIAL_PAYMENT_ALLOWANCE)
+    banded = _calculate_bracket_tax(np.minimum(x, SPECIAL_PAYMENT_TARIFF_FROM), SPECIAL_PAYMENT_BRACKETS)
+    if jahressechstel is not None:
+        banded = np.where(np.asarray(jahressechstel, dtype=float) <= SPECIAL_PAYMENT_FREIGRENZE, 0.0, banded)
+    return _as_output(banded, _is_scalar(taxable_special_payments))
+
+
+def special_payments_overflow_at(taxable_special_payments):
+    """Part of the 13th/14th payment above EUR 83,333.33, which is taxed at the regular tariff."""
+    x = np.maximum(0.0, np.asarray(taxable_special_payments, dtype=float))
+    result = np.maximum(0.0, x - SPECIAL_PAYMENT_TARIFF_FROM)
     return _as_output(result, _is_scalar(taxable_special_payments))
 
 
@@ -98,9 +131,9 @@ def calculate_annual_taxes_at(
         interest: bank-deposit interest, 25%; not available for loss offset.
 
     Returns a dict of arrays (or floats for scalar input):
-        pension_health_insurance: 6% health insurance contribution on the gross pension.
+        pension_health_insurance: 6% health insurance contribution on the gross pension (capped).
         income_tax: progressive tax on the regular pension (after the pensioner credit) plus the
-            6% tax on the 13th/14th payment, and -- if the Regelbesteuerungsoption is cheaper --
+            § 67 tax on the 13th/14th payment, and -- if the Regelbesteuerungsoption is cheaper --
             the progressive tax on all capital income.
         kest: special-rate tax on capital income (0 when the Regelbesteuerungsoption applies).
         regelbesteuerung: 1.0 where the progressive option was chosen, else 0.0.
@@ -119,21 +152,28 @@ def calculate_annual_taxes_at(
     gains = np.asarray(realized_gains, dtype=float)
     interest_arr = np.maximum(0.0, np.asarray(interest, dtype=float))
 
-    # Pension: 12 regular payments at the tariff, 2 special payments at 6% after EUR 620; the 6%
-    # health insurance contribution is deducted before tax on both.
-    pension_health = PENSION_HEALTH_INSURANCE_RATE * gross
-    taxable_regular = (12.0 / PENSION_PAYMENTS_PER_YEAR) * gross * (1.0 - PENSION_HEALTH_INSURANCE_RATE)
-    taxable_special = (2.0 / PENSION_PAYMENTS_PER_YEAR) * gross * (1.0 - PENSION_HEALTH_INSURANCE_RATE)
-    special_tax = special_payments_tax_at(taxable_special)
+    # Pension: 12 regular payments at the tariff, 2 special payments under § 67 Abs. 1; the 6%
+    # health insurance contribution (capped at the Hoechstbeitragsgrundlage per payment) is deducted
+    # before tax on both.
+    pension_health = PENSION_HEALTH_INSURANCE_RATE * np.minimum(
+        gross, PENSION_PAYMENTS_PER_YEAR * PENSION_HEALTH_INSURANCE_MAX_BASE
+    )
+    net_of_health = gross - pension_health
+    taxable_regular = (12.0 / PENSION_PAYMENTS_PER_YEAR) * net_of_health
+    taxable_special = (2.0 / PENSION_PAYMENTS_PER_YEAR) * net_of_health
+    jahressechstel = (2.0 / PENSION_PAYMENTS_PER_YEAR) * gross
+    special_tax = special_payments_tax_at(taxable_special, jahressechstel)
+    # Special payments above EUR 83,333.33 join the regular income at the tariff (not the credit base).
+    tariff_base = taxable_regular + special_payments_overflow_at(taxable_special)
     credit = pensioner_credit_at(taxable_regular)
 
     # Capital income pool at 27.5% after the in-year loss offset (unused losses expire).
     pool = np.maximum(0.0, divs + gains)
     kest_flat = KEST_RATE * pool + KEST_RATE_BANK_INTEREST * interest_arr
 
-    tax_flat = np.maximum(0.0, _calculate_bracket_tax(taxable_regular, AT_INCOME_BRACKETS) - credit)
+    tax_flat = np.maximum(0.0, _calculate_bracket_tax(tariff_base, AT_INCOME_BRACKETS) - credit)
     tax_regel = np.maximum(
-        0.0, _calculate_bracket_tax(taxable_regular + pool + interest_arr, AT_INCOME_BRACKETS) - credit
+        0.0, _calculate_bracket_tax(tariff_base + pool + interest_arr, AT_INCOME_BRACKETS) - credit
     )
     use_regel = tax_regel < tax_flat + kest_flat
 

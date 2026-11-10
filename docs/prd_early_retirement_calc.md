@@ -5,7 +5,7 @@ The goal of this project is to build a financial simulation tool designed for in
 
 The tool will simulate the user's financial life over a configurable period (e.g., 50 years), taking into account the unique aspects of Swiss taxation, the Swiss three-pillar pension system, and the cost of living in Canton Zurich. It will help users determine their readiness for retirement, optimize their withdrawal strategies, and visualize their net worth trajectory.
 
-> **Jurisdiction status:** 🇨🇭 **Switzerland (Canton Zurich)** — ✅ implemented (§1–§7). 🇦🇹 **Austria** — ✅ implemented (§8: engine, EUR data and UI; select *Austria* in the sidebar **Country** box). Open: golden tests against the official BMF calculators. Both countries live in **one app with a country switch**.
+> **Jurisdiction status:** 🇨🇭 **Switzerland (Canton Zurich)** — ✅ implemented (§1–§7). 🇦🇹 **Austria** — ✅ implemented (§8: engine, EUR data and UI; select *Austria* in the sidebar **Country** box); pension taxation verified against the official BMF Brutto-Netto-Rechner 2026 (13 pensions from €1,100 to €95,000 a month: health contribution, income tax and net pension within €0.13). Both countries live in **one app with a country switch**.
 
 ## 2. Target Audience & User Persona
 *   **Role**: High-earning professional based in Zurich.
@@ -234,7 +234,7 @@ The tool presents results side-by-side across all three simulation modes (**Hist
 ## 8. Austria Jurisdiction (Country Switch)
 
 > [!IMPORTANT]
-> **Status: ✅ implemented (M1–M6) and selectable in the app** (sidebar **Country** → *Austria*). Everything below is implemented unless marked ❌ (only the golden tests against the official BMF calculators remain open). What exists: (M1) the `SimConfig.country` field and the `src/jurisdiction.py` dispatch layer; (M2) average-cost basis tracking for every sleeve with `realized_gains`, `unrealized_gains` and `cost_basis_by_class` outputs (tracked but untaxed in Switzerland); (M3) the EUR return series `src/historic_returns_eur.py` built from BIS/ECB/Statistik Austria data with the documented Swiss-data stand-ins (§8.6.F); (M4) the Austrian tax rules in `src/tax_engine_at.py` and the `Austria` jurisdiction (KESt, Regelbesteuerungsoption, pension taxation, health insurance). The technical design is in [`design_doc_early_retirement.md` §7](design_doc_early_retirement.md#7-multi-jurisdiction-design-austria); a status summary is in the [README](../README.md#jurisdictions--implementation-status).
+> **Status: ✅ implemented (M1–M6) and selectable in the app** (sidebar **Country** → *Austria*). Everything below is implemented; the pension taxation verified against the official BMF Brutto-Netto-Rechner 2026 (13 pensions from €1,100 to €95,000 a month: health contribution, income tax and net pension within €0.13). What exists: (M1) the `SimConfig.country` field and the `src/jurisdiction.py` dispatch layer; (M2) average-cost basis tracking for every sleeve with `realized_gains`, `unrealized_gains` and `cost_basis_by_class` outputs (tracked but untaxed in Switzerland); (M3) the EUR return series `src/historic_returns_eur.py` built from BIS/ECB/Statistik Austria data with the documented Swiss-data stand-ins (§8.6.F); (M4) the Austrian tax rules in `src/tax_engine_at.py` and the `Austria` jurisdiction (KESt, Regelbesteuerungsoption, pension taxation, health insurance). The technical design is in [`design_doc_early_retirement.md` §7](design_doc_early_retirement.md#7-multi-jurisdiction-design-austria); a status summary is in the [README](../README.md#jurisdictions--implementation-status).
 
 **Status legend** (shared by this section, design doc §7 and the README):
 ✅ implemented · 🔁 country-agnostic, reused unchanged (already implemented) · ❌ not implemented. All design questions are resolved (§8.9).
@@ -292,7 +292,7 @@ The tool presents results side-by-side across all three simulation modes (**Hist
 | Bitcoin | Wealth-taxed; gains tax-free | 27.5% on gains (Neuvermögen) |
 | Mandatory contributions before pension | AHV non-worker (CHF 530–26,500/yr, deductible) | Health self-insurance (€6,783/yr in 2026, not deductible) |
 | Pension vehicles | Pillar 2 / 3a lump sums with capital withdrawal tax | Not modelled (out of scope) |
-| Income tax on pension | Federal + cantonal + municipal tariff | National tariff; 6% health contribution withheld; 13th/14th payment at 6%; pensioner tax credit |
+| Income tax on pension | Federal + cantonal + municipal tariff | National tariff; 6% health contribution withheld (capped); 13th/14th payment at 6% (tax-free up to the €2,615 Freigrenze); pensioner tax credit — verified against the BMF Brutto-Netto-Rechner |
 | Bracket indexation | 100% CPI by law (Art. 39 DBG, § 48 StG ZH) | Brackets 1–5 automatically indexed by ⅔ of inflation (§ 33a EStG); remaining ⅓ discretionary |
 
 ### 8.6. Calculation Logic (Austria)
@@ -317,8 +317,8 @@ The tool presents results side-by-side across all three simulation modes (**Hist
 | 104,859 – 1,000,000 | 50% |
 | > 1,000,000 | 55% (temporary, until 2029) |
 
-*   **Taxable base**: the 12 regular monthly pension payments (`12 × monthly_state_pension`), after deducting the 6% health insurance contribution on the pension; plus all capital income if the Regelbesteuerungsoption is cheaper (§8.6.A).
-*   **Special payments** (13th and 14th pension payment, `2 × monthly_state_pension`): first **€620/yr** tax-free, the remainder at **6%** (within the Jahressechstel, which two monthly payments never exceed). Not modelled: the €2,100 Freigrenze for sonstige Bezüge (relevant only for pensions below ~€1,050/month).
+*   **Taxable base**: the 12 regular monthly pension payments (`12 × monthly_state_pension`), after deducting the 6% health insurance contribution on the pension (capped at the 2026 Höchstbeitragsgrundlage of €6,930 per payment, i.e. at most €415.80); plus all capital income if the Regelbesteuerungsoption is cheaper (§8.6.A).
+*   **Special payments** (13th and 14th pension payment, `2 × monthly_state_pension`, after the health contribution; § 67 Abs. 1 EStG within the Jahressechstel, which two monthly payments never exceed): **no tax if the Jahressechstel (two monthly gross payments) is at most €2,615** (2026 Freigrenze, i.e. pensions up to €1,307.50/month); otherwise 0% on the first **€620**, **6%** on the next €24,380, 27% on the next €25,000, 35.75% on the next €33,333.33, and the rest at the regular tariff.
 *   **Pensionistenabsetzbetrag** (tax credit, 2026): **€1,020** for pension income up to **€21,614**, phasing out linearly to 0 at **€31,494**. Credits cannot make the tax negative.
 *   **Indexation**: all euro amounts (bracket edges, €620, credit and phase-out limits) are indexed each year with `bracket_indexation × CPI` via the same homogeneity identity as the Swiss tariffs. **Default `bracket_indexation = 2/3`** for Austria (the statutory automatic part, § 33a EStG); the discretionary third is not assumed. Simplification: the €1M edge is indexed like the others (by law it is not; irrelevant below €1M of income).
 
@@ -369,7 +369,7 @@ The tool presents results side-by-side across all three simulation modes (**Hist
 | New output series (`tax_components`, M4) | ✅ |
 | Austrian labels, inputs, Swiss-data banner and tax-component hover in the UI (M5) | ✅ |
 | Hand-computed statutory examples (`tests/test_tax_engine_at.py`, M4) | ✅ |
-| Golden tests vs. the official BMF calculators (need manual queries of the BMF web calculators) | ❌ |
+| Golden tests vs. the official BMF Brutto-Netto-Rechner 2026 for pensions (13 cases, ≤ €0.13; `test_pension_matches_bmf_2026`). The BMF has no online calculator for capital income, so KESt / Regelbesteuerung stay covered by the hand-computed examples. | ✅ |
 
 ### 8.9. Resolved Design Questions (2026-11-10)
 | # | Question | Decision |
