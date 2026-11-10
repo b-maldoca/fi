@@ -583,8 +583,8 @@ st.sidebar.subheader(
         "Stock means, volatilities, gold and inflation defaults are calibrated to that history (arithmetic means, "
         "log-return vols for assets); the US, Non-US and Gold means are taken from the history rescaled to the "
         f"Currency / PPP Assumption above, so all three engines share one FX assumption. Only {CCY} cash stays "
-        "forward-looking (today's near-zero savings rates and Year 0 taxable interest), with historic values in each "
-        "field's help."
+        f"forward-looking (today's {'Austrian' if IS_AT else 'near-zero Swiss'} savings rates and Year 0 taxable "
+        "interest), with historic values in each field's help."
     ),
 )
 _min_ret_pct = -99.0  # generate_monte_carlo_returns requires returns > -100%
@@ -1353,7 +1353,14 @@ def render_results(history, config, num_runs, title, inflation_matrix, success_p
         legend=dict(orientation="h", yanchor="top", y=-0.22, xanchor="center", x=0.5),
         margin=dict(t=15, b=65, l=10, r=10)
     )
-    st.subheader("Asset Allocation Development", help="This stacked chart visualizes the median nominal balance of all asset categories (taxable liquid investments and combined Pillar 2 & 3a pensions) over time, showing how your net worth breakdown glides and rebalances throughout retirement.")
+    st.subheader(
+        "Asset Allocation Development",
+        help=(
+            "This stacked chart visualizes the median nominal balance of all asset categories (taxable liquid investments"
+            + ("" if IS_AT else " and combined Pillar 2 & 3a pensions")
+            + ") over time, showing how your net worth breakdown glides and rebalances throughout retirement."
+        ),
+    )
     st.plotly_chart(fig_alloc, width='stretch')
 
     analysis_name = "Cohort Analysis" if is_historic_backtest else "Run Analysis"

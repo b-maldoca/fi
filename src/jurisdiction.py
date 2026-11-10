@@ -379,8 +379,9 @@ class Austria:
     def estimate_year_0_taxes_for_weights(self, config: SimConfig, init_wealth: float, weights: np.ndarray) -> float:
         """KESt on Year-0 dividends and interest, pension taxes and health insurance.
 
-        The Year-0 outflow sale realizes no gain because the cost basis equals the market value on
-        day 0 (PRD decision 5).
+        Assumes the Year-0 outflow sale realizes no gain: the cost basis equals the market value on
+        day 0 (PRD decision 5) and the Year-0 price moves before the year-end sale are not known at
+        estimation time. The simulation itself taxes whatever gain that sale actually realizes.
         """
         equities = max(0.0, init_wealth * float(weights[0] + weights[1]))
         dividends = equities * config.dividend_yield
