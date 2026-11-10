@@ -1,4 +1,4 @@
-"""Zurich Early Retirement Simulator - simulation engine package.
+"""Early Retirement Simulator (Zurich · Austria) - simulation engine package.
 
 This package is deliberately decoupled from the Streamlit UI (``app.py``) so it
 can be driven programmatically. From the repository root, no ``sys.path``
@@ -86,6 +86,18 @@ from .simulation_engine import (
     historic_lognormal_params,
     run_simulation,
 )
+from .jurisdiction import (
+    COUNTRY_DEFAULTS,
+    PLANNED_COUNTRIES,
+    STATE_PENSION_AGE,
+    SUPPORTED_COUNTRIES,
+    AnnualTaxes,
+    CountryDefaults,
+    Jurisdiction,
+    PensionLiquidation,
+    Switzerland,
+    get_jurisdiction,
+)
 from .tax_engine import (
     ZURICH_CANTONAL_MULTIPLIER,
     ZURICH_CITY_MUNICIPAL_MULTIPLIER,
@@ -106,6 +118,17 @@ __all__ = [
     "generate_monte_carlo_inflation",
     "VALID_SPENDING_STRATEGIES",
     "VALID_REBALANCE_STRATEGIES",
+    # jurisdiction
+    "COUNTRY_DEFAULTS",
+    "SUPPORTED_COUNTRIES",
+    "PLANNED_COUNTRIES",
+    "STATE_PENSION_AGE",
+    "CountryDefaults",
+    "Jurisdiction",
+    "Switzerland",
+    "AnnualTaxes",
+    "PensionLiquidation",
+    "get_jurisdiction",
     # metrics
     "OUTCOME_DEPLETED",
     "OUTCOME_FAILED",

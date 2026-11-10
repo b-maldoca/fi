@@ -1,16 +1,24 @@
 import numpy as np
 from dataclasses import dataclass, field
+from .jurisdiction import (
+    COUNTRY_DEFAULTS,
+    STATE_PENSION_AGE,
+    get_jurisdiction,
+    indexed_tax,
+    unsupported_country_message,
+)
 from .tax_engine import (
     ZURICH_CANTONAL_MULTIPLIER,
     ZURICH_CITY_MUNICIPAL_MULTIPLIER,
-    calculate_ahv_non_worker,
-    calculate_capital_withdrawal_tax,
-    calculate_income_tax,
-    calculate_wealth_tax,
 )
+from .tax_engine_at import HEALTH_SELF_INSURANCE_MONTHLY
 
 VALID_SPENDING_STRATEGIES = {"Static", "Dynamic (Floor & Ceiling)", "Vanguard Dynamic"}
 VALID_REBALANCE_STRATEGIES = {"Cash Tent", "Monthly", "Quarterly", "Yearly", "Threshold", "Never"}
+# Number of fixed-point iterations used to solve the year-end sale for the capital gains tax on
+# its own gains (contraction factor <= gain fraction x marginal rate < 0.55, so 30 iterations
+# leave a relative error below 1e-7; the residual is settled exactly after the sale anyway).
+OUTFLOW_TAX_ITERATIONS = 30
 
 
 @dataclass
@@ -54,6 +62,8 @@ class SimConfig:
     
     # Expenses & Income
     annual_base_expenses: float = 0.0
+    # Monthly gross state pension from age 65 in today's money: AHV in CH (paid 12x/yr), the
+    # ASVG state pension in AT (paid 14x/yr, see COUNTRY_DEFAULTS[country].pension_payments_per_year).
     monthly_ahv_pension: float = 0.0
     
     # Taxes (Steuerfuss). Defaults are Canton Zurich 2026 (0.95) + City of Zurich (1.19).
@@ -63,18 +73,21 @@ class SimConfig:
     # Fraction of realized CPI applied annually to the tax bracket edges.
     # 1.0 = full indexation (Art. 39 DBG / § 48 StG ZH); 0.0 = frozen nominal
     # brackets, i.e. the retiree absorbs the full bracket creep.
-    bracket_indexation: float = 1.0
+    # None -> COUNTRY_DEFAULTS[country].bracket_indexation (CH 1.0, AT 2/3 per § 33a EStG).
+    bracket_indexation: float | None = None
 
     # Cash Tent Strategy (Pfau Glidepath)
     tent_duration_years: int = 7
 
-    # Expected real CHF appreciation beyond Relative Purchasing Power Parity (PPP).
-    # 0.0 = PPP neutrality (default); historic_returns.HISTORIC_REAL_CHF_APPRECIATION
-    # (derived from the data at build time, ~0.71%/yr) reproduces raw 1922-2025 history.
+    # Expected real appreciation of the HOME currency (CHF for "CH", EUR for "AT") beyond Relative
+    # Purchasing Power Parity. Not used by run_simulation itself; the app passes it to the matching
+    # return module (real_chf_appreciation / real_eur_appreciation). 0.0 = PPP neutrality (default);
+    # HISTORIC_REAL_{CHF,EUR}_APPRECIATION (derived from the data at build time) reproduces raw history.
     real_chf_appreciation: float = 0.0
 
-    # Expected CHF Cash yield used for Year 0 tax estimation (and Cash Tent buffer sizing).
-    cash_rate: float = 0.01
+    # Expected cash yield used for Year 0 tax estimation (and Cash Tent buffer sizing).
+    # None -> COUNTRY_DEFAULTS[country].cash_rate (CH 1%, AT 2%).
+    cash_rate: float | None = None
 
     # Correlation between synthetic Bitcoin monthly log-returns and US equity log-returns.
     btc_equity_corr: float = 0.50
@@ -82,7 +95,23 @@ class SimConfig:
     # Random Seed for reproducible stochastic simulation
     seed: int = 42
 
+    # Tax jurisdiction (ISO 3166-1 alpha-2): selects the `jurisdiction.Jurisdiction` rules.
+    # "CH" (Switzerland, Canton Zurich) or "AT" (Austria).
+    country: str = "CH"
+
+    # AT only: monthly § 16 ASVG health self-insurance contribution in today's EUR (2026 rate),
+    # mandatory until the state pension starts, CPI-indexed. Ignored in CH.
+    health_insurance_monthly: float = HEALTH_SELF_INSURANCE_MONTHLY
+
     def __post_init__(self):
+        if self.country not in COUNTRY_DEFAULTS:
+            raise ValueError(unsupported_country_message(self.country))
+        defaults = COUNTRY_DEFAULTS[self.country]
+        if self.bracket_indexation is None:
+            self.bracket_indexation = defaults.bracket_indexation
+        if self.cash_rate is None:
+            self.cash_rate = defaults.cash_rate
+
         for int_name in ("num_runs", "duration_years", "start_age", "tent_duration_years", "seed"):
             val = getattr(self, int_name)
             if isinstance(val, bool) or not isinstance(val, (int, np.integer)):
@@ -125,6 +154,7 @@ class SimConfig:
             self.real_chf_appreciation,
             self.cash_rate,
             self.btc_equity_corr,
+            self.health_insurance_monthly,
             *self.initial_pillar_3a_accounts,
         )
         if not all(np.isfinite(x) for x in float_fields):
@@ -193,35 +223,16 @@ class SimConfig:
         if self.rebalance_strategy not in VALID_REBALANCE_STRATEGIES:
             raise ValueError(f"Invalid rebalance_strategy '{self.rebalance_strategy}'. Must be one of {sorted(VALID_REBALANCE_STRATEGIES)}.")
 
+        if self.health_insurance_monthly < 0.0:
+            raise ValueError(f"health_insurance_monthly ({self.health_insurance_monthly}) cannot be negative.")
+
+        if self.country == "AT" and (self.initial_pillar_2 > 0.0 or any(a > 0.0 for a in self.initial_pillar_3a_accounts)):
+            raise ValueError("Pillar 2 / Pillar 3a balances are Swiss-only and must be 0 when country == 'AT'.")
+
 
 def _get_year_0_liquid_wealth(config: SimConfig) -> float:
-    """
-    Computes Year 0 initial liquid wealth including any immediate Month 0 pension liquidations
-    (all Pillar 2 + Pillar 3a at age >= 65, or the first eligible Pillar 3a account at ages 60-64)
-    net of immediate Capital Withdrawal Tax.
-    """
-    init_wealth = config.initial_liquid_wealth
-    total_pension_liq = 0.0
-
-    if config.start_age >= 65:
-        p2 = config.initial_pillar_2
-        p3a = sum(config.initial_pillar_3a_accounts) if config.initial_pillar_3a_accounts else 0.0
-        total_pension_liq = p2 + p3a
-    elif 60 <= config.start_age < 65 and config.initial_pillar_3a_accounts:
-        for i, acc in enumerate(config.initial_pillar_3a_accounts):
-            if config.start_age >= 60 + i and acc > 0.0:
-                total_pension_liq = acc
-                break
-
-    if total_pension_liq > 0.0:
-        cap_tax = float(calculate_capital_withdrawal_tax(
-            total_pension_liq,
-            config.cantonal_multiplier,
-            config.municipal_multiplier
-        ))
-        init_wealth += max(0.0, total_pension_liq - cap_tax)
-
-    return init_wealth
+    """Year 0 liquid wealth incl. Day-1 pension lump sums net of tax (see `Jurisdiction.year_0_liquid_wealth`)."""
+    return get_jurisdiction(config.country).year_0_liquid_wealth(config)
 
 
 def _cash_tent_weights_for_year(
@@ -252,22 +263,7 @@ def _cash_tent_weights_for_year(
 def _estimate_year_0_taxes_for_weights(
     config: SimConfig, init_wealth: float, weights: np.ndarray
 ) -> float:
-    taxable_wealth = max(0.0, init_wealth - config.annual_base_expenses)
-    wealth_tax = float(calculate_wealth_tax(taxable_wealth, config.cantonal_multiplier, config.municipal_multiplier))
-    ahv_contrib = float(calculate_ahv_non_worker(taxable_wealth)) if config.start_age < 65 else 0.0
-
-    equities = max(0.0, init_wealth * float(weights[0] + weights[1]))
-    dividends = equities * config.dividend_yield
-    cash = max(0.0, init_wealth * float(weights[2]))
-    interest = cash * max(0.0, config.cash_rate)
-    annual_ahv = 12 * config.monthly_ahv_pension if config.start_age >= 65 else 0.0
-
-    # Mandatory AHV/IV/EO non-worker contributions are deductible from taxable income
-    # (Art. 33 Abs. 1 lit. d DBG / § 31 Abs. 1 lit. d StG ZH).
-    taxable_income = max(0.0, dividends + interest + annual_ahv - ahv_contrib)
-    income_tax = float(calculate_income_tax(taxable_income, config.cantonal_multiplier, config.municipal_multiplier))
-
-    return income_tax + wealth_tax + ahv_contrib
+    return get_jurisdiction(config.country).estimate_year_0_taxes_for_weights(config, init_wealth, weights)
 
 
 def estimate_year_0_taxes(config: SimConfig) -> float:
@@ -324,29 +320,8 @@ def get_target_weights(config: SimConfig, year: int) -> np.ndarray:
     return _cash_tent_weights_for_year(base_weights, T, year, init_wealth, annual_outflow)
 
 
-def _indexed_tax(tax_fn, taxable_amount: np.ndarray, bracket_factors: np.ndarray, *args) -> np.ndarray:
-    """
-    Applies a progressive tariff whose bracket edges are scaled by `bracket_factors`.
-
-    Swiss law indexes tax bracket edges to the CPI so that purely nominal growth
-    does not push a taxpayer into higher brackets: Art. 39 DBG requires the EFD to
-    adjust the federal tariff annually, and § 48 StG ZH indexes the Canton Zurich
-    income *and* wealth tariffs.
-
-    Every tariff in `tax_engine` is positively homogeneous of degree 1 under a
-    simultaneous scaling of the tax base and the bracket edges. This holds for the
-    piecewise-linear income and wealth tariffs, and also for the AHV non-worker step
-    function, because floor division is scale invariant (`(f*a) // (f*b) == a // b`).
-    Scaling the brackets by `f` is therefore exactly equivalent to deflating the base
-    by `f`, applying the unscaled tariff, and re-inflating the result:
-
-        T_indexed(x, f) == f * T_nominal(x / f)
-
-    Note that only franc-denominated amounts scale; the bracket *rates* and the
-    Steuerfuss multipliers are unaffected, which is correct since both are political
-    parameters rather than inflation-linked ones.
-    """
-    return bracket_factors * tax_fn(taxable_amount / bracket_factors, *args)
+# Backwards-compatible alias; the implementation lives in `jurisdiction.indexed_tax`.
+_indexed_tax = indexed_tax
 
 
 def _deferred_withdrawal_tax(
@@ -356,37 +331,87 @@ def _deferred_withdrawal_tax(
     bracket_factors: np.ndarray,
     config: SimConfig,
 ) -> np.ndarray:
-    """Capital withdrawal tax still owed on the current pension balances, per run.
+    """Tax still owed on the current pension balances, per run (see `Jurisdiction.latent_tax`)."""
+    return get_jurisdiction(config.country).latent_tax(config, pillar_2, pillar_3a, from_age, bracket_factors)
 
-    Mirrors the liquidation schedule of `run_simulation` from `from_age` onwards: before
-    65, at most one Pillar 3a account per year (the first non-empty account whose
-    liquidation age `60 + i` has been reached); at 65, all remaining 3a accounts together
-    with Pillar 2 in one taxable event. Balances are taken as they are today (no growth)
-    and taxed at today's bracket indexation. Pension balances are pre-tax claims, so this
-    is subtracted wherever net worth drives a *decision* (watermark comparisons).
+
+# Asset sleeve indices of `liquid_assets` / `cost_basis`.
+ASSET_US_STOCKS, ASSET_NON_US_STOCKS, ASSET_CASH, ASSET_GOLD, ASSET_BITCOIN = range(5)
+# Sleeves whose sales can realize capital gains (cash is always held at cost).
+NON_CASH_ASSETS = np.array([ASSET_US_STOCKS, ASSET_NON_US_STOCKS, ASSET_GOLD, ASSET_BITCOIN])
+
+
+def _basis_ratio(values: np.ndarray, cost_basis: np.ndarray) -> np.ndarray:
+    """Average-cost ratio `basis / value` per sleeve; 1.0 where the holding is not positive."""
+    return np.divide(cost_basis, values, out=np.ones_like(values, dtype=float), where=values > 0)
+
+
+def _sell(liquid_assets: np.ndarray, cost_basis: np.ndarray, amounts: np.ndarray) -> np.ndarray:
+    """Sells `amounts` (shape of `liquid_assets`, 0 <= amounts <= positive holdings) in place.
+
+    Uses the average-cost method (the Austrian "gleitender Durchschnittspreis"): each sale
+    removes `amounts * basis / value` of cost basis and realizes the rest as gain (negative = loss).
+    Returns the realized gains per run and sleeve.
     """
-    tax = np.zeros_like(pillar_2, dtype=float)
-    remaining = [i for i, acc in enumerate(pillar_3a) if np.any(acc > 0)]
-    if not remaining and not np.any(pillar_2 > 0):
-        return tax
-    events = []
-    for age in range(from_age, 65):
-        idx = next((i for i in remaining if 60 + i <= age), None)
-        if idx is not None:
-            events.append(pillar_3a[idx])
-            remaining.remove(idx)
-    events.append(pillar_2 + sum((pillar_3a[i] for i in remaining), np.zeros_like(pillar_2)))
-    for amount in events:
-        mask = amount > 0
-        if np.any(mask):
-            tax[mask] += _indexed_tax(
-                calculate_capital_withdrawal_tax,
-                amount[mask],
-                bracket_factors[mask],
-                config.cantonal_multiplier,
-                config.municipal_multiplier,
-            )
-    return tax
+    basis_sold = amounts * _basis_ratio(liquid_assets, cost_basis)
+    cost_basis -= basis_sold
+    liquid_assets -= amounts
+    return amounts - basis_sold
+
+
+def _buy(liquid_assets: np.ndarray, cost_basis: np.ndarray, amounts: np.ndarray) -> None:
+    """Buys `amounts` at market value in place (cost basis increases by the amount paid)."""
+    liquid_assets += amounts
+    cost_basis += amounts
+
+
+def _rebalance_to(
+    liquid_assets: np.ndarray, cost_basis: np.ndarray, mask: np.ndarray, target_values: np.ndarray
+) -> np.ndarray:
+    """Sets `liquid_assets[mask] = target_values`, booking the implied sells and buys against the cost basis.
+
+    Sleeves above target are sold (average cost, gains realized), sleeves below target are bought.
+    The holdings are *assigned* rather than adjusted trade by trade so the resulting balances are
+    bit-identical to a plain reallocation. Returns the realized gains per run and sleeve (zero
+    outside `mask`).
+    """
+    realized = np.zeros_like(liquid_assets)
+    old = liquid_assets[mask]
+    basis = cost_basis[mask]
+    delta = target_values - old
+    sells = np.maximum(0.0, -delta)
+    basis_sold = sells * _basis_ratio(old, basis)
+    realized[mask] = sells - basis_sold
+    cost_basis[mask] = basis - basis_sold + np.maximum(0.0, delta)
+    liquid_assets[mask] = target_values
+    return realized
+
+
+def _unrealized_gains(liquid_assets: np.ndarray, cost_basis: np.ndarray) -> np.ndarray:
+    """Net unrealized gains over the non-cash sleeves, per run (losses offset gains)."""
+    return (liquid_assets[:, NON_CASH_ASSETS] - cost_basis[:, NON_CASH_ASSETS]).sum(axis=1)
+
+
+def _outflow_sale_gain_profile(
+    liquid_assets: np.ndarray, cost_basis: np.ndarray, cash_first: np.ndarray
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Describes the realized gain of the year-end outflow sale as a function of its size.
+
+    Mirrors the sale in `run_simulation` Step 6: the payable amount is capped at total liquid
+    wealth; runs in `cash_first` (Smart Cash Buffer downturn) spend positive cash first, then all
+    runs sell positive holdings proportionally. Returns `(gain_fraction, cash_spent_first, cap)` such
+    that the realized non-cash gain of an outflow `S` is
+    `gain_fraction * max(0, min(S, cap) - cash_spent_first)`.
+    """
+    positive = np.maximum(0.0, liquid_assets)
+    unrealized = (positive[:, NON_CASH_ASSETS] * (1.0 - _basis_ratio(liquid_assets, cost_basis)[:, NON_CASH_ASSETS])).sum(axis=1)
+    non_cash_total = positive[:, NON_CASH_ASSETS].sum(axis=1)
+    all_total = positive.sum(axis=1)
+    denom = np.where(cash_first, non_cash_total, all_total)
+    gain_fraction = np.divide(unrealized, denom, out=np.zeros_like(unrealized), where=denom > 0)
+    cash_spent_first = np.where(cash_first, positive[:, ASSET_CASH], 0.0)
+    cap = np.maximum(0.0, liquid_assets.sum(axis=1))
+    return gain_fraction, cash_spent_first, cap
 
 
 def run_simulation(config: SimConfig, return_matrix: np.ndarray, inflation_matrix: np.ndarray = None) -> dict:
@@ -409,6 +434,11 @@ def run_simulation(config: SimConfig, return_matrix: np.ndarray, inflation_matri
                 f"inflation_matrix shape {inflation_matrix.shape} must match {expected_inf_shape}."
             )
     
+    jurisdiction = get_jurisdiction(config.country)
+    pension_payments_per_year = jurisdiction.defaults.pension_payments_per_year
+    # Monthly cash credit of the state pension (14 payments/yr are spread over 12 months).
+    monthly_pension_credit = config.monthly_ahv_pension * (pension_payments_per_year / 12)
+
     # Target weights only change at year boundaries (Cash Tent glidepath), and each
     # evaluation re-runs the Year 0 tax estimate, so compute them once per year.
     target_weights_by_year = np.array([get_target_weights(config, y) for y in range(config.duration_years)])
@@ -417,6 +447,14 @@ def run_simulation(config: SimConfig, return_matrix: np.ndarray, inflation_matri
     # Assets (0: US Stocks, 1: Non-US Stocks, 2: CHF Cash, 3: Gold, 4: Bitcoin)
     liquid_assets = np.zeros((num_runs, 5))
     liquid_assets[:] = config.initial_liquid_wealth * initial_target_weights
+    # Average-cost basis per sleeve. The whole starting portfolio is treated as bought on day 0
+    # (zero unrealized gains). Cash is always held at cost (`cost_basis[:, ASSET_CASH]` is synced
+    # to the cash balance each month), so only the non-cash sleeves can realize gains.
+    cost_basis = liquid_assets.copy()
+    realized_gains_this_year = np.zeros((num_runs, 5))
+    # Gains of the previous year-end rebalance: that rebalance runs after the year's tax assessment,
+    # so (like a rebalance on the first trading day of January) its gains are taxed next year.
+    carried_taxable_gains = np.zeros(num_runs)
     
     pillar_2 = np.full(num_runs, config.initial_pillar_2, dtype=float)
     pillar_3a = [np.full(num_runs, acc, dtype=float) for acc in config.initial_pillar_3a_accounts]
@@ -426,8 +464,9 @@ def run_simulation(config: SimConfig, return_matrix: np.ndarray, inflation_matri
     # *after-tax* net worth: pension balances are pre-tax claims that lose the capital withdrawal
     # tax on payout. Both sides of the comparison are net, so a pension-heavy portfolio is not
     # flagged as "below watermark" merely because the tax is realized at 60-65.
-    initial_net_worth_after_tax = initial_net_worth - _deferred_withdrawal_tax(
-        pillar_2, pillar_3a, config.start_age, np.ones(num_runs), config
+    initial_net_worth_after_tax = initial_net_worth - jurisdiction.latent_tax(
+        config, pillar_2, pillar_3a, config.start_age, np.ones(num_runs),
+        _unrealized_gains(liquid_assets, cost_basis) if jurisdiction.taxes_capital_gains else None,
     )
     
     history_net_worth = np.zeros((duration_months // 12, num_runs))
@@ -442,6 +481,10 @@ def run_simulation(config: SimConfig, return_matrix: np.ndarray, inflation_matri
     history_income_ahv = np.zeros((duration_months // 12, num_runs))
     history_unfunded_deficit = np.zeros((duration_months // 12, num_runs))
     history_below_watermark = np.zeros((duration_months // 12, num_runs), dtype=bool)
+    history_cost_basis_by_class = np.zeros((duration_months // 12, num_runs, 5))
+    history_realized_gains = np.zeros((duration_months // 12, num_runs))
+    history_unrealized_gains = np.zeros((duration_months // 12, num_runs))
+    history_tax_components: dict[str, np.ndarray] = {}
     
     inflation_factors = np.ones(num_runs)
     bracket_factors = np.ones(num_runs)
@@ -453,7 +496,6 @@ def run_simulation(config: SimConfig, return_matrix: np.ndarray, inflation_matri
     )
     vanguard_prev_expenses = np.full(num_runs, init_vanguard_exp, dtype=float)
     vanguard_prev_inflation = np.ones(num_runs, dtype=float)
-    taxable_liquidation_amount = np.zeros(num_runs)
     capital_withdrawal_tax_this_year = np.zeros(num_runs)
 
     # Hoist loop-invariant constants outside the monthly simulation loop
@@ -481,50 +523,19 @@ def run_simulation(config: SimConfig, return_matrix: np.ndarray, inflation_matri
 
         # 1. Start-of-Year Pension Liquidations (Month 0, evaluated at start-of-year bracket_factors)
         if month_of_year == 0:
-            taxable_liquidation_amount.fill(0)
-            capital_withdrawal_tax_this_year.fill(0)
-
-            if current_age < 65:
-                has_liquidated = np.zeros(num_runs, dtype=bool)
-                for i, p3a in enumerate(pillar_3a):
-                    liquidation_age = 60 + i
-                    mask = (current_age >= liquidation_age) & (p3a > 0) & (~has_liquidated)
-                    taxable_liquidation_amount[mask] += p3a[mask]
-                    p3a[mask] = 0
-                    has_liquidated[mask] = True
-            else:
-                # Age >= 65: Liquidate ALL remaining accounts
-                for p3a in pillar_3a:
-                    mask = p3a > 0
-                    taxable_liquidation_amount[mask] += p3a[mask]
-                    p3a[mask] = 0
-                
-            mask_p2 = (current_age >= 65) & (pillar_2 > 0)
-            taxable_liquidation_amount[mask_p2] += pillar_2[mask_p2]
-            pillar_2[mask_p2] = 0
-            
-            # Calculate Capital Withdrawal Tax immediately upon liquidation
-            has_liquidation = taxable_liquidation_amount > 0
-            if np.any(has_liquidation):
-                cap_tax = np.zeros(num_runs)
-                cap_tax[has_liquidation] = _indexed_tax(
-                    calculate_capital_withdrawal_tax,
-                    taxable_liquidation_amount[has_liquidation],
-                    bracket_factors[has_liquidation],
-                    config.cantonal_multiplier,
-                    config.municipal_multiplier
-                )
-                net_proceeds = np.maximum(0.0, taxable_liquidation_amount - cap_tax)
+            realized_gains_this_year.fill(0.0)
+            liquidation = jurisdiction.liquidate_pensions(config, pillar_2, pillar_3a, current_age, bracket_factors)
+            # Tax deducted at source, tracked for the annual history log
+            capital_withdrawal_tax_this_year = liquidation.tax
+            if np.any(liquidation.gross > 0):
+                net_proceeds = np.maximum(0.0, liquidation.gross - liquidation.tax)
                 # Pay off any negative CHF Cash debt from prior bridge deficits first so solvent
                 # portfolios never carry involuntary 5% margin debt alongside leveraged equities.
                 existing_debt = np.maximum(0.0, -liquid_assets[:, 2])
                 debt_repaid = np.minimum(net_proceeds, existing_debt)
                 liquid_assets[:, 2] += debt_repaid
                 surplus_proceeds = net_proceeds - debt_repaid
-                liquid_assets += np.outer(surplus_proceeds, current_target_weights)
-
-                # Track it for the annual history log
-                capital_withdrawal_tax_this_year += cap_tax
+                _buy(liquid_assets, cost_basis, np.outer(surplus_proceeds, current_target_weights))
 
         # 2. Annual Inflation & Bracket Indexation Update (Month 0, accruing over the year)
         if month_of_year == 0:
@@ -552,6 +563,13 @@ def run_simulation(config: SimConfig, return_matrix: np.ndarray, inflation_matri
         is_bankrupt = (total_liquid.flatten() < 0)
         
         if np.any(is_bankrupt):
+            # Any positive non-cash holdings are used up against the debt: book them as sold.
+            bankrupt_holdings = np.maximum(0.0, liquid_assets[is_bankrupt][:, NON_CASH_ASSETS])
+            realized_gains_this_year[np.ix_(is_bankrupt, NON_CASH_ASSETS)] += (
+                bankrupt_holdings - cost_basis[np.ix_(is_bankrupt, NON_CASH_ASSETS)]
+                * (bankrupt_holdings > 0)
+            )
+            cost_basis[is_bankrupt, :] = 0.0
             # Move all debt to CHF Cash (index 2), zero out other assets
             liquid_assets[is_bankrupt, :] = 0
             liquid_assets[is_bankrupt, 2] = total_liquid[is_bankrupt].flatten()
@@ -561,10 +579,11 @@ def run_simulation(config: SimConfig, return_matrix: np.ndarray, inflation_matri
         returns_to_apply = np.maximum(-1.0, returns_to_apply)
         liquid_assets *= (1 + returns_to_apply)
         
-        # 4. Monthly AHV Pension Addition
-        if current_age >= 65:
-            monthly_ahv = config.monthly_ahv_pension * inflation_factors
-            liquid_assets[:, 2] += monthly_ahv # Add directly to CHF Cash
+        # 4. Monthly State Pension Addition (AHV in CH)
+        if current_age >= STATE_PENSION_AGE:
+            liquid_assets[:, 2] += monthly_pension_credit * inflation_factors  # Add directly to Cash
+        # Cash is held at cost: interest, pension credits and debt never create capital gains.
+        cost_basis[:, ASSET_CASH] = liquid_assets[:, ASSET_CASH]
 
         # 4.5. Intra-Year Rebalancing Check (Months 0..10; Month 11 rebalances after annual tax/expenses)
         if month_of_year < 11:
@@ -589,21 +608,27 @@ def run_simulation(config: SimConfig, return_matrix: np.ndarray, inflation_matri
                 current_p3a = sum(pillar_3a) if pillar_3a else np.zeros(num_runs)
                 # This year's liquidation already ran at month 0, so the remaining schedule starts next year.
                 current_nw_after_tax = (np.sum(liquid_assets, axis=1) + pillar_2 + current_p3a
-                                        - _deferred_withdrawal_tax(pillar_2, pillar_3a, current_age + 1, bracket_factors, config))
+                                        - jurisdiction.latent_tax(
+                                            config, pillar_2, pillar_3a, current_age + 1, bracket_factors,
+                                            _unrealized_gains(liquid_assets, cost_basis) if jurisdiction.taxes_capital_gains else None,
+                                        ))
                 is_downturn = current_nw_after_tax < initial_net_worth_after_tax * inflation_factors
                 do_rebalance[is_downturn] = False
 
             if np.any(do_rebalance):
                 total_to_rebalance = np.sum(liquid_assets[do_rebalance], axis=1, keepdims=True)
-                liquid_assets[do_rebalance] = total_to_rebalance * current_target_weights
+                realized_gains_this_year += _rebalance_to(
+                    liquid_assets, cost_basis, do_rebalance, total_to_rebalance * current_target_weights
+                )
             
         # 5. Annual Taxation, Expenses, and Year-End Rebalancing (Month 11)
         if month_of_year == 11:
             # Spending Model Adjustment
             total_p3a_current = sum(pillar_3a) if pillar_3a else np.zeros(num_runs)
             current_nw_before_expenses = np.sum(liquid_assets, axis=1) + pillar_2 + total_p3a_current
-            nw_after_tax_before_expenses = current_nw_before_expenses - _deferred_withdrawal_tax(
-                pillar_2, pillar_3a, current_age + 1, bracket_factors, config
+            nw_after_tax_before_expenses = current_nw_before_expenses - jurisdiction.latent_tax(
+                config, pillar_2, pillar_3a, current_age + 1, bracket_factors,
+                _unrealized_gains(liquid_assets, cost_basis) if jurisdiction.taxes_capital_gains else None,
             )
 
             inflation_adjusted_watermark = initial_net_worth_after_tax * inflation_factors
@@ -638,12 +663,19 @@ def run_simulation(config: SimConfig, return_matrix: np.ndarray, inflation_matri
             else: # "Static"
                 current_expenses = config.annual_base_expenses * inflation_factors
                                             
-            annual_ahv_received = np.where(current_age >= 65, 12 * config.monthly_ahv_pension * inflation_factors, 0.0)
+            annual_ahv_received = np.where(
+                current_age >= STATE_PENSION_AGE,
+                pension_payments_per_year * config.monthly_ahv_pension * inflation_factors,
+                0.0,
+            )
             
             # Taxable Income = Dividends (yield on Equity portion held during this year, BEFORE year-end glidepath rebalance)
             # US Stocks (0) and Non-US Stocks (1) generate dividends
             equities = np.maximum(0, liquid_assets[:, 0] + liquid_assets[:, 1])
             dividends = equities * config.dividend_yield
+            # The return series are total-return: dividends are reinvested at market value, i.e.
+            # bought, so they raise the cost basis of the sleeve that paid them.
+            cost_basis[:, :2] += np.maximum(0.0, liquid_assets[:, :2]) * config.dividend_yield
             
             # Cash (index 2) generates taxable interest from the realized annual return on CHF Cash
             # in return_matrix[:, (m - 11):(m + 1), 2] (floored at 0.0 so negative rates never reduce taxable income).
@@ -652,22 +684,35 @@ def run_simulation(config: SimConfig, return_matrix: np.ndarray, inflation_matri
             interest = cash * np.maximum(0.0, realized_cash_ret)
             
             total_liquid_end = np.sum(liquid_assets, axis=1)
-            # Wealth Tax and AHV non-worker tax are assessed on wealth *after* deducting living expenses
-            taxable_wealth = np.maximum(0, total_liquid_end - current_expenses)
-            
-            wealth_tax = _indexed_tax(calculate_wealth_tax, taxable_wealth, bracket_factors, config.cantonal_multiplier, config.municipal_multiplier)
-            
-            ahv_mask = current_age < 65
-            ahv_contrib = np.zeros(num_runs)
-            ahv_contrib[ahv_mask] = _indexed_tax(calculate_ahv_non_worker, taxable_wealth[ahv_mask], bracket_factors[ahv_mask])
-            
-            # Mandatory AHV/IV/EO non-worker contributions are deductible from taxable income
-            # (Art. 33 Abs. 1 lit. d DBG / § 31 Abs. 1 lit. d StG ZH).
-            taxable_income = np.maximum(0.0, dividends + interest + annual_ahv_received - ahv_contrib)
-            income_tax = _indexed_tax(calculate_income_tax, taxable_income, bracket_factors, config.cantonal_multiplier, config.municipal_multiplier)
-            
-            # Capital withdrawal tax was already deducted at source in month 0
-            total_taxes = income_tax + wealth_tax + ahv_contrib
+            taxable_gains_before_sale = carried_taxable_gains + realized_gains_this_year[:, NON_CASH_ASSETS].sum(axis=1)
+
+            def assess(realized_gains):
+                return jurisdiction.assess_annual_taxes(
+                    config,
+                    current_age=current_age,
+                    total_liquid_end=total_liquid_end,
+                    current_expenses=current_expenses,
+                    dividends=dividends,
+                    interest=interest,
+                    annual_pension=annual_ahv_received,
+                    bracket_factors=bracket_factors,
+                    realized_gains=realized_gains,
+                    inflation_factors=inflation_factors,
+                )
+
+            annual_taxes = assess(taxable_gains_before_sale)
+            if jurisdiction.taxes_capital_gains:
+                # The outflow sale realizes gains that are taxed in the same year, which raises
+                # the outflow: solve S = expenses + taxes(gains so far + gain(S)) by fixed point.
+                gain_fraction, cash_spent_first, sale_cap = _outflow_sale_gain_profile(
+                    liquid_assets, cost_basis, is_below_watermark & config.enable_smart_selling
+                )
+                for _ in range(OUTFLOW_TAX_ITERATIONS):
+                    sale = np.maximum(0.0, current_expenses + annual_taxes.total)
+                    sale_gain = gain_fraction * np.maximum(0.0, np.minimum(sale, sale_cap) - cash_spent_first)
+                    annual_taxes = assess(taxable_gains_before_sale + sale_gain)
+            # Pension lump-sum taxes were already deducted at source in month 0
+            total_taxes = annual_taxes.total
             net_cash_flow = current_expenses + total_taxes # AHV already added to cash monthly
             
             deficit = np.maximum(0, net_cash_flow)
@@ -694,9 +739,18 @@ def run_simulation(config: SimConfig, return_matrix: np.ndarray, inflation_matri
             
             fractions = payable / safe_total_pos
             sell_amounts = positive_assets * fractions[:, None]
-            liquid_assets -= sell_amounts
+            sale_realized = _sell(liquid_assets, cost_basis, sell_amounts)
+            realized_gains_this_year += sale_realized
             
             liquid_assets[:, 2] -= remaining_deficit
+
+            if jurisdiction.taxes_capital_gains:
+                # Settle exactly on the gains the sale actually realized; the (tiny) difference to
+                # the fixed-point estimate is booked against cash.
+                final_taxes = assess(taxable_gains_before_sale + sale_realized[:, NON_CASH_ASSETS].sum(axis=1))
+                liquid_assets[:, 2] -= final_taxes.total - total_taxes
+                annual_taxes = final_taxes
+                total_taxes = final_taxes.total
 
             # 6. Year-End Rebalancing (sets the allocation held going into the next year)
             do_rebalance_eoy = np.zeros(num_runs, dtype=bool)
@@ -715,7 +769,17 @@ def run_simulation(config: SimConfig, return_matrix: np.ndarray, inflation_matri
                 do_rebalance_eoy[is_below_watermark] = False
 
             if np.any(do_rebalance_eoy):
-                liquid_assets[do_rebalance_eoy] = post_sale_liquid[do_rebalance_eoy, None] * rebalance_target_weights
+                eoy_realized = _rebalance_to(
+                    liquid_assets,
+                    cost_basis,
+                    do_rebalance_eoy,
+                    post_sale_liquid[do_rebalance_eoy, None] * rebalance_target_weights,
+                )
+                realized_gains_this_year += eoy_realized
+                carried_taxable_gains = eoy_realized[:, NON_CASH_ASSETS].sum(axis=1)
+            else:
+                carried_taxable_gains = np.zeros(num_runs)
+            cost_basis[:, ASSET_CASH] = liquid_assets[:, ASSET_CASH]
             
             # Record
             total_p3a = sum(pillar_3a) if pillar_3a else np.zeros(num_runs)
@@ -727,11 +791,20 @@ def run_simulation(config: SimConfig, return_matrix: np.ndarray, inflation_matri
             history_pillar_2[year, :] = pillar_2
             history_pillar_3a[year, :] = total_p3a
             history_taxes[year, :] = total_taxes + capital_withdrawal_tax_this_year
+            for component, values in annual_taxes.components.items():
+                if component not in history_tax_components:
+                    history_tax_components[component] = np.zeros((duration_months // 12, num_runs))
+                history_tax_components[component][year, :] = values
             history_expenses[year, :] = current_expenses
             history_income_divs[year, :] = dividends
             history_income_interest[year, :] = interest
             history_income_ahv[year, :] = annual_ahv_received
             history_unfunded_deficit[year, :] = remaining_deficit
+            history_cost_basis_by_class[year, :, :] = cost_basis
+            history_realized_gains[year, :] = realized_gains_this_year[:, NON_CASH_ASSETS].sum(axis=1)
+            history_unrealized_gains[year, :] = (
+                liquid_assets[:, NON_CASH_ASSETS] - cost_basis[:, NON_CASH_ASSETS]
+            ).sum(axis=1)
 
     return {
         'net_worth': history_net_worth,
@@ -746,6 +819,10 @@ def run_simulation(config: SimConfig, return_matrix: np.ndarray, inflation_matri
         'income_ahv': history_income_ahv,
         'unfunded_deficit': history_unfunded_deficit,
         'below_watermark': history_below_watermark,
+        'cost_basis_by_class': history_cost_basis_by_class,
+        'realized_gains': history_realized_gains,
+        'unrealized_gains': history_unrealized_gains,
+        'tax_components': history_tax_components,
         'initial_net_worth': initial_net_worth,
         'initial_net_worth_after_tax': float(initial_net_worth_after_tax[0]),
     }
