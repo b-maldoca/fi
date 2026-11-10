@@ -207,3 +207,55 @@ def test_full_horizon_austria_runs_with_eur_data():
     assert set(history["tax_components"]) == {"income_tax", "kest", "health_insurance"}
     np.testing.assert_allclose(sum(history["tax_components"].values()), history["taxes_paid"], rtol=1e-12)
     assert np.all(history["taxes_paid"] >= 0.0)
+
+
+def test_outflow_sale_loss_offset_converges_without_oscillation():
+    """When holdings sit far below cost basis (gain_fraction << -1) and carried gains are positive,
+    Picard fixed-point iteration oscillates (|g * 0.275| > 1) and panic-sells equities into cash.
+    Monotone bisection must find the exact equilibrium sale with zero unrequested cash residual."""
+    returns = np.zeros((1, 24, 5))
+    returns[0, 0, 0] = 4.0     # Year 0 Month 0: US stocks 5x -> Yearly rebalance carries large gain
+    returns[0, 12, :] = -0.92  # Year 1 Month 0: 92% crash -> basis / value >> 1 (gain_fraction << -1)
+
+    cfg = _config(
+        duration_years=2,
+        alloc_us_stocks=0.5,
+        alloc_non_us_stocks=0.5,
+        annual_base_expenses=5_000.0,
+        rebalance_strategy="Yearly",
+        enable_smart_selling=True,
+    )
+    history = run_simulation(cfg, returns, _zero_inflation(cfg))
+
+    # Smart Cash Buffer skips the Year-1 EOY rebalance in a downturn, exposing any sale/tax mismatch
+    # directly in the cash sleeve (index 2), which has 0% target weight and 0% returns.
+    assert history["liquid_assets_by_class"][1, 0, 2] == pytest.approx(0.0, abs=1e-8)
+
+    # Pre-sale Year 1 portfolio value was 0.08 * Year-0 ending net worth; exact sale = expenses + taxes.
+    pre_sale_y1 = 0.08 * history["net_worth"][0, 0]
+    sale_y1 = history["expenses_paid"][1, 0] + history["taxes_paid"][1, 0]
+    assert history["net_worth"][1, 0] == pytest.approx(pre_sale_y1 - sale_y1, rel=1e-10)
+
+
+def test_watermark_includes_unassessed_realized_gains_from_rebalancing():
+    """Rebalancing before year-end KESt settlement converts unrealized gains into realized gains
+    without paying the tax yet; after-tax watermark checks must still deduct that accrued KESt."""
+    # Year 0: US stocks gain +20% (500k -> 600k; total 1.1M). Expenses + health ins ~ 96.8k -> end ~1,003k.
+    # Yearly rebalance realizes gains carried into Year 1, where gross NW (~1,003k) > 1,000k start
+    # only because the accrued KESt on carried + unrealized gains (> 20k * 27.5% = 5.5k) is unpaid.
+    returns = np.zeros((1, 24, 5))
+    returns[0, 0, 0] = 0.20
+    common = dict(
+        duration_years=2,
+        alloc_us_stocks=0.5,
+        alloc_chf_cash=0.5,
+        annual_base_expenses=85_000.0,
+        enable_smart_selling=False,
+    )
+    h_yearly = run_simulation(_config(**common, rebalance_strategy="Yearly"), returns, _zero_inflation(_config(duration_years=2)))
+    h_never = run_simulation(_config(**common, rebalance_strategy="Never"), returns, _zero_inflation(_config(duration_years=2)))
+
+    # At Year 1 Month 11 (before Year 1 expenses/taxes), gross NW is slightly > 1,000k, but after
+    # deducting accrued + latent KESt it is < 1,000k under BOTH Yearly and Never rebalancing.
+    assert h_never["below_watermark"][1, 0]
+    assert h_yearly["below_watermark"][1, 0]

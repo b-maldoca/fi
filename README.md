@@ -13,7 +13,7 @@ Legend: ✅ implemented · 🔁 country-agnostic, reused unchanged · ❌ not im
 | Component | 🇨🇭 Switzerland (Zurich) | 🇦🇹 Austria |
 | :--- | :--- | :--- |
 | Country dispatch (`SimConfig.country`, `src/jurisdiction.py`, `COUNTRY_DEFAULTS`) | ✅ (default `"CH"`) | ✅ (`country="AT"`) |
-| Country selector in the sidebar | ✅ | ✅ (title, labels, inputs and defaults switch; Swiss-data warning banner) |
+| Country selector in the sidebar | ✅ (default CHF 2,450k liquid + CHF 550k pensions) | ✅ (title, labels, inputs and defaults switch incl. EUR 3,250k initial liquid wealth; Swiss-data warning banner) |
 | Return engines (Backtesting, Stationary Bootstrap, Monte Carlo), Bitcoin copula | ✅ | 🔁 engines |
 | Historic return data 1922–2025 | ✅ `src/historic_returns.py` (CHF) | ✅ `src/historic_returns_eur.py` (EUR; **1922–1957 Swiss inflation and cash data, 1958–1999 cash PPP-translated from Swiss data**, see below) |
 | Spending strategies, rebalancing, Cash Tent, Smart Cash Buffer | ✅ | 🔁 (✅ Austrian Year-0 tax estimate; sales and rebalancing realize taxable gains) |
@@ -21,7 +21,7 @@ Legend: ✅ implemented · 🔁 country-agnostic, reused unchanged · ❌ not im
 | Income tax | ✅ Federal + Zurich 2026, ESTV-verified | ✅ § 33 EStG 2026 tariff, pension taxation (6% health contribution capped at the contribution ceiling, 13th/14th payment under § 67 incl. the €2,615 Freigrenze, pensioner credit), BMF-verified |
 | Wealth tax | ✅ Zurich | n/a (no wealth tax) |
 | Cost-basis tracking (average cost, basis = value on day 0; `realized_gains` / `unrealized_gains` outputs) | ✅ tracked, not taxed | ✅ (engine, shared) |
-| Capital gains tax | n/a (tax-free) | ✅ 27.5% KESt on stocks, gold ETC and Bitcoin, in-year loss offset, Regelbesteuerungsoption (the year-end sale is solved for the tax on its own gains) |
+| Capital gains tax | n/a (tax-free) | ✅ 27.5% KESt on stocks, gold ETC and Bitcoin, in-year loss offset, Regelbesteuerungsoption (the year-end sale is solved for the tax on its own gains or losses) |
 | Dividend / interest tax | ✅ progressive | ✅ 27.5% (incl. deemed distributions) / 25% on bank interest |
 | Mandatory contributions before 65 | ✅ AHV non-worker | ✅ Health self-insurance (§ 16 ASVG, €565.25/month in 2026, CPI-indexed; for life if no pension) |
 | State pension (single input from 65) | ✅ AHV (monthly, 12×/yr) | ✅ monthly gross, 14×/yr |
@@ -144,7 +144,7 @@ Equities, gold and Bitcoin use the same sources as the CHF build, converted to E
 │   ├── test_simulation_engine.py       # Unit & integration tests for simulation engine and return generators
 │   ├── test_tax_engine.py              # Unit tests for income, wealth, capital withdrawal, and AHV taxes
 │   ├── test_jurisdiction.py            # Country registry/validation and Swiss rules behind the Jurisdiction interface
-│   ├── test_tax_engine_at.py           # Austrian tax rules: hand-computed statutory examples
+│   ├── test_tax_engine_at.py           # Austrian tax rules: BMF golden tests + hand-computed statutory examples
 │   ├── test_austria_engine.py          # Austria inside run_simulation (KESt on realized gains, health insurance, pension)
 │   ├── test_cost_basis.py              # Average-cost basis helpers and realized/unrealized gain tracking in the engine
 │   ├── test_historic_returns_eur.py    # EUR series and their Swiss-data stand-in segments

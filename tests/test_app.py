@@ -295,6 +295,7 @@ def test_app_runs_in_austria_mode():
     assert "Number of Pillar 3a Accounts" not in inputs
     assert "Municipal Multiplier (Steuerfuss, %)" not in inputs
     assert "Taxable Liquid Wealth (EUR)" in inputs and "EUR Cash" in inputs
+    assert inputs["Taxable Liquid Wealth (EUR)"].value == 3_250_000
     assert "Expected Monthly Gross State Pension from age 65 (EUR, paid 14×/yr)" in inputs
     assert inputs["EUR Cash Nominal Mean (%)"].value == pytest.approx(2.0)
     assert inputs["Tax Bracket Indexation (% of CPI)"].value == pytest.approx(66.7)
@@ -316,6 +317,8 @@ def test_app_runs_in_austria_mode():
     assert alloc_names[0] == "EUR Cash" and "Pillar 2 & 3a" not in alloc_names
     assert sum(1 for m in at.metric if m.label.startswith("Pre-Pension Outflow")) == 3
     assert all("EUR" in m.value for m in at.metric if m.label == "Median Ending NW (Real)")
+    cohort_sub = next(s for s in at.subheader if s.value == "Cohort Analysis")
+    assert "Liq Age" not in cohort_sub.proto.help and "Pillar" not in cohort_sub.proto.help
 
 
 def test_switching_country_resets_country_defaults():
@@ -323,12 +326,14 @@ def test_switching_country_resets_country_defaults():
     at.run()
     _select_austria(at)
     at.run()
+    assert next(n for n in at.number_input if n.label == "Taxable Liquid Wealth (EUR)").value == 3_250_000
     assert next(n for n in at.number_input if n.label == "EUR Cash Nominal Mean (%)").value == pytest.approx(2.0)
     next(s for s in at.selectbox if s.label == "Country").set_value("Switzerland (Zurich)")
     at.run()
     assert not at.exception, [e.value for e in at.exception]
     assert not at.error, [e.value for e in at.error]
     inputs = {n.label: n for n in at.number_input}
+    assert inputs["Taxable Liquid Wealth (CHF)"].value == 2_450_000
     assert inputs["CHF Cash Nominal Mean (%)"].value == pytest.approx(1.0)
     assert inputs["Tax Bracket Indexation (% of CPI)"].value == pytest.approx(100.0)
     assert "Pillar 2 (Freizügigkeitskonto)" in inputs

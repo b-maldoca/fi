@@ -278,7 +278,13 @@ success_pct = st.sidebar.number_input(
 
 # 2. Initial Assets
 st.sidebar.subheader(f"Initial Assets ({CCY})")
-initial_liquid_wealth = st.sidebar.number_input(f"Taxable Liquid Wealth ({CCY})", value=2_450_000, min_value=0, step=50_000, help="Your easily accessible taxable investments (stocks, bonds, cash). Do not include your primary residence.")
+initial_liquid_wealth = st.sidebar.number_input(
+    f"Taxable Liquid Wealth ({CCY})",
+    value=3_250_000 if IS_AT else 2_450_000,
+    min_value=0,
+    step=50_000,
+    help="Your easily accessible taxable investments (stocks, bonds, cash). Do not include your primary residence.",
+)
 if IS_AT:
     # Swiss-only pension vehicles (Austrian occupational pensions are out of scope).
     initial_pillar_2, num_pillar_3a, pillar_3a_balance = 0, 0, 0
@@ -402,9 +408,9 @@ _vanguard_sync_sig = (
     rebalance_strategy,
     int(tent_duration_years) if rebalance_strategy == "Cash Tent" else 0,
     round(float(st.session_state.get("dividend_yield_pct", 1.5)), 2),
-    round(float(st.session_state.get("ret_cash_pct", 1.0)), 2),
+    round(float(st.session_state.get("ret_cash_pct", CDEF.cash_rate * 100.0)), 2),
     round(float(st.session_state.get("monthly_ahv_input", 2000)), 2),
-    round(float(st.session_state.get("municipal_multiplier_pct", 119.0)), 2),
+    round(float(st.session_state.get("municipal_multiplier_pct", ZURICH_CITY_MUNICIPAL_MULTIPLIER * 100.0)), 2),
 )
 
 if '_synced_twr_pct' not in st.session_state or st.session_state.get('_last_vanguard_sync_sig') != _vanguard_sync_sig:
@@ -496,9 +502,10 @@ if IS_AT:
         help=(
             "The gross monthly ASVG state pension you expect from age 65, in today's EUR (adjusted annually for CPI "
             "inflation in the simulation). Paid 14 times a year (12 regular payments + 13th/14th special payments). "
-            "6% health insurance is deducted; the 12 regular payments are taxed at the progressive tariff (with the "
-            "pensioner tax credit), the 13th/14th at 6% above EUR 620 (tax-free for pensions up to EUR 1,307.50/month). "
-            "Verified against the BMF Brutto-Netto-Rechner. Health self-insurance stops when the pension starts."
+            "6% health insurance (capped at the EUR 6,930/payment contribution ceiling) is deducted; the 12 regular "
+            "payments are taxed at the progressive tariff (with the pensioner tax credit), the 13th/14th at the § 67 "
+            "bands from 6% above EUR 620 (tax-free for pensions up to EUR 1,307.50/month). Verified against the BMF "
+            "Brutto-Netto-Rechner. Health self-insurance stops when a positive pension starts."
         ),
     )
 else:
@@ -695,7 +702,8 @@ if IS_AT:
         step=5.0,
         format="%.1f",
         help="How much of each year's inflation is passed through to the income tax bracket edges, the pensioner "
-             "tax credit and the EUR 620 allowance on the 13th/14th pension payment.\n\n"
+             "tax credit, the § 67 special-payment thresholds (incl. the EUR 620 allowance and EUR 2,615 Freigrenze), "
+             "and the pension health-insurance ceiling.\n\n"
              "- 66.7% (default): the automatic indexation by two thirds of inflation under § 33a EStG; the remaining "
              "third is discretionary and not assumed.\n"
              "- 100%: full indexation.\n"
@@ -1367,7 +1375,9 @@ def render_results(history, config, num_runs, title, inflation_matrix, success_p
             + "\n\n"
             f"- **{id_col_name}**: {'Historical retirement cohort calendar years' if is_historic_backtest else 'Simulation run identifier'}.\n"
             f"- **Outcome**: Severity group of the path relative to the {success_pct:g}% success criterion (Depleted / Failed / Recovered / Never breached).\n"
-            f"- **Depletion Age**: Age and simulation year when total net worth first depleted to ≤ 0 {CCY} ('Age X (Yr Y)'), 'Liq Age X (Yr Y)' if accessible liquid wealth was exhausted before Age 65 while pensions were locked, or 'Survived'.\n"
+            f"- **Depletion Age**: Age and simulation year when total net worth first depleted to ≤ 0 {CCY} ('Age X (Yr Y)')"
+            + ("" if IS_AT else ", 'Liq Age X (Yr Y)' if accessible liquid wealth was exhausted before Age 65 while pensions were locked")
+            + ", or 'Survived'.\n"
             f"- **Yrs in Shortfall**: Number of years real net worth was at or below the {success_pct:g}% success criterion.\n"
             f"- **Shortfall Age**: Age and simulation year when real net worth first dropped to or below the {success_pct:g}% success criterion ('Age X (Yr Y)'), even if the path later recovered, or 'Never' if the criterion was maintained throughout retirement.\n"
             f"- **Final NW (Real)**: Ending net worth in today's purchasing power (deflated by this path's realized cumulative {CPI_NAME} inflation).\n"
@@ -1434,8 +1444,12 @@ def render_results(history, config, num_runs, title, inflation_matrix, success_p
             "Depletion Age",
             help=(
                 f"Retirement age and simulation year when total net worth first reached ≤ 0 {CCY} ('Age X (Yr Y)'). "
-                "'Liq Age X (Yr Y)' indicates accessible liquid wealth was exhausted before Age 65 while Pillar 2/3a pensions were locked. "
-                "'Survived' means portfolio remained solvent throughout the entire retirement horizon."
+                + (
+                    ""
+                    if IS_AT
+                    else "'Liq Age X (Yr Y)' indicates accessible liquid wealth was exhausted before Age 65 while Pillar 2/3a pensions were locked. "
+                )
+                + "'Survived' means portfolio remained solvent throughout the entire retirement horizon."
             ),
         ),
         "Shortfall Age": st.column_config.TextColumn(

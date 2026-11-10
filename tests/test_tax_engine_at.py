@@ -148,3 +148,16 @@ def test_special_payments_freigrenze_and_bands():
     # Bands: 6% up to 25,000, 27% to 50,000, 35.75% to 83,333.33; the rest goes to the tariff.
     expected = 0.06 * 24_380 + 0.27 * 25_000 + 0.3575 * 33_333.33
     assert special_payments_tax_at(100_000.0) == pytest.approx(expected, abs=0.01)
+
+
+def test_mixed_scalar_and_array_inputs_broadcast_cleanly():
+    gains = np.array([10_000.0, 300_000.0])
+    vectorized = calculate_annual_taxes_at(0.0, 0.0, gains, 0.0)
+    for key, arr in vectorized.items():
+        assert isinstance(arr, np.ndarray) and arr.shape == (2,), key
+        expected = [calculate_annual_taxes_at(0.0, 0.0, float(g), 0.0)[key] for g in gains]
+        np.testing.assert_allclose(arr, expected)
+
+    sp = special_payments_tax_at(2_538.0, np.array([2_600.0, 2_700.0]))
+    assert isinstance(sp, np.ndarray) and sp.shape == (2,)
+    np.testing.assert_allclose(sp, [0.0, 0.06 * (2_538.0 - 620.0)])

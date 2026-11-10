@@ -102,11 +102,12 @@ def special_payments_tax_at(taxable_special_payments, jahressechstel=None):
     No tax at all when `jahressechstel` (one sixth of the year's regular gross pay, i.e. two monthly
     payments) is at most the EUR 2,615 Freigrenze; `None` skips that check.
     """
+    scalar = _is_scalar(taxable_special_payments) and (jahressechstel is None or _is_scalar(jahressechstel))
     x = np.maximum(0.0, np.asarray(taxable_special_payments, dtype=float))
     banded = _calculate_bracket_tax(np.minimum(x, SPECIAL_PAYMENT_TARIFF_FROM), SPECIAL_PAYMENT_BRACKETS)
     if jahressechstel is not None:
         banded = np.where(np.asarray(jahressechstel, dtype=float) <= SPECIAL_PAYMENT_FREIGRENZE, 0.0, banded)
-    return _as_output(banded, _is_scalar(taxable_special_payments))
+    return _as_output(banded, scalar)
 
 
 def special_payments_overflow_at(taxable_special_payments):
@@ -146,11 +147,16 @@ def calculate_annual_taxes_at(
     Every component is positively homogeneous of degree 1 in the money inputs, so bracket
     indexation can be applied as f * calculate_annual_taxes_at(x / f).
     """
-    scalar = _is_scalar(annual_gross_pension)
-    gross = np.maximum(0.0, np.asarray(annual_gross_pension, dtype=float))
-    divs = np.maximum(0.0, np.asarray(dividends, dtype=float))
-    gains = np.asarray(realized_gains, dtype=float)
-    interest_arr = np.maximum(0.0, np.asarray(interest, dtype=float))
+    scalar = all(_is_scalar(a) for a in (annual_gross_pension, dividends, realized_gains, interest))
+    gross, divs, gains, interest_arr = np.broadcast_arrays(
+        np.asarray(annual_gross_pension, dtype=float),
+        np.asarray(dividends, dtype=float),
+        np.asarray(realized_gains, dtype=float),
+        np.asarray(interest, dtype=float),
+    )
+    gross = np.maximum(0.0, gross)
+    divs = np.maximum(0.0, divs)
+    interest_arr = np.maximum(0.0, interest_arr)
 
     # Pension: 12 regular payments at the tariff, 2 special payments under § 67 Abs. 1; the 6%
     # health insurance contribution (capped at the Hoechstbeitragsgrundlage per payment) is deducted

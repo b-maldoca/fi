@@ -15,10 +15,12 @@ from .tax_engine_at import HEALTH_SELF_INSURANCE_MONTHLY
 
 VALID_SPENDING_STRATEGIES = {"Static", "Dynamic (Floor & Ceiling)", "Vanguard Dynamic"}
 VALID_REBALANCE_STRATEGIES = {"Cash Tent", "Monthly", "Quarterly", "Yearly", "Threshold", "Never"}
-# Number of fixed-point iterations used to solve the year-end sale for the capital gains tax on
-# its own gains (contraction factor <= gain fraction x marginal rate < 0.55, so 30 iterations
-# leave a relative error below 1e-7; the residual is settled exactly after the sale anyway).
-OUTFLOW_TAX_ITERATIONS = 30
+# Number of bisection steps used to solve the year-end sale S = expenses + taxes(gains_0 + gain(S)).
+# Because E + T(S) - S is continuous and strictly decreasing for both capital gains (0 <= g <= 1,
+# slope(T) <= 0.55 < 1) and capital losses (g < 0, slope(T) <= 0, where Picard iteration oscillates
+# whenever |g * marginal_rate| > 1), [E + min(T(0), T(cap)), E + max(T(0), T(cap))] brackets the
+# unique root and 50 bisection steps shrink the interval by 2^-50 ~ 9e-16.
+OUTFLOW_TAX_BISECTION_STEPS = 50
 
 
 @dataclass
@@ -392,6 +394,20 @@ def _unrealized_gains(liquid_assets: np.ndarray, cost_basis: np.ndarray) -> np.n
     return (liquid_assets[:, NON_CASH_ASSETS] - cost_basis[:, NON_CASH_ASSETS]).sum(axis=1)
 
 
+def _unassessed_gains(
+    liquid_assets: np.ndarray,
+    cost_basis: np.ndarray,
+    carried_taxable_gains: np.ndarray,
+    realized_gains_this_year: np.ndarray,
+) -> np.ndarray:
+    """Net non-cash capital gains not yet taxed (realized gains awaiting assessment + unrealized gains)."""
+    return (
+        carried_taxable_gains
+        + realized_gains_this_year[:, NON_CASH_ASSETS].sum(axis=1)
+        + _unrealized_gains(liquid_assets, cost_basis)
+    )
+
+
 def _outflow_sale_gain_profile(
     liquid_assets: np.ndarray, cost_basis: np.ndarray, cash_first: np.ndarray
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
@@ -466,7 +482,9 @@ def run_simulation(config: SimConfig, return_matrix: np.ndarray, inflation_matri
     # flagged as "below watermark" merely because the tax is realized at 60-65.
     initial_net_worth_after_tax = initial_net_worth - jurisdiction.latent_tax(
         config, pillar_2, pillar_3a, config.start_age, np.ones(num_runs),
-        _unrealized_gains(liquid_assets, cost_basis) if jurisdiction.taxes_capital_gains else None,
+        _unassessed_gains(liquid_assets, cost_basis, carried_taxable_gains, realized_gains_this_year)
+        if jurisdiction.taxes_capital_gains
+        else None,
     )
     
     history_net_worth = np.zeros((duration_months // 12, num_runs))
@@ -610,7 +628,11 @@ def run_simulation(config: SimConfig, return_matrix: np.ndarray, inflation_matri
                 current_nw_after_tax = (np.sum(liquid_assets, axis=1) + pillar_2 + current_p3a
                                         - jurisdiction.latent_tax(
                                             config, pillar_2, pillar_3a, current_age + 1, bracket_factors,
-                                            _unrealized_gains(liquid_assets, cost_basis) if jurisdiction.taxes_capital_gains else None,
+                                            _unassessed_gains(
+                                                liquid_assets, cost_basis, carried_taxable_gains, realized_gains_this_year
+                                            )
+                                            if jurisdiction.taxes_capital_gains
+                                            else None,
                                         ))
                 is_downturn = current_nw_after_tax < initial_net_worth_after_tax * inflation_factors
                 do_rebalance[is_downturn] = False
@@ -628,7 +650,9 @@ def run_simulation(config: SimConfig, return_matrix: np.ndarray, inflation_matri
             current_nw_before_expenses = np.sum(liquid_assets, axis=1) + pillar_2 + total_p3a_current
             nw_after_tax_before_expenses = current_nw_before_expenses - jurisdiction.latent_tax(
                 config, pillar_2, pillar_3a, current_age + 1, bracket_factors,
-                _unrealized_gains(liquid_assets, cost_basis) if jurisdiction.taxes_capital_gains else None,
+                _unassessed_gains(liquid_assets, cost_basis, carried_taxable_gains, realized_gains_this_year)
+                if jurisdiction.taxes_capital_gains
+                else None,
             )
 
             inflation_adjusted_watermark = initial_net_worth_after_tax * inflation_factors
@@ -702,15 +726,27 @@ def run_simulation(config: SimConfig, return_matrix: np.ndarray, inflation_matri
 
             annual_taxes = assess(taxable_gains_before_sale)
             if jurisdiction.taxes_capital_gains:
-                # The outflow sale realizes gains that are taxed in the same year, which raises
-                # the outflow: solve S = expenses + taxes(gains so far + gain(S)) by fixed point.
+                # The outflow sale realizes gains/losses that are taxed in the same year: solve
+                # h(S) = expenses + taxes(gains_so_far + gain(S)) - S = 0 by monotone bisection.
                 gain_fraction, cash_spent_first, sale_cap = _outflow_sale_gain_profile(
                     liquid_assets, cost_basis, is_below_watermark & config.enable_smart_selling
                 )
-                for _ in range(OUTFLOW_TAX_ITERATIONS):
-                    sale = np.maximum(0.0, current_expenses + annual_taxes.total)
-                    sale_gain = gain_fraction * np.maximum(0.0, np.minimum(sale, sale_cap) - cash_spent_first)
-                    annual_taxes = assess(taxable_gains_before_sale + sale_gain)
+                cap_gain = gain_fraction * np.maximum(0.0, sale_cap - cash_spent_first)
+                taxes_at_0 = annual_taxes.total
+                taxes_at_cap = assess(taxable_gains_before_sale + cap_gain).total
+                lo = np.maximum(0.0, current_expenses + np.minimum(taxes_at_0, taxes_at_cap))
+                hi = np.maximum(0.0, current_expenses + np.maximum(taxes_at_0, taxes_at_cap))
+                if not np.allclose(lo, hi, rtol=0.0, atol=1e-12):
+                    for _ in range(OUTFLOW_TAX_BISECTION_STEPS):
+                        mid = 0.5 * (lo + hi)
+                        mid_gain = gain_fraction * np.maximum(0.0, np.minimum(mid, sale_cap) - cash_spent_first)
+                        mid_taxes = assess(taxable_gains_before_sale + mid_gain).total
+                        above_zero = current_expenses + mid_taxes >= mid
+                        lo = np.where(above_zero, mid, lo)
+                        hi = np.where(above_zero, hi, mid)
+                    mid = 0.5 * (lo + hi)
+                    mid_gain = gain_fraction * np.maximum(0.0, np.minimum(mid, sale_cap) - cash_spent_first)
+                    annual_taxes = assess(taxable_gains_before_sale + mid_gain)
             # Pension lump-sum taxes were already deducted at source in month 0
             total_taxes = annual_taxes.total
             net_cash_flow = current_expenses + total_taxes # AHV already added to cash monthly
@@ -745,10 +781,19 @@ def run_simulation(config: SimConfig, return_matrix: np.ndarray, inflation_matri
             liquid_assets[:, 2] -= remaining_deficit
 
             if jurisdiction.taxes_capital_gains:
-                # Settle exactly on the gains the sale actually realized; the (tiny) difference to
-                # the fixed-point estimate is booked against cash.
+                # Settle exactly on the gains the sale actually realized; any tiny float rounding
+                # residual is booked against cash.
                 final_taxes = assess(taxable_gains_before_sale + sale_realized[:, NON_CASH_ASSETS].sum(axis=1))
-                liquid_assets[:, 2] -= final_taxes.total - total_taxes
+                tax_diff = final_taxes.total - total_taxes
+                liquid_assets[:, 2] -= tax_diff
+                liquid_assets[:, 2] = np.where(
+                    (np.abs(tax_diff) < 1e-7) & (np.abs(liquid_assets[:, 2]) < 1e-9),
+                    0.0,
+                    liquid_assets[:, 2],
+                )
+                remaining_deficit = np.maximum(
+                    0.0, current_expenses + final_taxes.total - np.maximum(0.0, total_liquid_end)
+                )
                 annual_taxes = final_taxes
                 total_taxes = final_taxes.total
 

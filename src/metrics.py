@@ -62,7 +62,7 @@ def classify_outcome(
     """TL;DR label for the median run: 'BROKE', 'SHORTFALL', 'DEAD', or 'RICH'.
 
     - BROKE: median real ending net worth <= 0.
-    - SHORTFALL: median real ending net worth is > 0 CHF but <= (success_pct / 100) * initial_net_worth
+    - SHORTFALL: median real ending net worth is > 0 but <= (success_pct / 100) * initial_net_worth
       (does not hit the target ending wealth criterion).
     - RICH: median real ending net worth > target and >= RICH_MULTIPLE * initial_net_worth.
     - DEAD: median real ending net worth > target and < RICH_MULTIPLE * initial_net_worth.
@@ -84,7 +84,7 @@ def beginning_of_year_withdrawal_rate(history: dict) -> np.ndarray:
     """Net annual portfolio withdrawal (`max(0, expenses + taxes - AHV)`) as % of beginning-of-year net worth.
 
     Uses `initial_net_worth` for Year 0 (falling back to `net_worth[0] + net_outflows[0]`
-    if omitted) and `net_worth[t - 1]` for `t >= 1`. Denominators are floored at 1 CHF so
+    if omitted) and `net_worth[t - 1]` for `t >= 1`. Denominators are floored at 1.0 so
     depleted portfolios do not divide by zero.
     """
     nw = np.asarray(history['net_worth'], dtype=float)

@@ -2815,6 +2815,11 @@ def test_package_exports_and_generated_historic_returns_in_sync():
         "MONTHLY_NON_US_CHF",
         "MONTHLY_GOLD_CHF",
         "MONTHLY_CASH_CHF",
+        "Austria",
+        "KEST_RATE",
+        "HEALTH_SELF_INSURANCE_MONTHLY",
+        "calculate_annual_taxes_at",
+        "calculate_income_tax_at",
     ):
         assert sym in src.__all__
         assert hasattr(src, sym)

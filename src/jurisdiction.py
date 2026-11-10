@@ -418,7 +418,7 @@ class Austria:
         bracket_factors: np.ndarray,
         unrealized_gains: np.ndarray | None = None,
     ) -> np.ndarray:
-        """KESt that a full liquidation would trigger: 27.5% of net unrealized gains (losses offset)."""
+        """KESt owed on full liquidation: 27.5% of net unassessed gains (already-realized + unrealized; losses offset)."""
         if unrealized_gains is None:
             return np.zeros_like(pillar_2, dtype=float)
         return KEST_RATE * np.maximum(0.0, unrealized_gains)

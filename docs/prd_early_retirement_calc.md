@@ -35,7 +35,7 @@ To manage complexity, the project will be split into two development phases:
 *   Pre-retirement phase (Salary, RSUs, active accumulation) -> deferred to Phase 2.
 *   Pillar 2 Annuity (Rente) option -> deferred to Phase 2.
 *   Real estate / mortgage calculations.
-*   Other Swiss cantons. (Austria is a second jurisdiction specified in §8, not yet implemented.)
+*   Other Swiss cantons and jurisdictions beyond Switzerland (Canton Zurich) and Austria (see §8).
 
 
 ---
@@ -224,17 +224,17 @@ The tool presents results side-by-side across all three simulation modes (**Hist
 
 ## 7. Architecture & Design Decisions Implemented
 1.  **Architecture**: Built with Python, Streamlit, NumPy, Pandas, and Plotly (`app.py` + `src/`).
-2.  **Tax Formula Accuracy**: Vectorized progressive bracket engine in `src/tax_engine.py` modeling Federal income tax, Zurich Cantonal/Municipal income & wealth taxes, capital withdrawal tax, and 2025/2026 AHV non-worker contribution tables. The simulation engine reaches these rules only through the country dispatch layer `src/jurisdiction.py` (`get_jurisdiction(config.country)`, currently `Switzerland` only), which since M4 also dispatches to the `Austria` rules in `src/tax_engine_at.py` (2026 § 33 EStG tariff, KESt, Regelbesteuerungsoption, pension taxation, § 16 ASVG health self-insurance; §8).
+2.  **Tax Formula Accuracy**: Vectorized progressive bracket engine in `src/tax_engine.py` modeling Federal income tax, Zurich Cantonal/Municipal income & wealth taxes, capital withdrawal tax, and 2025/2026 AHV non-worker contribution tables. The simulation engine reaches country-specific rules only through the country dispatch layer `src/jurisdiction.py` (`get_jurisdiction(config.country)`), which dispatches to `Switzerland` (`src/tax_engine.py`) or `Austria` (`src/tax_engine_at.py`: 2026 § 33 EStG tariff, KESt, Regelbesteuerungsoption, pension taxation, § 16 ASVG health self-insurance; §8).
 3.  **Simulation & Return Modeling**: Side-by-side execution of contiguous Historic Backtesting (`1922–2025`), joint Historic Bootstrapping, and Ito-corrected lognormal Monte Carlo simulation with configurable `Random Seed`. The engine also tracks an average-cost basis per asset class and reports realized / unrealized capital gains (`realized_gains`, `unrealized_gains`, `cost_basis_by_class`); they are not taxed in Switzerland and are the base for the Austrian capital gains tax (§8).
 4.  **Result Metrics**: Success criterion, survival curves by age, failure timing/depletion decomposition, shortfall duration, outcome severity classification and worst-path ranking, minimum real spending ratios, real ending net worth, TL;DR classification, and withdrawal-rate reconstruction live in `src/metrics.py` (pure, unit-tested functions shared by all UI panels) instead of being re-implemented inline in `app.py`.
-5.  **Testing**: `pytest` suite covering the tax engine, the jurisdiction layer, simulation engine, metrics, and Streamlit `AppTest` smoke tests of `app.py` (default run, spending strategies, allocation validation, PPP slider).
+5.  **Testing**: `pytest` suite covering both Swiss and Austrian tax engines (including ESTV and BMF 2026 golden tests), the jurisdiction layer, cost-basis and capital-gains accounting, CHF and EUR historical return series, the simulation engine, metrics, and Streamlit `AppTest` smoke tests of `app.py` (both countries, country-default resets on switching, spending strategies, allocation validation, PPP slider).
 
 ---
 
 ## 8. Austria Jurisdiction (Country Switch)
 
 > [!IMPORTANT]
-> **Status: ✅ implemented (M1–M6) and selectable in the app** (sidebar **Country** → *Austria*). Everything below is implemented; the pension taxation verified against the official BMF Brutto-Netto-Rechner 2026 (13 pensions from €1,100 to €95,000 a month: health contribution, income tax and net pension within €0.13). What exists: (M1) the `SimConfig.country` field and the `src/jurisdiction.py` dispatch layer; (M2) average-cost basis tracking for every sleeve with `realized_gains`, `unrealized_gains` and `cost_basis_by_class` outputs (tracked but untaxed in Switzerland); (M3) the EUR return series `src/historic_returns_eur.py` built from BIS/ECB/Statistik Austria data with the documented Swiss-data stand-ins (§8.6.F); (M4) the Austrian tax rules in `src/tax_engine_at.py` and the `Austria` jurisdiction (KESt, Regelbesteuerungsoption, pension taxation, health insurance). The technical design is in [`design_doc_early_retirement.md` §7](design_doc_early_retirement.md#7-multi-jurisdiction-design-austria); a status summary is in the [README](../README.md#jurisdictions--implementation-status).
+> **Status: ✅ implemented (M1–M6) and selectable in the app** (sidebar **Country** → *Austria*). Everything below is implemented; the pension taxation is verified against the official BMF Brutto-Netto-Rechner 2026 (13 pensions from €1,100 to €95,000 a month: health contribution, income tax and net pension within €0.13). What exists: (M1) the `SimConfig.country` field and the `src/jurisdiction.py` dispatch layer; (M2) average-cost basis tracking for every sleeve with `realized_gains`, `unrealized_gains` and `cost_basis_by_class` outputs (tracked but untaxed in Switzerland); (M3) the EUR return series `src/historic_returns_eur.py` built from BIS/ECB/Statistik Austria data with the documented Swiss-data stand-ins (§8.6.F); (M4/M4b) the Austrian tax rules in `src/tax_engine_at.py` and the `Austria` jurisdiction (KESt, Regelbesteuerungsoption, BMF-verified pension taxation, health insurance); (M5) the sidebar country selector, Austrian inputs/labels, Swiss-data warning banner and tax-component hover. The technical design is in [`design_doc_early_retirement.md` §7](design_doc_early_retirement.md#7-multi-jurisdiction-design-austria); a status summary is in the [README](../README.md#jurisdictions--implementation-status).
 
 **Status legend** (shared by this section, design doc §7 and the README):
 ✅ implemented · 🔁 country-agnostic, reused unchanged (already implemented) · ❌ not implemented. All design questions are resolved (§8.9).
@@ -269,20 +269,20 @@ The tool presents results side-by-side across all three simulation modes (**Hist
 | :--- | :--- | :--- | :--- |
 | **Country selector** | — | Top of sidebar: `Switzerland (Zurich)` / `Austria`. Switching loads that country's defaults and hides inputs that do not apply. |✅ |
 | Currency | CHF | EUR (all monetary inputs, outputs and labels) |✅ |
-| Taxable Liquid Wealth | ✅ | Same input, in EUR. Initial cost basis = market value (zero unrealized gains on day 0, decision 5). | ✅ |
+| Taxable Liquid Wealth | ✅ (`CHF 2,450,000` default) | Same input, in EUR (`€3,250,000` default). Initial cost basis = market value (zero unrealized gains on day 0, decision 5). | ✅ |
 | Pillar 2 / Pillar 3a balances | ✅ | Must be 0 (`SimConfig` rejects them for `"AT"`); hidden in the UI | ✅ |
 | Target Asset Allocation | 5 sleeves incl. `CHF Cash` | Same 5 sleeves; `CHF Cash` becomes `EUR Cash`, `Gold` is a gold ETC |✅ |
 | **State pension** | Monthly AHV from 65 (paid 12×/yr) | **Expected monthly gross state pension** from 65, in today's EUR, **paid 14×/yr** (12 regular + 13th/14th special payments); same `SimConfig.monthly_ahv_pension` field | ✅ |
 | **Health self-insurance** | n/a | `SimConfig.health_insurance_monthly`, default **€565.25/month** (2026 ÖGK rate, 12×/yr); always applied; shown read-only in the UI | ✅ |
 | AHV non-worker contributions | ✅ (automatic) | Not applicable | ✅ (bypassed) |
 | Municipal Multiplier | ✅ | Hidden |✅ |
-| Tax Bracket Indexation (% of CPI) | Default 100% | Same slider, **default 66.7%** (statutory automatic ⅔ indexation, § 33a EStG); `SimConfig.bracket_indexation=None` resolves to the country default | ✅ |
+| Tax Bracket Indexation (% of CPI) | Default 100% | Same number input, **default 66.7%** (statutory automatic ⅔ indexation, § 33a EStG); `SimConfig.bracket_indexation=None` resolves to the country default | ✅ |
 | Currency / PPP Assumption | Real CHF appreciation beyond PPP | **Real EUR appreciation beyond PPP**, historic value re-derived from EUR data (`real_eur_appreciation`) | ✅ |
 | Monte Carlo defaults | Calibrated to 1922–2025 CHF history | Calibrated to the EUR history (§8.6.F) |✅ |
 | Cash rate (forward-looking) | 1% CHF | **2%** (ECB MIR, Austrian households, Sep 2026: agreed maturity ≤ 1y 2.18%, notice deposits 2.05%); `SimConfig.cash_rate=None` resolves to the country default | ✅ |
 
 ### 8.5. Key Differences vs. Switzerland
-| Topic | Switzerland (✅) | Austria (✅ engine, M4) |
+| Topic | Switzerland (✅) | Austria (✅) |
 | :--- | :--- | :--- |
 | Wealth tax | Canton + municipality | **None** (abolished 1994) |
 | Realized capital gains (private) | Tax-free | **27.5% KESt** (§ 27a Abs. 1 Z 2 EStG) |
@@ -292,7 +292,7 @@ The tool presents results side-by-side across all three simulation modes (**Hist
 | Bitcoin | Wealth-taxed; gains tax-free | 27.5% on gains (Neuvermögen) |
 | Mandatory contributions before pension | AHV non-worker (CHF 530–26,500/yr, deductible) | Health self-insurance (€6,783/yr in 2026, not deductible) |
 | Pension vehicles | Pillar 2 / 3a lump sums with capital withdrawal tax | Not modelled (out of scope) |
-| Income tax on pension | Federal + cantonal + municipal tariff | National tariff; 6% health contribution withheld (capped); 13th/14th payment at 6% (tax-free up to the €2,615 Freigrenze); pensioner tax credit — verified against the BMF Brutto-Netto-Rechner |
+| Income tax on pension | Federal + cantonal + municipal tariff | National tariff; 6% health contribution withheld (capped at €6,930/payment); 13th/14th payment at 0% / 6% / 27% / 35.75% / tariff bands from €620 (tax-free up to the €2,615 Freigrenze); pensioner tax credit — verified against the BMF Brutto-Netto-Rechner |
 | Bracket indexation | 100% CPI by law (Art. 39 DBG, § 48 StG ZH) | Brackets 1–5 automatically indexed by ⅔ of inflation (§ 33a EStG); remaining ⅓ discretionary |
 
 ### 8.6. Calculation Logic (Austria)
@@ -303,7 +303,7 @@ The tool presents results side-by-side across all three simulation modes (**Hist
 *   **EUR Cash interest**: `EUR Cash × max(0, realized_annual_cash_return)` (same realized-return logic as the Swiss model), taxed at **25%**.
 *   **Gold**: held as a **gold ETC** (decision 6) → gains are ordinary 27.5% capital income and part of the loss-offset pool; no distributions (no dividend yield).
 *   **Loss offset** (§ 27 Abs. 8 EStG): realized losses offset realized gains and dividends / deemed distributions **within the same calendar year** (27.5% pool only; bank interest is excluded). **No loss carry-forward**: an unused loss expires at year-end.
-*   **Settlement (simplified timing)**: all KESt of a calendar year is settled at the year-end assessment (Month 11) on that year's pool, rather than withheld at each sale. The amount is the same as with a domestic ("steuereinfach") broker that withholds per sale and nets losses in-year; only the intra-year timing differs. The year-end outflow sale realizes gains that are taxed in the same year, so the engine solves `sale = expenses + taxes(gains so far + gain(sale))` by fixed-point iteration (converged to machine precision) and settles the exact residual after the sale. Gains of the year-end rebalance (which runs after the assessment) are taxed in the following year, as if the rebalance happened on the first trading day of January.
+*   **Settlement (simplified timing)**: all KESt of a calendar year is settled at the year-end assessment (Month 11) on that year's pool, rather than withheld at each sale. The amount is the same as with a domestic ("steuereinfach") broker that withholds per sale and nets losses in-year; only the intra-year timing differs. The year-end outflow sale realizes gains or losses that affect the same year's tax, so the engine solves `sale = expenses + taxes(gains so far + gain(sale))` by monotone bracketed bisection (globally convergent to machine precision for both capital gains and capital losses) and settles any tiny rounding residual after the sale. Gains of the year-end rebalance (which runs after the assessment) are taxed in the following year, as if the rebalance happened on the first trading day of January.
 *   **Regelbesteuerungsoption** (§ 27a Abs. 5 EStG): every year the engine computes the tax both ways — (a) flat: progressive tax on the pension + 27.5% on the pool + 25% on interest; (b) all special-rate capital income taxed at the progressive tariff together with the pension — and applies the **lower** one. The option is all-or-nothing for all special-rate capital income. It is applied in the same year (in reality the KESt is withheld first and the difference refunded by the assessment the year after; timing only). This matters most for early retirees with little other income (e.g. €30k of gains and no other income: ≈ €4.1k at the 2026 progressive tariff vs. €8.25k flat).
 
 #### B. Progressive Income Tax (§ 33 EStG, 2026 tariff) (✅ M4)
@@ -320,7 +320,7 @@ The tool presents results side-by-side across all three simulation modes (**Hist
 *   **Taxable base**: the 12 regular monthly pension payments (`12 × monthly_state_pension`), after deducting the 6% health insurance contribution on the pension (capped at the 2026 Höchstbeitragsgrundlage of €6,930 per payment, i.e. at most €415.80); plus all capital income if the Regelbesteuerungsoption is cheaper (§8.6.A).
 *   **Special payments** (13th and 14th pension payment, `2 × monthly_state_pension`, after the health contribution; § 67 Abs. 1 EStG within the Jahressechstel, which two monthly payments never exceed): **no tax if the Jahressechstel (two monthly gross payments) is at most €2,615** (2026 Freigrenze, i.e. pensions up to €1,307.50/month); otherwise 0% on the first **€620**, **6%** on the next €24,380, 27% on the next €25,000, 35.75% on the next €33,333.33, and the rest at the regular tariff.
 *   **Pensionistenabsetzbetrag** (tax credit, 2026): **€1,020** for pension income up to **€21,614**, phasing out linearly to 0 at **€31,494**. Credits cannot make the tax negative.
-*   **Indexation**: all euro amounts (bracket edges, €620, credit and phase-out limits) are indexed each year with `bracket_indexation × CPI` via the same homogeneity identity as the Swiss tariffs. **Default `bracket_indexation = 2/3`** for Austria (the statutory automatic part, § 33a EStG); the discretionary third is not assumed. Simplification: the €1M edge is indexed like the others (by law it is not; irrelevant below €1M of income).
+*   **Indexation**: all euro amounts (bracket edges, €620 allowance, €2,615 Freigrenze, § 67 bands, €6,930 health-contribution ceiling, and the pensioner credit and its phase-out limits) are indexed each year with `bracket_indexation × CPI` via the same homogeneity identity as the Swiss tariffs. **Default `bracket_indexation = 2/3`** for Austria (the statutory automatic part, § 33a EStG); the discretionary third is not assumed. Simplification: the €1M edge, § 67 bands and contribution ceiling are indexed with the same bracket factor (by law they follow different or no indexation).
 
 #### C. No Wealth Tax, No Capital Withdrawal Tax, No AHV (✅ M4)
 *   Wealth tax, AHV non-worker contributions and the Pillar 2 / 3a capital withdrawal tax evaluate to 0 in Austria mode. With no locked pension balances, liquid net worth equals total net worth.
@@ -351,7 +351,7 @@ The tool presents results side-by-side across all three simulation modes (**Hist
 ### 8.7. Outputs (Austria Mode)
 *   All §4.3 outputs are reused (🔁) with country-specific labels (✅ M5), a title **Austria Early Retirement Simulator** and a warning banner stating the Swiss-data stand-ins: `AHV Pension` → `State Pension`, `Pre-AHV` → `Pre-Pension`, `Age 65 (AHV + P2)` → `Age 65 (State Pension)`; the `Liquid Solvent` curve and `Pre-AHV Liquid Depletion` decomposition are hidden (identical to `Solvent` without locked pensions).
 *   **New outputs** (✅): `tax_components` with annual `income_tax`, `kest` and `health_insurance` (self-insurance + 6% on the pension) per run, plus `realized_gains`, `unrealized_gains` and `cost_basis_by_class` (M2) — the component medians are shown when hovering the **Taxes Paid (50th Pct)** bar of the Annual Withdrawal Breakdown chart (both countries).
-*   **After-tax watermark** (✅ M4): the Swiss watermark deducts the deferred capital withdrawal tax on Pillar 2 / 3a. The Austrian equivalent deducts the latent KESt on unrealized gains (`0.275 × max(0, Σ(value − basis))` over US Stocks, Non-US Stocks, Gold and Bitcoin, i.e. losses offset gains). Because the basis equals the market value on day 0, the starting watermark equals the starting net worth.
+*   **After-tax watermark** (✅ M4): the Swiss watermark deducts the deferred capital withdrawal tax on Pillar 2 / 3a. The Austrian equivalent deducts the latent KESt on net unassessed non-cash gains (`0.275 × max(0, carried_gains + intra_year_realized_gains + Σ(value − basis))` over US Stocks, Non-US Stocks, Gold and Bitcoin, i.e. losses offset gains and rebalancing before year-end settlement does not artificially raise after-tax net worth). Because the basis equals the market value on day 0, the starting watermark equals the starting net worth.
 
 ### 8.8. Implementation Status Summary (Austria)
 | Component | Status |
