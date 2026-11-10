@@ -1,8 +1,37 @@
-# Zurich Early Retirement Simulator
+# Early Retirement Simulator (Zurich · Austria)
 
-This application is a financial simulation tool designed for individuals planning for early retirement (FIRE) in Canton Zurich, Switzerland.
+This application is a financial simulation tool designed for individuals planning for early retirement (FIRE) in **Canton Zurich, Switzerland** or in **Austria** (selected with the **Country** box at the top of the sidebar).
 
-Phase 1 focuses on the **post-retirement decumulation phase** for a single individual with no dependents living in Canton Zurich.
+Phase 1 focuses on the **post-retirement decumulation phase** for a single individual with no dependents.
+
+## Jurisdictions & Implementation Status
+
+Both countries are implemented in one app (milestones M1–M6); pick the country in the sidebar. Programmatically: `run_simulation(SimConfig(country="AT", ...), ...)` with the EUR return module. The [Features](#features) section below describes the Swiss model; the Austrian differences are summarised here and specified in PRD §8. Still open: golden tests against the official BMF calculators.
+
+Legend: ✅ implemented · 🔁 country-agnostic, reused unchanged · ❌ not implemented
+
+| Component | 🇨🇭 Switzerland (Zurich) | 🇦🇹 Austria |
+| :--- | :--- | :--- |
+| Country dispatch (`SimConfig.country`, `src/jurisdiction.py`, `COUNTRY_DEFAULTS`) | ✅ (default `"CH"`) | ✅ (`country="AT"`) |
+| Country selector in the sidebar | ✅ | ✅ (title, labels, inputs and defaults switch; Swiss-data warning banner) |
+| Return engines (Backtesting, Stationary Bootstrap, Monte Carlo), Bitcoin copula | ✅ | 🔁 engines |
+| Historic return data 1922–2025 | ✅ `src/historic_returns.py` (CHF) | ✅ `src/historic_returns_eur.py` (EUR; **1922–1957 Swiss inflation and cash data, 1958–1999 cash PPP-translated from Swiss data**, see below) |
+| Spending strategies, rebalancing, Cash Tent, Smart Cash Buffer | ✅ | 🔁 (✅ Austrian Year-0 tax estimate; sales and rebalancing realize taxable gains) |
+| Metrics, charts, cohort tables, success criterion | ✅ (tax-component medians on hover) | 🔁 (✅ EUR / State Pension labels, no Pillar or Liquid Solvent series, KESt / income tax / health insurance on hover) |
+| Income tax | ✅ Federal + Zurich 2026, ESTV-verified | ✅ § 33 EStG 2026 tariff, pension taxation (6% health contribution, 13th/14th at 6%, pensioner credit) |
+| Wealth tax | ✅ Zurich | n/a (no wealth tax) |
+| Cost-basis tracking (average cost, basis = value on day 0; `realized_gains` / `unrealized_gains` outputs) | ✅ tracked, not taxed | ✅ (engine, shared) |
+| Capital gains tax | n/a (tax-free) | ✅ 27.5% KESt on stocks, gold ETC and Bitcoin, in-year loss offset, Regelbesteuerungsoption (the year-end sale is solved for the tax on its own gains) |
+| Dividend / interest tax | ✅ progressive | ✅ 27.5% (incl. deemed distributions) / 25% on bank interest |
+| Mandatory contributions before 65 | ✅ AHV non-worker | ✅ Health self-insurance (§ 16 ASVG, €565.25/month in 2026, CPI-indexed; for life if no pension) |
+| State pension (single input from 65) | ✅ AHV (monthly, 12×/yr) | ✅ monthly gross, 14×/yr |
+| Pension lump sums | ✅ Pillar 2 / 3a with capital withdrawal tax | n/a (out of scope) |
+| Tax tests | ✅ golden tests vs. the ESTV calculator | ✅ hand-computed statutory examples / ❌ golden tests vs. the BMF calculators |
+
+Requirements, agreed decisions (all design questions resolved): [PRD §8](docs/prd_early_retirement_calc.md#8-austria-jurisdiction-country-switch). Technical design and milestones: [Design Doc §7](docs/design_doc_early_retirement.md#7-multi-jurisdiction-design-austria).
+
+> [!WARNING]
+> **Austrian history before 1958 is Swiss data, and Austrian cash returns before 2000 are derived from Swiss data.** Austria has no usable inflation or cash-rate series for 1922–1957 (1921–22 hyperinflation, 1938 annexation, 1945–47 currency reforms). For those 36 years `src/historic_returns_eur.py` uses the **Swiss CPI** ([`data/ch_inflation.csv`](data/ch_inflation.csv)) as Austrian inflation and the **Swiss retail savings rate** ([`data/ch_cash_rate.csv`](data/ch_cash_rate.csv)) as the EUR Cash return, and translates USD equity and gold returns at a PPP-implied rather than a market exchange rate. For **1958–1999** no open Austrian retail savings-rate series exists either, so EUR Cash is the **Swiss savings rate translated to EUR under relative PPP** (Swiss real cash return + Austrian inflation). Real Austrian data starts in 1958 for exchange rates and inflation (BIS, Statistik Austria) and in 2000 for cash (ECB). The module flags both segments (`HISTORIC_YEAR_IS_SWISS_PROXY`, `HISTORIC_YEAR_CASH_IS_SWISS_PROXY`).
 
 ## Features
 
@@ -68,14 +97,24 @@ $$\text{Return}^{\text{CHF}}_t = \frac{I^{\text{USD}}_t \times \text{FX}_t}{I^{\
 ### Rebuilding the data
 
 ```bash
-python scripts/fetch_source_data.py      # network: FRED, SNB, LBMA, JST
-python scripts/build_historic_returns.py # offline: regenerates src/historic_returns.py
+python scripts/fetch_source_data.py                     # network: FRED, SNB, LBMA, JST
+python scripts/build_historic_returns.py                # offline: regenerates src/historic_returns.py (CHF)
+python scripts/fetch_source_data_at.py                  # network: BIS, ECB, Statistik Austria (Austria / EUR)
+python scripts/build_historic_returns.py --currency EUR # offline: regenerates src/historic_returns_eur.py
 ```
+
+### Austria / EUR data (`src/historic_returns_eur.py`)
+
+8. **EUR per USD** — [`data/usd_eur.csv`](data/usd_eur.csv), 1957–2025, month-end: BIS `WS_XRU` `M.AT.EUR.E` (Austrian schilling converted at the fixed 13.7603 ATS/EUR before 1999; identical to the ECB reference-rate month-ends from 1999). Before 1958: PPP-implied from Swiss vs US CPI (no market rate).
+9. **Austrian CPI** — [`data/at_inflation.csv`](data/at_inflation.csv), 1948–2025, monthly: Statistik Austria VPI 1958 (official long-chained national CPI) from Dec 1959, BIS long CPI chained on before that. Before 1958 the EUR module uses the **Swiss CPI**.
+10. **Austrian household deposit rates** — [`data/at_cash_rate.csv`](data/at_cash_rate.csv), 2000–2025, annual: ECB MIR, deposits with agreed maturity up to 1 year (`retail_rate`, used), overnight and notice deposits (reference). Before 2000 the EUR module uses the **Swiss savings rate** (as-is to 1957, PPP-translated 1958–1999).
+
+Equities, gold and Bitcoin use the same sources as the CHF build, converted to EUR. 1922–2025 real CAGRs in EUR: US 7.1%, Non-US 4.9%, gold 1.8%, cash 0.6%. Details: [Design Doc §7.5](docs/design_doc_early_retirement.md#7-multi-jurisdiction-design-austria).
 
 ## Project Structure
 
 ```text
-├── app.py                              # Streamlit frontend UI
+├── app.py                              # Streamlit frontend UI (country switch: Switzerland / Austria)
 ├── data/                               # Normalised source datasets (every file here is ingested)
 │                                       #   us_stocks.csv      month-end S&P 500 TR, USD, monthly
 │                                       #   ex_us_stocks.csv   ex-US equities, USD, monthly (1970+ only)
@@ -85,20 +124,32 @@ python scripts/build_historic_returns.py # offline: regenerates src/historic_ret
 │                                       #   gold_usd.csv       LBMA PM fix, USD, monthly (1968+ real)
 │                                       #   ch_cash_rate.csv   CHF retail savings rate (JST <1933, SNB 1933+) + wholesale ref
 │                                       #   us_cpi.csv         US CPI-U, monthly, FRED from 1913 (build-time PPP only)
+│                                       #   usd_eur.csv        month-end EUR per USD, BIS (1957+)             [Austria]
+│                                       #   at_inflation.csv   Austrian CPI, Statistik Austria VPI 1958 + BIS  [Austria]
+│                                       #   at_cash_rate.csv   Austrian household deposit rates, ECB MIR (2000+) [Austria]
 ├── src/                                # Importable `src` package (no `sys.path` manipulation required)
 │   ├── __init__.py                     # Re-exports the public API (`from src import SimConfig, run_simulation`)
 │   ├── simulation_engine.py            # Core monthly decumulation simulation loop & Monte Carlo generator
+│   ├── jurisdiction.py                 # Country dispatch: COUNTRY_DEFAULTS, Jurisdiction protocol, Switzerland and Austria rules
 │   ├── tax_engine.py                   # Swiss Federal & Canton Zurich tax and AHV calculations
+│   ├── tax_engine_at.py                # Austrian 2026 tariff, KESt, Regelbesteuerungsoption, pension taxation, health self-insurance
 │   ├── metrics.py                      # Pure result metrics (success mask, survival curves, depletion/shortfall timing, outcome severity ranking, real wealth, TL;DR outcome, withdrawal rates)
-│   └── historic_returns.py             # GENERATED: monthly/annual return series & bootstrap generators
+│   ├── historic_returns.py             # GENERATED: monthly/annual return series & bootstrap generators (CHF)
+│   └── historic_returns_eur.py         # GENERATED: EUR / Austria counterpart with Swiss-proxy flags
 ├── scripts/
 │   ├── fetch_source_data.py            # Network: FRED, SNB, LBMA, JST -> normalised CSVs in data/
-│   └── build_historic_returns.py       # Offline: data/ -> src/historic_returns.py
+│   ├── fetch_source_data_at.py         # Network: BIS, ECB, Statistik Austria -> Austrian / EUR CSVs in data/
+│   └── build_historic_returns.py       # Offline: data/ -> src/historic_returns.py (--currency EUR -> src/historic_returns_eur.py)
 ├── tests/
 │   ├── test_simulation_engine.py       # Unit & integration tests for simulation engine and return generators
 │   ├── test_tax_engine.py              # Unit tests for income, wealth, capital withdrawal, and AHV taxes
+│   ├── test_jurisdiction.py            # Country registry/validation and Swiss rules behind the Jurisdiction interface
+│   ├── test_tax_engine_at.py           # Austrian tax rules: hand-computed statutory examples
+│   ├── test_austria_engine.py          # Austria inside run_simulation (KESt on realized gains, health insurance, pension)
+│   ├── test_cost_basis.py              # Average-cost basis helpers and realized/unrealized gain tracking in the engine
+│   ├── test_historic_returns_eur.py    # EUR series and their Swiss-data stand-in segments
 │   ├── test_metrics.py                 # Unit tests for src/metrics.py
-│   └── test_app.py                     # Streamlit AppTest smoke tests for app.py
+│   └── test_app.py                     # Streamlit AppTest smoke tests for app.py (both countries + switching)
 ├── docs/
 │   ├── prd_early_retirement_calc.md    # Product Requirement Document (PRD)
 │   └── design_doc_early_retirement.md  # Technical Design Document (DD)
@@ -106,6 +157,8 @@ python scripts/build_historic_returns.py # offline: regenerates src/historic_ret
 ├── requirements.txt                    # Python dependencies
 └── venv/                               # Python virtual environment (ignored by git)
 ```
+
+Still open for Austria (❌): golden tests against the official BMF calculators.
 
 ## Getting Started
 
