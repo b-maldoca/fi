@@ -2820,31 +2820,23 @@ def test_package_exports_and_generated_historic_returns_in_sync():
         assert hasattr(src, sym)
 
     repo_root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
-    gen_path = os.path.join(repo_root, "src", "historic_returns.py")
-    with open(gen_path, encoding="utf-8") as f:
-        committed = re.sub(r"built \d{4}-\d{2}-\d{2}", "built DATE", f.read())
+    script_path = os.path.join(repo_root, "scripts", "build_historic_returns.py")
 
-    with tempfile.TemporaryDirectory() as tmpdir:
-        # Check build_historic_returns.py matches src/historic_returns.py modulo date stamp
-        script_path = os.path.join(repo_root, "scripts", "build_historic_returns.py")
-        with open(script_path, encoding="utf-8") as sf:
-            script_src = sf.read()
-        out_file = os.path.join(tmpdir, "historic_returns.py")
-        patched_script = os.path.join(tmpdir, "build_check.py")
-        with open(patched_script, "w", encoding="utf-8") as pf:
-            pf.write(
-                script_src.replace(
-                    "BASE = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))",
-                    f"BASE = {repo_root!r}",
-                ).replace(
-                    "SRC_FILE = os.path.join(BASE, 'src', 'historic_returns.py')",
-                    f"SRC_FILE = {out_file!r}",
-                )
+    # Check build_historic_returns.py reproduces both generated modules modulo the date stamp.
+    # `--output` keeps the check from ever touching the committed files.
+    for currency, module in (("CHF", "historic_returns.py"), ("EUR", "historic_returns_eur.py")):
+        with open(os.path.join(repo_root, "src", module), encoding="utf-8") as f:
+            committed = re.sub(r"built \d{4}-\d{2}-\d{2}", "built DATE", f.read())
+        with tempfile.TemporaryDirectory() as tmpdir:
+            out_file = os.path.join(tmpdir, module)
+            subprocess.run(
+                [sys.executable, script_path, "--currency", currency, "--output", out_file],
+                check=True,
+                stdout=subprocess.DEVNULL,
             )
-        subprocess.run([sys.executable, patched_script], check=True)
-        with open(out_file, encoding="utf-8") as f:
-            fresh = re.sub(r"built \d{4}-\d{2}-\d{2}", "built DATE", f.read())
-        assert fresh == committed
+            with open(out_file, encoding="utf-8") as f:
+                fresh = re.sub(r"built \d{4}-\d{2}-\d{2}", "built DATE", f.read())
+        assert fresh == committed, f"src/{module} is out of sync with scripts/build_historic_returns.py"
 
 
 

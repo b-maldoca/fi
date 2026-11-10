@@ -10,4 +10,4 @@ Never leave `README.md`, `docs/prd_early_retirement_calc.md`, or `docs/design_do
 
 ## 2. Intentional Scope Decisions (Working As Intended)
 - **Asset Classes**: The simulator intentionally models 5 asset sleeves (`US Stocks`, `Non-US Stocks`, `CHF Cash`, `Gold`, `Bitcoin`). Do **not** add separate Swiss equities or bond sleeves unless explicitly instructed by the user.
-- **Generated Files**: `src/historic_returns.py` is generated offline by `scripts/build_historic_returns.py` (with raw data fetched via `scripts/fetch_source_data.py`). Never hand-edit `src/historic_returns.py`; modify `scripts/build_historic_returns.py` and re-run it.
+- **Generated Files**: `src/historic_returns.py` (CHF) and `src/historic_returns_eur.py` (EUR / Austria) are generated offline by `scripts/build_historic_returns.py` (`--currency EUR` for the latter), with raw data fetched via `scripts/fetch_source_data.py` and `scripts/fetch_source_data_at.py`. Never hand-edit either generated file; modify `scripts/build_historic_returns.py` and re-run it.
