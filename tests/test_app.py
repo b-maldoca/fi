@@ -265,3 +265,72 @@ def test_vanguard_bidirectional_sync_and_sidebar_modes():
     p3a_bal = next(n for n in at.number_input if n.label == "Balance per Pillar 3a Account (CHF)")
     assert p3a_bal.disabled
 
+
+
+# --------------------------------------------------------------------------- Austria (country switch)
+
+
+def _select_austria(at):
+    next(s for s in at.selectbox if s.label == "Country").set_value("Austria")
+
+
+def test_app_runs_in_austria_mode():
+    import json
+
+    import numpy as np
+
+    from src.historic_returns_eur import HISTORIC_AUSTRIAN_INFLATION, HISTORIC_REAL_EUR_APPRECIATION
+    from src.tax_engine_at import HEALTH_SELF_INSURANCE_MONTHLY
+
+    at = _run(_select_austria)
+    assert not at.exception, [e.value for e in at.exception]
+    assert not at.error, [e.value for e in at.error]
+    assert at.title[0].value == "Austria Early Retirement Simulator"
+    assert [h.value for h in at.main.header] == ["Historic Backtesting", "Historic Bootstrapping", "Monte Carlo"]
+    # The Swiss-data stand-ins are disclosed prominently.
+    assert any("1922–1957" in w.value and "Swiss" in w.value for w in at.warning)
+
+    inputs = {n.label: n for n in at.number_input}
+    assert "Pillar 2 (Freizügigkeitskonto)" not in inputs
+    assert "Number of Pillar 3a Accounts" not in inputs
+    assert "Municipal Multiplier (Steuerfuss, %)" not in inputs
+    assert "Taxable Liquid Wealth (EUR)" in inputs and "EUR Cash" in inputs
+    assert "Expected Monthly Gross State Pension from age 65 (EUR, paid 14×/yr)" in inputs
+    assert inputs["EUR Cash Nominal Mean (%)"].value == pytest.approx(2.0)
+    assert inputs["Tax Bracket Indexation (% of CPI)"].value == pytest.approx(66.7)
+    health = inputs["Health Self-Insurance (EUR/month, § 16 ASVG)"]
+    assert health.disabled and health.value == pytest.approx(HEALTH_SELF_INSURANCE_MONTHLY)
+    assert inputs["Inflation Mean (%)"].value == pytest.approx(round(float(np.mean(HISTORIC_AUSTRIAN_INFLATION)) * 100, 1))
+    sidebar_subheaders = [s.value for s in at.sidebar.subheader]
+    assert "Austrian Tax Assumptions" in sidebar_subheaders and "Zurich Tax Location" not in sidebar_subheaders
+    slider = next(s for s in at.slider if s.label.startswith("Real EUR Appreciation"))
+    assert f"+{HISTORIC_REAL_EUR_APPRECIATION * 100:.2f}%" in slider.help
+
+    hist_charts = [json.loads(c.proto.spec) for c in at.columns[0].get("plotly_chart")]
+    assert [t["name"] for t in hist_charts[1]["data"]] == ["Solvent (NW > 0)", "Above Target (50% Start NW)"]
+    assert [t["name"] for t in hist_charts[2]["data"]] == ["Dividends", "Cash Interest", "State Pension", "Capital Sold", "Inflation-Adj Start"]
+    taxes_bar = hist_charts[3]["data"][1]
+    assert taxes_bar["name"] == "Taxes Paid (50th Pct)"
+    assert "KESt" in taxes_bar["customdata"][0] and "Health insurance" in taxes_bar["customdata"][0]
+    alloc_names = [t["name"] for t in hist_charts[5]["data"]]
+    assert alloc_names[0] == "EUR Cash" and "Pillar 2 & 3a" not in alloc_names
+    assert sum(1 for m in at.metric if m.label.startswith("Pre-Pension Outflow")) == 3
+    assert all("EUR" in m.value for m in at.metric if m.label == "Median Ending NW (Real)")
+
+
+def test_switching_country_resets_country_defaults():
+    at = AppTest.from_file("app.py", default_timeout=APP_TIMEOUT_S)
+    at.run()
+    _select_austria(at)
+    at.run()
+    assert next(n for n in at.number_input if n.label == "EUR Cash Nominal Mean (%)").value == pytest.approx(2.0)
+    next(s for s in at.selectbox if s.label == "Country").set_value("Switzerland (Zurich)")
+    at.run()
+    assert not at.exception, [e.value for e in at.exception]
+    assert not at.error, [e.value for e in at.error]
+    inputs = {n.label: n for n in at.number_input}
+    assert inputs["CHF Cash Nominal Mean (%)"].value == pytest.approx(1.0)
+    assert inputs["Tax Bracket Indexation (% of CPI)"].value == pytest.approx(100.0)
+    assert "Pillar 2 (Freizügigkeitskonto)" in inputs
+    assert at.title[0].value == "Zurich Early Retirement Simulator"
+    assert not at.warning
