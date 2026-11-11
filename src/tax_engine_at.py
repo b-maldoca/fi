@@ -71,8 +71,15 @@ PENSIONER_CREDIT = 1_020.0              # Pensionistenabsetzbetrag 2026
 PENSIONER_CREDIT_FULL_UP_TO = 21_614.0
 PENSIONER_CREDIT_ZERO_FROM = 31_494.0
 
-# § 16 ASVG voluntary health self-insurance (mandatory in the simulator, PRD §8.1).
+# § 16 ASVG voluntary health self-insurance (always charged before the pension in the simulator,
+# PRD §8.1). The contribution is a fixed share (~8.17%) of the monthly Hoechstbeitragsgrundlage
+# (2024: 495.58, 2025: 526.79, 2026: 565.25), which moves with the wage-based Aufwertungszahl
+# (§ 108a ASVG), not with CPI.
 HEALTH_SELF_INSURANCE_MONTHLY = 565.25
+# Default real (above-CPI) growth of that contribution: the Hoechstbeitragsgrundlage rose 3.3%/yr
+# from 2010 (EUR 4,110) to 2026 (EUR 6,930) while Austrian CPI rose 2.6%/yr over 2008-2024 (the
+# Aufwertungszahl lags two years), i.e. ~0.7%/yr real wage growth.
+HEALTH_SELF_INSURANCE_REAL_GROWTH = 0.007
 
 
 def calculate_income_tax_at(taxable_income):

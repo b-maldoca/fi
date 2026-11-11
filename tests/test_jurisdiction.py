@@ -175,3 +175,65 @@ def test_explicit_country_ch_matches_default():
                 np.testing.assert_array_equal(arr, explicit[key][sub])
         else:
             np.testing.assert_array_equal(np.asarray(value), np.asarray(explicit[key]))
+
+
+# --------------------------------------------------------------------------- bracket indexation in deflation
+
+
+def _capture_bracket_factors(monkeypatch, cls, config, inflation):
+    """Runs the engine and returns the `bracket_factors` passed to each year's tax assessment."""
+    seen = {}
+    original = cls.assess_annual_taxes
+
+    def spy(self, cfg, **kwargs):
+        # The Austrian engine re-assesses during the year-end sale; keep the first call per year.
+        seen.setdefault(kwargs["current_age"], kwargs["bracket_factors"].copy())
+        return original(self, cfg, **kwargs)
+
+    monkeypatch.setattr(cls, "assess_annual_taxes", spy)
+    months = config.duration_years * 12
+    run_simulation(config, np.zeros((config.num_runs, months, 5)), inflation)
+    return np.array([seen[age] for age in sorted(seen)])
+
+
+def test_swiss_brackets_follow_cpi_high_water_mark(monkeypatch):
+    # Art. 39 Abs. 2 DBG: no downward adjustment; the next one is measured from the last adjustment.
+    cfg = _config(num_runs=1, duration_years=4, initial_pillar_2=0.0, initial_pillar_3a_accounts=[])
+    inflation = np.array([[0.10, -0.10, 0.05, 0.10]])
+    factors = _capture_bracket_factors(monkeypatch, Switzerland, cfg, inflation)
+    cpi = np.cumprod(1.0 + inflation[0])  # 1.10, 0.99, 1.0395, 1.14345
+    np.testing.assert_allclose(factors[:, 0], [1.10, 1.10, 1.10, cpi[3]])
+
+
+def test_swiss_partial_indexation_high_water_mark(monkeypatch):
+    cfg = _config(num_runs=1, duration_years=3, initial_pillar_2=0.0, initial_pillar_3a_accounts=[], bracket_indexation=0.5)
+    inflation = np.array([[0.10, -0.10, 0.20]])
+    factors = _capture_bracket_factors(monkeypatch, Switzerland, cfg, inflation)
+    # Half-indexed level: 1.05, 0.9975, 1.09725 -> high-water mark 1.05, 1.05, 1.09725.
+    np.testing.assert_allclose(factors[:, 0], [1.05, 1.05, 1.05 * 0.95 * 1.10])
+
+
+def test_austrian_brackets_skip_deflation_years(monkeypatch):
+    # § 33a EStG: only positive inflation is passed on (2/3 by default); deflation years are skipped.
+    from src.jurisdiction import Austria
+
+    cfg = SimConfig(
+        country="AT", num_runs=1, duration_years=3, inflation_mean=0.0, inflation_std=0.0, start_age=40,
+        dividend_yield=0.0, initial_liquid_wealth=1_000_000.0, alloc_us_stocks=1.0, annual_base_expenses=40_000.0,
+    )
+    inflation = np.array([[0.06, -0.10, 0.03]])
+    factors = _capture_bracket_factors(monkeypatch, Austria, cfg, inflation)
+    np.testing.assert_allclose(factors[:, 0], [1.04, 1.04, 1.04 * 1.02])
+
+
+@pytest.mark.parametrize("country", ["CH", "AT"])
+def test_brackets_never_decrease_under_random_inflation(monkeypatch, country):
+    from src.jurisdiction import Austria
+
+    extra = {} if country == "CH" else dict(initial_pillar_2=0.0, initial_pillar_3a_accounts=[])
+    cfg = _config(country=country, num_runs=50, duration_years=20, **extra)
+    inflation = np.random.default_rng(0).normal(0.01, 0.04, (50, 20))
+    cls = Switzerland if country == "CH" else Austria
+    factors = _capture_bracket_factors(monkeypatch, cls, cfg, inflation)
+    assert np.all(np.diff(factors, axis=0) >= 0.0)
+    assert np.all(factors >= 1.0)

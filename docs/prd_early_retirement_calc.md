@@ -126,6 +126,7 @@ The core simulator executes monthly steps with annual tax and spending evaluatio
 #### B2. Tax Bracket Indexation ("Kalte Progression")
 *   All franc-denominated bracket edges — Federal income, Zurich income, Zurich wealth, the derived capital withdrawal tariff, and the AHV non-worker contribution table — are indexed to realized CPI each year, matching Swiss law: **Art. 39 DBG** obliges the EFD to adjust the federal tariff annually to the LIK, and **§ 48 StG ZH** indexes the Canton Zurich income *and* wealth tariffs.
 *   Controlled by **Tax Bracket Indexation (% of CPI)** (`bracket_indexation`, default **100%**). Setting it to 0% freezes brackets in nominal terms so inflation alone pushes the retiree into higher brackets; intermediate values model delayed or partially suspended cantonal compensation.
+*   **No downward adjustment in deflation** (Art. 39 Abs. 2 DBG: *"Bei negativem Teuerungsverlauf ist eine Anpassung ausgeschlossen"*; the next adjustment is measured from the index level of the last one; § 48 StG ZH likewise). The bracket factor is therefore the **high-water mark** of the `bracket_indexation`-weighted CPI level: brackets stay put in a deflation year and only rise again once the CPI level exceeds its previous peak.
 *   Tax *rates* and the Steuerfuss multipliers are never indexed — both are political parameters, not inflation-linked ones.
 *   *Note: Indexation removes only the spurious, inflation-driven bracket creep. A portfolio compounding faster than inflation still climbs the wealth tax schedule in real terms, which is intended.*
 
@@ -241,7 +242,7 @@ The tool presents results side-by-side across all three simulation modes (**Hist
 
 ### 8.1. Agreed Decisions (2026-11-10)
 1.  **One app with a country switch** (`Switzerland (Zurich)` / `Austria`), not a separate app: one simulation engine, one metrics module, one test suite.
-2.  **Health self-insurance is mandatory** for Austrian early retirees (§ 16 ASVG Selbstversicherung in der Krankenversicherung); it is not a user toggle.
+2.  **Health self-insurance is always charged** for Austrian early retirees (§ 16 ASVG Selbstversicherung in der Krankenversicherung): voluntary in law but de facto required without a job, so it is not a user toggle. The monthly amount is editable (e.g. €83.49/month for the § 19a ASVG opting-in route with a marginal job, 2026).
 3.  **All securities are "Neuvermögen"**: all stocks/ETFs are assumed bought after 1 Jan 2011 and all Bitcoin after 28 Feb 2021, so every realized gain is taxable. There is no grandfathering (Altvermögen) input.
 4.  **State pension is a single user input** (today's value, starting at age 65), exactly like the Swiss AHV input. No Pensionskonto projection, no early (Korridor) pension, no voluntary pension contributions.
 5.  **Zero unrealized gains at start**: the whole starting portfolio is treated as bought (or gains realized and "cleared") on day 0, so the initial cost basis equals the market value of every sleeve. There is no unrealized-gain input.
@@ -267,13 +268,13 @@ The tool presents results side-by-side across all three simulation modes (**Hist
 ### 8.4. Data Inputs (Austria Mode)
 | Input | Switzerland (✅) | Austria | Status |
 | :--- | :--- | :--- | :--- |
-| **Country selector** | — | Top of sidebar: `Switzerland (Zurich)` / `Austria`. Switching loads that country's defaults and hides inputs that do not apply. |✅ |
+| **Country selector** | — | Top of sidebar: `Switzerland (Zurich)` / `Austria`. Switching loads that country's defaults (liquid wealth, cash rate, bracket indexation, history-based Monte Carlo defaults) and hides inputs that do not apply; all other user inputs, incl. the asset allocation, are kept. |✅ |
 | Currency | CHF | EUR (all monetary inputs, outputs and labels) |✅ |
 | Taxable Liquid Wealth | ✅ (`CHF 2,450,000` default) | Same input, in EUR (`€3,250,000` default). Initial cost basis = market value (zero unrealized gains on day 0, decision 5). | ✅ |
 | Pillar 2 / Pillar 3a balances | ✅ | Must be 0 (`SimConfig` rejects them for `"AT"`); hidden in the UI | ✅ |
 | Target Asset Allocation | 5 sleeves incl. `CHF Cash` | Same 5 sleeves; `CHF Cash` becomes `EUR Cash`, `Gold` is a gold ETC |✅ |
 | **State pension** | Monthly AHV from 65 (paid 12×/yr) | **Expected monthly gross state pension** from 65, in today's EUR, **paid 14×/yr** (12 regular + 13th/14th special payments); same `SimConfig.monthly_ahv_pension` field | ✅ |
-| **Health self-insurance** | n/a | `SimConfig.health_insurance_monthly`, default **€565.25/month** (2026 ÖGK rate, 12×/yr); mandatory (no toggle) until the state pension starts, for life if the pension is 0 (§8.6.D); shown read-only in the UI | ✅ |
+| **Health self-insurance** | n/a | `SimConfig.health_insurance_monthly`, default **€565.25/month** (2026 ÖGK rate, 12×/yr), editable; always charged (no toggle) until the state pension starts, for life if the pension is 0 (§8.6.D). `SimConfig.health_insurance_real_growth` (UI **Health Insurance Real Growth (%/yr above CPI)**, default **0.70%**) indexes it with wages rather than prices | ✅ |
 | AHV non-worker contributions | ✅ (automatic) | Not applicable | ✅ (bypassed) |
 | Municipal Multiplier | ✅ | Hidden |✅ |
 | Tax Bracket Indexation (% of CPI) | Default 100% | Same number input, **default 66.7%** (statutory automatic ⅔ indexation, § 33a EStG); `SimConfig.bracket_indexation=None` resolves to the country default | ✅ |
@@ -290,10 +291,10 @@ The tool presents results side-by-side across all three simulation modes (**Hist
 | Bank interest | Progressive income tax | 25% flat (§ 27a Abs. 1 Z 1 EStG) |
 | Gold | Wealth-taxed; gains tax-free | Gold ETC: 27.5% KESt on gains, part of the loss-offset pool |
 | Bitcoin | Wealth-taxed; gains tax-free | 27.5% on gains (Neuvermögen) |
-| Mandatory contributions before pension | AHV non-worker (CHF 530–26,500/yr, deductible) | Health self-insurance (€6,783/yr in 2026, not deductible) |
+| Mandatory contributions before pension | AHV non-worker (CHF 530–26,500/yr, deductible) | Health self-insurance (€6,783/yr in 2026, not deductible; de facto required) |
 | Pension vehicles | Pillar 2 / 3a lump sums with capital withdrawal tax | Not modelled (out of scope) |
 | Income tax on pension | Federal + cantonal + municipal tariff | National tariff; 6% health contribution withheld (capped at €6,930/payment); 13th/14th payment at 0% / 6% / 27% / 35.75% / tariff bands from €620 (tax-free up to the €2,615 Freigrenze); pensioner tax credit — verified against the BMF Brutto-Netto-Rechner |
-| Bracket indexation | 100% CPI by law (Art. 39 DBG, § 48 StG ZH) | Brackets 1–5 automatically indexed by ⅔ of inflation (§ 33a EStG); remaining ⅓ discretionary |
+| Bracket indexation | 100% CPI by law (Art. 39 DBG, § 48 StG ZH); no downward adjustment after deflation (CPI high-water mark) | Brackets 1–5 automatically indexed by ⅔ of inflation (§ 33a EStG); remaining ⅓ discretionary; negative inflation years are skipped (no downward adjustment, no later claw-back) |
 
 ### 8.6. Calculation Logic (Austria)
 
@@ -320,14 +321,15 @@ The tool presents results side-by-side across all three simulation modes (**Hist
 *   **Taxable base**: the 12 regular monthly pension payments (`12 × monthly_state_pension`), after deducting the 6% health insurance contribution on the pension (capped at the 2026 Höchstbeitragsgrundlage of €6,930 per payment, i.e. at most €415.80); plus all capital income if the Regelbesteuerungsoption is cheaper (§8.6.A).
 *   **Special payments** (13th and 14th pension payment, `2 × monthly_state_pension`, after the health contribution; § 67 Abs. 1 EStG within the Jahressechstel, which two monthly payments never exceed): **no tax if the Jahressechstel (two monthly gross payments) is at most €2,615** (2026 Freigrenze, i.e. pensions up to €1,307.50/month); otherwise 0% on the first **€620**, **6%** on the next €24,380, 27% on the next €25,000, 35.75% on the next €33,333.33, and the rest at the regular tariff.
 *   **Pensionistenabsetzbetrag** (tax credit, 2026): **€1,020** for pension income up to **€21,614**, phasing out linearly to 0 at **€31,494**. Credits cannot make the tax negative.
-*   **Indexation**: all euro amounts (bracket edges, €620 allowance, €2,615 Freigrenze, § 67 bands, €6,930 health-contribution ceiling, and the pensioner credit and its phase-out limits) are indexed each year with `bracket_indexation × CPI` via the same homogeneity identity as the Swiss tariffs. **Default `bracket_indexation = 2/3`** for Austria (the statutory automatic part, § 33a EStG); the discretionary third is not assumed. Simplification: the €1M edge, § 67 bands and contribution ceiling are indexed with the same bracket factor (by law they follow different or no indexation).
+*   **Indexation**: all euro amounts (bracket edges, €620 allowance, €2,615 Freigrenze, § 67 bands, €6,930 health-contribution ceiling, and the pensioner credit and its phase-out limits) are indexed each year with `bracket_indexation × CPI` via the same homogeneity identity as the Swiss tariffs. **Default `bracket_indexation = 2/3`** for Austria (the statutory automatic part, § 33a EStG); the discretionary third is not assumed. **Deflation**: § 33a only passes on a positive inflation rate, so the bracket factor is `f_t = f_{t-1} × (1 + bracket_indexation × max(0, π_t))` — a negative year leaves the brackets unchanged and is not clawed back later (unlike the Swiss high-water mark, §4.2.B2). Simplifications: the law uses the July–June inflation of the previous year, the model the same year's inflation; the €1M edge, § 67 bands and contribution ceiling are indexed with the same bracket factor (by law they follow different or no indexation).
 
 #### C. No Wealth Tax, No Capital Withdrawal Tax, No AHV (✅ M4)
 *   Wealth tax, AHV non-worker contributions and the Pillar 2 / 3a capital withdrawal tax evaluate to 0 in Austria mode. With no locked pension balances, liquid net worth equals total net worth.
 
 #### D. Health Self-Insurance — § 16 ASVG (✅ M4)
-*   **Mandatory** from the start of the simulation until the state pension starts (age 65). If the state pension input is 0, it applies for the whole horizon.
-*   **2026 contribution: €565.25/month (€6,783/yr)**, indexed annually with CPI (simplification: the law indexes it with the wage-based Aufwertungszahl).
+*   **Always charged** from the start of the simulation until the state pension starts (age 65). If the state pension input is 0, it applies for the whole horizon. The insurance is voluntary in law but de facto required for an early retiree without a job (6-month waiting period without prior coverage).
+*   **2026 contribution: €565.25/month (€6,783/yr)**, editable (`health_insurance_monthly`). Cheaper alternative documented in the input help: a marginal job (≤ €551.10/month in 2026) plus the **§ 19a ASVG opting-in at €83.49/month**, which also earns pension credits (the job income itself is not modelled). Reduced contributions on application (§ 76 ASVG, income- and asset-tested) stay out of scope.
+*   **Indexation with wages, not prices**: the contribution is a fixed share (~8.17%) of the Höchstbeitragsgrundlage, which moves with the wage-based Aufwertungszahl (§ 108a ASVG; 2024 €495.58 → 2025 €526.79 → 2026 €565.25). The model indexes it with CPI × `(1 + health_insurance_real_growth)^year`, Year 0 paying today's rate in real terms. Default real growth **0.70%/yr**: the Höchstbeitragsgrundlage rose 3.3%/yr from 2010 (€4,110) to 2026 (€6,930) while Austrian CPI rose 2.6%/yr over 2008–2024 (the Aufwertungszahl lags two years). The Year-0 estimate uses today's rate.
 *   **Not tax-deductible** (conservative: voluntary insurance is not a Werbungskosten deduction, and the capped "Topf-Sonderausgaben" deduction expired after 2020).
 *   Reported together with taxes as a mandatory outflow, like the Swiss AHV contribution, and also as its own output series.
 *   From age 65 it is replaced by the **6% health insurance contribution withheld from the gross pension**.
@@ -352,6 +354,7 @@ The tool presents results side-by-side across all three simulation modes (**Hist
 *   All §4.3 outputs are reused (🔁) with country-specific labels (✅ M5), a title **Austria Early Retirement Simulator** and a warning banner stating the Swiss-data stand-ins: `AHV Pension` → `State Pension`, `Pre-AHV` → `Pre-Pension`, `Age 65 (AHV + P2)` → `Age 65 (State Pension)`; the `Liquid Solvent` curve and `Pre-AHV Liquid Depletion` decomposition are hidden (identical to `Solvent` without locked pensions).
 *   **New outputs** (✅): `tax_components` with annual `income_tax`, `kest` and `health_insurance` (self-insurance + 6% on the pension) per run, plus `realized_gains`, `unrealized_gains` and `cost_basis_by_class` (M2) — the component medians are shown when hovering the **Taxes Paid (50th Pct)** bar of the Annual Withdrawal Breakdown chart (both countries).
 *   **After-tax watermark** (✅ M4): the Swiss watermark deducts the deferred capital withdrawal tax on Pillar 2 / 3a. The Austrian equivalent deducts the latent KESt on net unassessed non-cash gains (`0.275 × max(0, carried_gains + intra_year_realized_gains + Σ(value − basis))` over US Stocks, Non-US Stocks, Gold and Bitcoin, i.e. losses offset gains and rebalancing before year-end settlement does not artificially raise after-tax net worth). Because the basis equals the market value on day 0, the starting watermark equals the starting net worth.
+*   **Ending net worth is gross of latent KESt** (by design): success, the TL;DR verdict, the ending-net-worth metrics and the cohort tables use net worth *before* the KESt still owed on unrealized gains (and on the last year-end rebalance's gains, which would be assessed in the year after the horizon). The latent KESt is only deducted in the after-tax watermark above. With the app defaults it is ~13–14% of the median ending net worth in Historic Backtesting, so Austrian ending wealth reads higher than its after-tax value (Swiss liquid wealth carries no such latent tax).
 
 ### 8.8. Implementation Status Summary (Austria)
 | Component | Status |
@@ -363,7 +366,7 @@ The tool presents results side-by-side across all three simulation modes (**Hist
 | KESt (27.5% / 25%), in-year loss offset, year-end outflow sale solved for the tax on its own gains (M4) | ✅ |
 | Regelbesteuerungsoption (M4) | ✅ |
 | Progressive tariff, pension taxation (6% health contribution, 13th/14th, pensioner credit) (M4) | ✅ |
-| Health self-insurance (§ 16 ASVG), CPI-indexed (M4) | ✅ |
+| Health self-insurance (§ 16 ASVG), editable, indexed with CPI + real wage growth (M4) | ✅ |
 | Wealth tax / AHV / Pillar bypass (M4) | ✅ |
 | Austrian Year-0 tax estimate (Cash Tent, TWR sync) (M4) | ✅ |
 | New output series (`tax_components`, M4) | ✅ |

@@ -5,9 +5,11 @@ import pytest
 
 from src.jurisdiction import COUNTRY_DEFAULTS, Austria, get_jurisdiction
 from src.simulation_engine import SimConfig, estimate_year_0_taxes, run_simulation
-from src.tax_engine_at import HEALTH_SELF_INSURANCE_MONTHLY, calculate_annual_taxes_at
+from src.tax_engine_at import HEALTH_SELF_INSURANCE_MONTHLY, HEALTH_SELF_INSURANCE_REAL_GROWTH, calculate_annual_taxes_at
 
 HEALTH = 12 * HEALTH_SELF_INSURANCE_MONTHLY
+# Real wage growth of the self-insurance contribution from Year 1 on (Year 0 pays today's rate).
+WAGE = 1.0 + HEALTH_SELF_INSURANCE_REAL_GROWTH
 
 
 def _config(**overrides) -> SimConfig:
@@ -58,8 +60,9 @@ def test_health_insurance_must_be_non_negative():
 def test_zero_returns_only_health_self_insurance():
     cfg = _config(duration_years=3)
     history = run_simulation(cfg, np.zeros((1, 36, 5)), _zero_inflation(cfg))
-    np.testing.assert_allclose(history["taxes_paid"][:, 0], HEALTH)
-    np.testing.assert_allclose(history["tax_components"]["health_insurance"][:, 0], HEALTH)
+    expected = HEALTH * WAGE ** np.arange(3)
+    np.testing.assert_allclose(history["taxes_paid"][:, 0], expected)
+    np.testing.assert_allclose(history["tax_components"]["health_insurance"][:, 0], expected)
     np.testing.assert_allclose(history["tax_components"]["kest"][:, 0], 0.0)
     np.testing.assert_allclose(history["realized_gains"], 0.0, atol=1e-9)
     assert history["initial_net_worth_after_tax"] == history["initial_net_worth"]
@@ -107,7 +110,7 @@ def test_year_end_rebalance_gains_are_taxed_next_year():
         calculate_annual_taxes_at(0.0, 0.0, sale0_gain, 0.0)["total"] + HEALTH, rel=1e-9
     )
     assert history["taxes_paid"][1, 0] == pytest.approx(
-        calculate_annual_taxes_at(0.0, 0.0, eoy_gain + sale1_gain, 0.0)["total"] + HEALTH, rel=1e-9
+        calculate_annual_taxes_at(0.0, 0.0, eoy_gain + sale1_gain, 0.0)["total"] + HEALTH * WAGE, rel=1e-9
     )
 
 
@@ -140,11 +143,30 @@ def test_self_insurance_continues_without_pension():
     assert history["taxes_paid"][0, 0] == pytest.approx(HEALTH)
 
 
-def test_health_insurance_is_cpi_indexed():
-    cfg = _config(duration_years=2, annual_base_expenses=0.0)
+def test_health_insurance_follows_cpi_times_real_wage_growth():
+    cfg = _config(duration_years=3, annual_base_expenses=0.0, health_insurance_real_growth=0.01)
+    inflation = np.full((1, 3), 0.10)
+    history = run_simulation(cfg, np.zeros((1, 36, 5)), inflation)
+    # Year 0 pays today's rate in real terms; the real wage premium compounds from Year 1.
+    np.testing.assert_allclose(
+        history["tax_components"]["health_insurance"][:, 0],
+        [HEALTH * 1.1, HEALTH * 1.21 * 1.01, HEALTH * 1.331 * 1.01**2],
+    )
+
+
+def test_health_insurance_plain_cpi_with_zero_real_growth():
+    cfg = _config(duration_years=2, annual_base_expenses=0.0, health_insurance_real_growth=0.0)
     inflation = np.full((1, 2), 0.10)
     history = run_simulation(cfg, np.zeros((1, 24, 5)), inflation)
     np.testing.assert_allclose(history["tax_components"]["health_insurance"][:, 0], [HEALTH * 1.1, HEALTH * 1.21])
+
+
+def test_health_insurance_default_real_growth_and_validation():
+    from src.tax_engine_at import HEALTH_SELF_INSURANCE_REAL_GROWTH
+
+    assert _config().health_insurance_real_growth == HEALTH_SELF_INSURANCE_REAL_GROWTH == pytest.approx(0.007)
+    with pytest.raises(ValueError, match="health_insurance_real_growth"):
+        _config(health_insurance_real_growth=-1.0)
 
 
 def test_year_0_estimate_austria():

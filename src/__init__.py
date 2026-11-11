@@ -109,6 +109,7 @@ from .tax_engine import (
 )
 from .tax_engine_at import (
     HEALTH_SELF_INSURANCE_MONTHLY,
+    HEALTH_SELF_INSURANCE_REAL_GROWTH,
     KEST_RATE,
     KEST_RATE_BANK_INTEREST,
     PENSION_PAYMENTS_PER_YEAR,
@@ -175,6 +176,7 @@ __all__ = [
     "KEST_RATE_BANK_INTEREST",
     "PENSION_PAYMENTS_PER_YEAR",
     "HEALTH_SELF_INSURANCE_MONTHLY",
+    "HEALTH_SELF_INSURANCE_REAL_GROWTH",
     "calculate_income_tax_at",
     "pensioner_credit_at",
     "special_payments_tax_at",

@@ -11,7 +11,7 @@ from .tax_engine import (
     ZURICH_CANTONAL_MULTIPLIER,
     ZURICH_CITY_MUNICIPAL_MULTIPLIER,
 )
-from .tax_engine_at import HEALTH_SELF_INSURANCE_MONTHLY
+from .tax_engine_at import HEALTH_SELF_INSURANCE_MONTHLY, HEALTH_SELF_INSURANCE_REAL_GROWTH
 
 VALID_SPENDING_STRATEGIES = {"Static", "Dynamic (Floor & Ceiling)", "Vanguard Dynamic"}
 VALID_REBALANCE_STRATEGIES = {"Cash Tent", "Monthly", "Quarterly", "Yearly", "Threshold", "Never"}
@@ -102,8 +102,11 @@ class SimConfig:
     country: str = "CH"
 
     # AT only: monthly § 16 ASVG health self-insurance contribution in today's EUR (2026 rate),
-    # mandatory until the state pension starts, CPI-indexed. Ignored in CH.
+    # charged until the state pension starts. Ignored in CH.
     health_insurance_monthly: float = HEALTH_SELF_INSURANCE_MONTHLY
+    # AT only: annual growth of that contribution beyond CPI. It follows the wage-based
+    # Aufwertungszahl, so it is indexed with CPI x (1 + this)^year. Ignored in CH.
+    health_insurance_real_growth: float = HEALTH_SELF_INSURANCE_REAL_GROWTH
 
     def __post_init__(self):
         if self.country not in COUNTRY_DEFAULTS:
@@ -157,6 +160,7 @@ class SimConfig:
             self.cash_rate,
             self.btc_equity_corr,
             self.health_insurance_monthly,
+            self.health_insurance_real_growth,
             *self.initial_pillar_3a_accounts,
         )
         if not all(np.isfinite(x) for x in float_fields):
@@ -227,6 +231,11 @@ class SimConfig:
 
         if self.health_insurance_monthly < 0.0:
             raise ValueError(f"health_insurance_monthly ({self.health_insurance_monthly}) cannot be negative.")
+
+        if self.health_insurance_real_growth <= -1.0:
+            raise ValueError(
+                f"health_insurance_real_growth ({self.health_insurance_real_growth}) must be greater than -1.0."
+            )
 
         if self.country == "AT" and (self.initial_pillar_2 > 0.0 or any(a > 0.0 for a in self.initial_pillar_3a_accounts)):
             raise ValueError("Pillar 2 / Pillar 3a balances are Swiss-only and must be 0 when country == 'AT'.")
@@ -506,6 +515,7 @@ def run_simulation(config: SimConfig, return_matrix: np.ndarray, inflation_matri
     
     inflation_factors = np.ones(num_runs)
     bracket_factors = np.ones(num_runs)
+    indexed_cpi_level = np.ones(num_runs)
     rng_inf = np.random.default_rng(config.seed + 10_000)
     init_vanguard_exp = (
         config.annual_base_expenses
@@ -562,7 +572,13 @@ def run_simulation(config: SimConfig, return_matrix: np.ndarray, inflation_matri
             else:
                 inflation = rng_inf.normal(config.inflation_mean, config.inflation_std, num_runs)
             inflation_factors *= np.maximum(0.01, 1.0 + inflation)
-            bracket_factors *= np.maximum(0.01, 1.0 + config.bracket_indexation * inflation)
+            # Brackets are never lowered in deflation (Art. 39 Abs. 2 DBG / § 48 StG ZH: high-water
+            # mark of the CPI level; § 33a EStG: negative years skipped). `indexed_cpi_level` is the
+            # unfloored indexation-weighted CPI level the Swiss high-water mark is measured against.
+            indexed_cpi_level *= np.maximum(0.01, 1.0 + config.bracket_indexation * inflation)
+            bracket_factors = jurisdiction.next_bracket_factors(
+                bracket_factors, indexed_cpi_level, inflation, config.bracket_indexation
+            )
         
         # 3. Market Returns
         monthly_returns = return_matrix[:, m, :] # (num_runs, 5)

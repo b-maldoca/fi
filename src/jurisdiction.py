@@ -100,6 +100,28 @@ def indexed_tax(tax_fn, taxable_amount: np.ndarray, bracket_factors: np.ndarray,
     return bracket_factors * tax_fn(taxable_amount / bracket_factors, *args)
 
 
+def next_bracket_factors_skip_deflation(
+    bracket_factors: np.ndarray, indexed_cpi_level: np.ndarray, inflation: np.ndarray, indexation: float
+) -> np.ndarray:
+    """Austrian rule (§ 33a EStG): only a positive inflation rate is passed to the brackets.
+
+    A deflation year leaves the brackets unchanged and is never clawed back: the next positive
+    inflation is applied to the unchanged brackets.
+    """
+    return bracket_factors * (1.0 + indexation * np.maximum(0.0, inflation))
+
+
+def next_bracket_factors_high_water_mark(
+    bracket_factors: np.ndarray, indexed_cpi_level: np.ndarray, inflation: np.ndarray, indexation: float
+) -> np.ndarray:
+    """Swiss rule (Art. 39 Abs. 2 DBG, § 48 StG ZH): no downward adjustment after deflation, and the
+    next adjustment is measured from the index level of the last adjustment.
+
+    The brackets therefore follow the high-water mark of the (indexation-weighted) CPI level.
+    """
+    return np.maximum(bracket_factors, indexed_cpi_level)
+
+
 @dataclass
 class PensionLiquidation:
     """Start-of-year pension lump sums paid out, per run."""
@@ -126,6 +148,16 @@ class Jurisdiction(Protocol):
 
     def year_0_liquid_wealth(self, config: SimConfig) -> float:
         """Initial liquid wealth incl. pension lump sums paid out on Day 1, net of tax."""
+        ...
+
+    def next_bracket_factors(
+        self, bracket_factors: np.ndarray, indexed_cpi_level: np.ndarray, inflation: np.ndarray, indexation: float
+    ) -> np.ndarray:
+        """Bracket factors after this year's inflation (no jurisdiction lowers its brackets in deflation).
+
+        `indexed_cpi_level` is the cumulative CPI level weighted by `indexation` (incl. this year),
+        `inflation` this year's CPI change.
+        """
         ...
 
     def estimate_year_0_taxes_for_weights(self, config: SimConfig, init_wealth: float, weights: np.ndarray) -> float:
@@ -178,6 +210,11 @@ class Switzerland:
 
     defaults = COUNTRY_DEFAULTS["CH"]
     taxes_capital_gains = False  # private capital gains are tax-free in Switzerland
+
+    def next_bracket_factors(
+        self, bracket_factors: np.ndarray, indexed_cpi_level: np.ndarray, inflation: np.ndarray, indexation: float
+    ) -> np.ndarray:
+        return next_bracket_factors_high_water_mark(bracket_factors, indexed_cpi_level, inflation, indexation)
 
     def year_0_liquid_wealth(self, config: SimConfig) -> float:
         """
@@ -367,11 +404,29 @@ class Austria:
     defaults = COUNTRY_DEFAULTS["AT"]
     taxes_capital_gains = True
 
+    def next_bracket_factors(
+        self, bracket_factors: np.ndarray, indexed_cpi_level: np.ndarray, inflation: np.ndarray, indexation: float
+    ) -> np.ndarray:
+        return next_bracket_factors_skip_deflation(bracket_factors, indexed_cpi_level, inflation, indexation)
+
     @staticmethod
     def _health_self_insurance_due(config: SimConfig, age: int) -> bool:
-        # Mandatory until the state pension starts (pensioners are insured through the pension,
+        # Required until the state pension starts (pensioners are insured through the pension,
         # which carries the 6% contribution); for the whole horizon if there is no pension.
         return age < STATE_PENSION_AGE or config.monthly_ahv_pension == 0.0
+
+    @staticmethod
+    def health_self_insurance_annual(config: SimConfig, age: int, inflation_factors: np.ndarray) -> np.ndarray:
+        """Annual § 16 ASVG contribution in the simulation year lived at `age` (0 once the pension starts).
+
+        Follows wages, not prices: CPI (`inflation_factors`, the engine's usual convention) times the
+        real growth `config.health_insurance_real_growth` compounded per year since the start, so
+        Year 0 pays today's rate in real terms.
+        """
+        if not Austria._health_self_insurance_due(config, age):
+            return np.zeros_like(inflation_factors, dtype=float)
+        real_growth = (1.0 + config.health_insurance_real_growth) ** (age - config.start_age)
+        return 12.0 * config.health_insurance_monthly * inflation_factors * real_growth
 
     def year_0_liquid_wealth(self, config: SimConfig) -> float:
         return config.initial_liquid_wealth
@@ -441,18 +496,16 @@ class Austria:
         """Income tax (pension; all capital income if the Regelbesteuerungsoption is cheaper),
         KESt and health insurance (6% on the pension, plus § 16 ASVG self-insurance before the
         pension starts). Bracket edges, the pensioner credit and the EUR 620 allowance are indexed
-        with `bracket_factors` via positive homogeneity; the self-insurance contribution with CPI.
+        with `bracket_factors` via positive homogeneity; the self-insurance contribution with CPI
+        plus real wage growth (see `health_self_insurance_annual`).
         """
-        num_runs = total_liquid_end.shape[0]
-        gains = np.zeros(num_runs) if realized_gains is None else realized_gains
-        inflation = np.ones(num_runs) if inflation_factors is None else inflation_factors
+        gains = np.zeros(total_liquid_end.shape[0]) if realized_gains is None else realized_gains
+        inflation = np.ones(total_liquid_end.shape[0]) if inflation_factors is None else inflation_factors
         f = bracket_factors
         taxes = calculate_annual_taxes_at(annual_pension / f, dividends / f, gains / f, interest / f)
         income_tax = f * taxes["income_tax"]
         kest = f * taxes["kest"]
-        health = f * taxes["pension_health_insurance"]
-        if self._health_self_insurance_due(config, current_age):
-            health = health + 12.0 * config.health_insurance_monthly * inflation
+        health = f * taxes["pension_health_insurance"] + self.health_self_insurance_annual(config, current_age, inflation)
         return AnnualTaxes(
             total=income_tax + kest + health,
             components={"income_tax": income_tax, "kest": kest, "health_insurance": health},

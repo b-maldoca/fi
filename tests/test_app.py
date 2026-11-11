@@ -300,7 +300,9 @@ def test_app_runs_in_austria_mode():
     assert inputs["EUR Cash Nominal Mean (%)"].value == pytest.approx(2.0)
     assert inputs["Tax Bracket Indexation (% of CPI)"].value == pytest.approx(66.7)
     health = inputs["Health Self-Insurance (EUR/month, § 16 ASVG)"]
-    assert health.disabled and health.value == pytest.approx(HEALTH_SELF_INSURANCE_MONTHLY)
+    assert not health.disabled and health.value == pytest.approx(HEALTH_SELF_INSURANCE_MONTHLY)
+    assert "§ 19a" in health.help
+    assert inputs["Health Insurance Real Growth (%/yr above CPI)"].value == pytest.approx(0.7)
     assert inputs["Inflation Mean (%)"].value == pytest.approx(round(float(np.mean(HISTORIC_AUSTRIAN_INFLATION)) * 100, 1))
     sidebar_subheaders = [s.value for s in at.sidebar.subheader]
     assert "Austrian Tax Assumptions" in sidebar_subheaders and "Zurich Tax Location" not in sidebar_subheaders
@@ -339,3 +341,41 @@ def test_switching_country_resets_country_defaults():
     assert "Pillar 2 (Freizügigkeitskonto)" in inputs
     assert at.title[0].value == "Zurich Early Retirement Simulator"
     assert not at.warning
+
+
+def test_switching_country_keeps_a_custom_allocation_valid():
+    # Regression: the cash allocation input's label contains the currency; without a stable key the
+    # switch reset it to 10% while the other allocation inputs kept their values (sum != 100%).
+    at = AppTest.from_file("app.py", default_timeout=APP_TIMEOUT_S)
+    at.run()
+    next(n for n in at.number_input if n.label == "US Stocks").set_value(45.0)
+    next(n for n in at.number_input if n.label == "CHF Cash").set_value(15.0)
+    at.run()
+    assert not at.error, [e.value for e in at.error]
+    _select_austria(at)
+    at.run()
+    assert not at.exception, [e.value for e in at.exception]
+    assert not at.error, [e.value for e in at.error]
+    inputs = {n.label: n for n in at.number_input}
+    assert inputs["EUR Cash"].value == pytest.approx(15.0)
+    assert inputs["US Stocks"].value == pytest.approx(45.0)
+    # Liquid wealth is reset to the country default on purpose (CH excludes Pillar 2 / 3a).
+    assert inputs["Taxable Liquid Wealth (EUR)"].value == 3_250_000
+
+
+def test_austrian_health_insurance_input_reaches_the_simulation():
+    def pre_pension_outflows(at):
+        return [m.value for m in at.metric if m.label.startswith("Pre-Pension Outflow")]
+
+    at = AppTest.from_file("app.py", default_timeout=APP_TIMEOUT_S)
+    at.run()
+    _select_austria(at)
+    at.run()
+    before = pre_pension_outflows(at)
+    next(n for n in at.number_input if n.label.startswith("Health Self-Insurance")).set_value(83.49)
+    at.run()
+    assert not at.exception, [e.value for e in at.exception]
+    assert not at.error, [e.value for e in at.error]
+    assert next(n for n in at.number_input if n.label.startswith("Health Self-Insurance")).value == pytest.approx(83.49)
+    after = pre_pension_outflows(at)
+    assert len(before) == len(after) == 3 and all(b != a for b, a in zip(before, after))

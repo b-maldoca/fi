@@ -41,7 +41,7 @@ from src.simulation_engine import (
     run_simulation,
 )
 from src.tax_engine import ZURICH_CANTONAL_MULTIPLIER, ZURICH_CITY_MUNICIPAL_MULTIPLIER
-from src.tax_engine_at import HEALTH_SELF_INSURANCE_MONTHLY
+from src.tax_engine_at import HEALTH_SELF_INSURANCE_MONTHLY, HEALTH_SELF_INSURANCE_REAL_GROWTH
 
 # Historic return data per country. Both generated modules share the calendar and the function
 # API; only the series names and the PPP keyword differ (CHF: real_chf_appreciation, EUR:
@@ -231,7 +231,7 @@ country_label = st.sidebar.selectbox(
         "Tax jurisdiction and home currency.\n\n"
         "- Switzerland (Zurich): CHF, Federal + Canton Zurich income and wealth tax, AHV, Pillar 2 / 3a.\n"
         "- Austria: EUR, 27.5% capital gains / dividend tax (KESt) with the Regelbesteuerungsoption, "
-        "progressive tax on the state pension, mandatory health self-insurance until the pension starts; "
+        "progressive tax on the state pension, health self-insurance until the pension starts; "
         "no wealth tax, no Pillar 2 / 3a. "
         + SWISS_PROXY_NOTE
     ),
@@ -248,10 +248,15 @@ CCY_NAME = "euros" if IS_AT else "Swiss Francs"
 
 # Country-dependent widget defaults are (re)initialised through Session State when the country
 # changes (and on first load), so switching never leaves e.g. the CHF cash rate in the EUR model.
+# Widgets whose label contains the currency need a stable `key`: without one, the label change on a
+# country switch gives them a new identity and silently resets them (e.g. the cash allocation, which
+# then breaks the 100% allocation check while the other allocation inputs keep their values).
 if st.session_state.get("_last_country") != COUNTRY:
     st.session_state["_last_country"] = COUNTRY
     st.session_state["ret_cash_pct"] = round(CDEF.cash_rate * 100.0, 1)
     st.session_state["bracket_indexation_pct"] = round(CDEF.bracket_indexation * 100.0, 1)
+    # Swiss liquid wealth excludes Pillar 2 / 3a, so the two countries have different defaults.
+    st.session_state["initial_liquid_wealth_input"] = 3_250_000 if COUNTRY == "AT" else 2_450_000
     st.session_state["_last_ppp_for_mc"] = None
     for _flag in ("_user_edited_mc_ret_us", "_user_edited_mc_ret_exus", "_user_edited_mc_ret_gold"):
         st.session_state[_flag] = False
@@ -280,7 +285,7 @@ success_pct = st.sidebar.number_input(
 st.sidebar.subheader(f"Initial Assets ({CCY})")
 initial_liquid_wealth = st.sidebar.number_input(
     f"Taxable Liquid Wealth ({CCY})",
-    value=3_250_000 if IS_AT else 2_450_000,
+    key="initial_liquid_wealth_input",  # country default set via Session State above
     min_value=0,
     step=50_000,
     help="Your easily accessible taxable investments (stocks, bonds, cash). Do not include your primary residence.",
@@ -312,7 +317,9 @@ pillar_3a_accounts = [pillar_3a_balance] * int(num_pillar_3a)
 st.sidebar.subheader("Target Asset Allocation (%)")
 alloc_us = st.sidebar.number_input("US Stocks", value=50.0, min_value=0.0, max_value=100.0, step=0.1, format="%.1f", help="Percentage of your portfolio invested in US Stocks.")
 alloc_non_us = st.sidebar.number_input("Non-US Stocks", value=30.0, min_value=0.0, max_value=100.0, step=0.1, format="%.1f", help="Percentage of your portfolio invested in Non-US Stocks.")
-alloc_cash = st.sidebar.number_input(f"{CCY} Cash", value=10.0, min_value=0.0, max_value=100.0, step=0.1, format="%.1f", help=f"Percentage of your portfolio held in {CCY} Cash.")
+if "alloc_cash_pct" not in st.session_state:
+    st.session_state["alloc_cash_pct"] = 10.0
+alloc_cash = st.sidebar.number_input(f"{CCY} Cash", key="alloc_cash_pct", min_value=0.0, max_value=100.0, step=0.1, format="%.1f", help=f"Percentage of your portfolio held in {CCY} Cash.")
 alloc_gold = st.sidebar.number_input("Gold", value=3.0, min_value=0.0, max_value=100.0, step=0.1, format="%.1f", help="Percentage of your portfolio held in Gold." + (" Held as a gold ETC: gains are taxed at 27.5% like other capital income." if IS_AT else ""))
 alloc_btc = st.sidebar.number_input("Bitcoin", value=7.0, min_value=0.0, max_value=100.0, step=0.1, format="%.1f", help="Percentage of your portfolio held in Bitcoin.")
 
@@ -358,6 +365,7 @@ def get_year0_taxes(exp: float) -> float:
         live_cash_rate = float(st.session_state.get("ret_cash_pct", CDEF.cash_rate * 100.0)) / 100.0
         live_ahv = float(st.session_state.get("monthly_ahv_input", 2000))
         live_muni_mult = float(st.session_state.get("municipal_multiplier_pct", ZURICH_CITY_MUNICIPAL_MULTIPLIER * 100.0)) / 100.0
+        live_health = float(st.session_state.get("health_insurance_monthly_input", HEALTH_SELF_INSURANCE_MONTHLY))
         temp_config = SimConfig(
             num_runs=1,
             duration_years=1,
@@ -382,7 +390,7 @@ def get_year0_taxes(exp: float) -> float:
             cantonal_multiplier=cantonal_multiplier,
             municipal_multiplier=live_muni_mult,
             country=COUNTRY,
-            health_insurance_monthly=HEALTH_SELF_INSURANCE_MONTHLY,
+            health_insurance_monthly=live_health,
         )
         return estimate_year_0_taxes(temp_config)
     except ValueError:
@@ -411,6 +419,7 @@ _vanguard_sync_sig = (
     round(float(st.session_state.get("ret_cash_pct", CDEF.cash_rate * 100.0)), 2),
     round(float(st.session_state.get("monthly_ahv_input", 2000)), 2),
     round(float(st.session_state.get("municipal_multiplier_pct", ZURICH_CITY_MUNICIPAL_MULTIPLIER * 100.0)), 2),
+    round(float(st.session_state.get("health_insurance_monthly_input", HEALTH_SELF_INSURANCE_MONTHLY)), 2),
 )
 
 if '_synced_twr_pct' not in st.session_state or st.session_state.get('_last_vanguard_sync_sig') != _vanguard_sync_sig:
@@ -713,12 +722,33 @@ if IS_AT:
     health_insurance_monthly = st.sidebar.number_input(
         "Health Self-Insurance (EUR/month, § 16 ASVG)",
         value=float(HEALTH_SELF_INSURANCE_MONTHLY),
-        disabled=True,
+        min_value=0.0,
+        step=10.0,
         format="%.2f",
-        help="Mandatory voluntary health insurance (Selbstversicherung in der Krankenversicherung, ÖGK 2026 rate), "
-             "paid from retirement until the state pension starts (for life if no pension is entered), indexed with "
-             "CPI. Not tax-deductible. From 65 the 6% health contribution on the pension applies instead.",
+        key="health_insurance_monthly_input",
+        help="Health insurance paid from retirement until the state pension starts (for life if no pension is "
+             "entered), in today's EUR. Default: the 2026 ÖGK rate of the Selbstversicherung in der "
+             "Krankenversicherung (§ 16 ASVG), which is voluntary in law but de facto required without a job "
+             "(6-month waiting period without prior coverage). Not tax-deductible in the model. From 65 the 6% "
+             "health contribution on the pension applies instead.\n\n"
+             "Alternative: a marginal job (up to EUR 551.10/month in 2026) plus the § 19a ASVG opting-in costs "
+             "EUR 83.49/month and also earns pension credits (the job income itself is not modelled).",
     )
+    health_insurance_real_growth = st.sidebar.number_input(
+        "Health Insurance Real Growth (%/yr above CPI)",
+        value=round(HEALTH_SELF_INSURANCE_REAL_GROWTH * 100.0, 2),
+        min_value=-5.0,
+        max_value=5.0,
+        step=0.1,
+        format="%.2f",
+        key="health_insurance_real_growth_pct",
+        help="The § 16 ASVG contribution is a fixed share of the social-security contribution ceiling "
+             "(Höchstbeitragsgrundlage), which follows wages (Aufwertungszahl), not prices, so the contribution "
+             "is indexed with CPI plus this real growth per year.\n\n"
+             "- 0.70% (default): the ceiling rose 3.3%/yr from 2010 (EUR 4,110) to 2026 (EUR 6,930) while "
+             "Austrian CPI rose 2.6%/yr (2008–2024; the Aufwertungszahl lags two years).\n"
+             "- 0%: plain CPI indexation.",
+    ) / 100.0
 else:
     st.sidebar.subheader("Zurich Tax Location")
     municipal_multiplier = st.sidebar.number_input("Municipal Multiplier (Steuerfuss, %)", value=ZURICH_CITY_MUNICIPAL_MULTIPLIER * 100.0, min_value=0.0, step=0.1, format="%.1f", key="municipal_multiplier_pct", help="Your municipal tax multiplier (Steuerfuss) in Zurich (e.g. 119% for City of Zurich).") / 100.0
@@ -735,6 +765,7 @@ else:
              "Note that the Steuerfuss multipliers are political and never indexed. A portfolio growing faster than inflation still climbs the wealth tax schedule in real terms at any setting."
     ) / 100.0
     health_insurance_monthly = HEALTH_SELF_INSURANCE_MONTHLY  # unused outside Austria
+    health_insurance_real_growth = HEALTH_SELF_INSURANCE_REAL_GROWTH  # unused outside Austria
 
 if hist_num_runs == 0:
     st.error("Cannot run simulation. Duration is too long for the available historic data.")
@@ -778,6 +809,7 @@ def create_config(num_runs: int, *, mc_inflation: bool = True) -> SimConfig:
         seed=random_seed,
         country=COUNTRY,
         health_insurance_monthly=float(health_insurance_monthly),
+        health_insurance_real_growth=float(health_insurance_real_growth),
     )
 
 
