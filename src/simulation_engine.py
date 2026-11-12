@@ -15,6 +15,8 @@ from .tax_engine_at import HEALTH_SELF_INSURANCE_MONTHLY, HEALTH_SELF_INSURANCE_
 
 VALID_SPENDING_STRATEGIES = {"Static", "Dynamic (Floor & Ceiling)", "Vanguard Dynamic"}
 VALID_REBALANCE_STRATEGIES = {"Cash Tent", "Monthly", "Quarterly", "Yearly", "Threshold", "Never"}
+# Strategies that always rebalance at year end, right after the annual outflow sale.
+YEAR_END_REBALANCE_STRATEGIES = ("Monthly", "Quarterly", "Yearly", "Cash Tent")
 # Number of bisection steps used to solve the year-end sale S = expenses + taxes(gains_0 + gain(S)).
 # Because E + T(S) - S is continuous and strictly decreasing for both capital gains (0 <= g <= 1,
 # slope(T) <= 0.55 < 1) and capital losses (g < 0, slope(T) <= 0, where Picard iteration oscillates
@@ -418,25 +420,38 @@ def _unassessed_gains(
 
 
 def _outflow_sale_gain_profile(
-    liquid_assets: np.ndarray, cost_basis: np.ndarray, cash_first: np.ndarray
+    liquid_assets: np.ndarray,
+    cost_basis: np.ndarray,
+    cash_first: np.ndarray,
+    distributed_cash: np.ndarray | None = None,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Describes the realized gain of the year-end outflow sale as a function of its size.
 
-    Mirrors the sale in `run_simulation` Step 6: the payable amount is capped at total liquid
-    wealth; runs in `cash_first` (Smart Cash Buffer downturn) spend positive cash first, then all
-    runs sell positive holdings proportionally. Returns `(gain_fraction, cash_spent_first, cap)` such
-    that the realized non-cash gain of an outflow `S` is
-    `gain_fraction * max(0, min(S, cap) - cash_spent_first)`.
+    Mirrors the outflow sale in `run_simulation` (Month 11): the payable amount is capped at total
+    liquid wealth; runs in `cash_first` (Smart Cash Buffer downturn, or a year-end rebalance follows
+    where sales are taxed) spend all positive cash first, the other runs only the year's cash
+    distributions (`distributed_cash`, at most the positive cash); then all runs sell their remaining
+    positive holdings proportionally. Returns `(gain_fraction, cash_spent_first, cap)` such that the
+    realized non-cash gain of an outflow `S` is `gain_fraction * max(0, min(S, cap) - cash_spent_first)`.
     """
     positive = np.maximum(0.0, liquid_assets)
     unrealized = (positive[:, NON_CASH_ASSETS] * (1.0 - _basis_ratio(liquid_assets, cost_basis)[:, NON_CASH_ASSETS])).sum(axis=1)
-    non_cash_total = positive[:, NON_CASH_ASSETS].sum(axis=1)
     all_total = positive.sum(axis=1)
-    denom = np.where(cash_first, non_cash_total, all_total)
+    cash_spent_first = _cash_spent_first(liquid_assets, cash_first, distributed_cash)
+    denom = all_total - cash_spent_first
     gain_fraction = np.divide(unrealized, denom, out=np.zeros_like(unrealized), where=denom > 0)
-    cash_spent_first = np.where(cash_first, positive[:, ASSET_CASH], 0.0)
     cap = np.maximum(0.0, liquid_assets.sum(axis=1))
     return gain_fraction, cash_spent_first, cap
+
+
+def _cash_spent_first(
+    liquid_assets: np.ndarray, cash_first: np.ndarray, distributed_cash: np.ndarray | None
+) -> np.ndarray:
+    """Cash used for the outflow before any holding is sold: all positive cash for `cash_first`
+    runs, otherwise the year's cash distributions (capped at the positive cash balance)."""
+    positive_cash = np.maximum(0.0, liquid_assets[:, ASSET_CASH])
+    distributed = np.zeros_like(positive_cash) if distributed_cash is None else np.minimum(positive_cash, distributed_cash)
+    return np.where(cash_first, positive_cash, distributed)
 
 
 def run_simulation(config: SimConfig, return_matrix: np.ndarray, inflation_matrix: np.ndarray = None) -> dict:
@@ -713,15 +728,28 @@ def run_simulation(config: SimConfig, return_matrix: np.ndarray, inflation_matri
             # US Stocks (0) and Non-US Stocks (1) generate dividends
             equities = np.maximum(0, liquid_assets[:, 0] + liquid_assets[:, 1])
             dividends = equities * config.dividend_yield
-            # The return series are total-return: dividends are reinvested at market value, i.e.
-            # bought, so they raise the cost basis of the sleeve that paid them.
-            cost_basis[:, :2] += np.maximum(0.0, liquid_assets[:, :2]) * config.dividend_yield
-            
+
             # Cash (index 2) generates taxable interest from the realized annual return on CHF Cash
             # in return_matrix[:, (m - 11):(m + 1), 2] (floored at 0.0 so negative rates never reduce taxable income).
             cash = np.maximum(0, liquid_assets[:, 2])
             realized_cash_ret = np.prod(1.0 + return_matrix[:, (m - 11) : (m + 1), 2], axis=1) - 1.0
             interest = cash * np.maximum(0.0, realized_cash_ret)
+
+            if jurisdiction.taxes_capital_gains:
+                # Distributing funds: the year's dividends are paid out to cash (the total-return
+                # holdings drop by the distribution, their cost basis is unchanged) and fund the
+                # year-end outflow before any holding is sold. Reinvesting them and then selling the
+                # full outflow would realize extra taxable gains on an appreciated position.
+                distributions = np.maximum(0.0, liquid_assets[:, :2]) * config.dividend_yield
+                liquid_assets[:, :2] -= distributions
+                distributed_cash = distributions.sum(axis=1)
+                liquid_assets[:, ASSET_CASH] += distributed_cash
+                cost_basis[:, ASSET_CASH] = liquid_assets[:, ASSET_CASH]
+            else:
+                # No capital gains tax: the dividends are treated as reinvested (the return series
+                # are total-return), raising the cost basis of the sleeve that paid them.
+                cost_basis[:, :2] += np.maximum(0.0, liquid_assets[:, :2]) * config.dividend_yield
+                distributed_cash = None
             
             total_liquid_end = np.sum(liquid_assets, axis=1)
             taxable_gains_before_sale = carried_taxable_gains + realized_gains_this_year[:, NON_CASH_ASSETS].sum(axis=1)
@@ -740,12 +768,22 @@ def run_simulation(config: SimConfig, return_matrix: np.ndarray, inflation_matri
                     inflation_factors=inflation_factors,
                 )
 
+            # Runs that pay the outflow from positive cash before selling other holdings: Smart Cash
+            # Buffer runs in a downturn and, where sales are taxed, every run under a strategy whose
+            # year-end rebalance follows right after the sale. Selling holdings proportionally and
+            # then buying them back with the leftover cash in the same tick would realize taxable
+            # gains for nothing; spending the cash first reaches the same post-rebalance allocation
+            # with the smallest sale. (Without a capital gains tax the order makes no difference.)
+            cash_first = is_below_watermark & config.enable_smart_selling
+            if jurisdiction.taxes_capital_gains and config.rebalance_strategy in YEAR_END_REBALANCE_STRATEGIES:
+                cash_first = np.ones(num_runs, dtype=bool)
+
             annual_taxes = assess(taxable_gains_before_sale)
             if jurisdiction.taxes_capital_gains:
                 # The outflow sale realizes gains/losses that are taxed in the same year: solve
                 # h(S) = expenses + taxes(gains_so_far + gain(S)) - S = 0 by monotone bisection.
                 gain_fraction, cash_spent_first, sale_cap = _outflow_sale_gain_profile(
-                    liquid_assets, cost_basis, is_below_watermark & config.enable_smart_selling
+                    liquid_assets, cost_basis, cash_first, distributed_cash
                 )
                 cap_gain = gain_fraction * np.maximum(0.0, sale_cap - cash_spent_first)
                 taxes_at_0 = annual_taxes.total
@@ -775,14 +813,12 @@ def run_simulation(config: SimConfig, return_matrix: np.ndarray, inflation_matri
             # Any remaining deficit goes directly to negative Cash
             remaining_deficit = deficit - payable
             
-            if config.enable_smart_selling:
-                # Pay from cash first for downturn runs (reuse is_below_watermark computed above)
-                downturn_payable = payable[is_below_watermark]
-                available_cash = np.maximum(0, liquid_assets[is_below_watermark, 2])
-                sell_cash = np.minimum(downturn_payable, available_cash)
-                
-                liquid_assets[is_below_watermark, 2] -= sell_cash
-                payable[is_below_watermark] -= sell_cash
+            # Pay from positive cash first: all of it for the cash-first runs (see `cash_first`
+            # above), otherwise the year's cash distributions (Austria, see `distributed_cash`).
+            spend_first = np.minimum(payable, _cash_spent_first(liquid_assets, cash_first, distributed_cash))
+            if np.any(spend_first > 0):
+                liquid_assets[:, 2] -= spend_first
+                payable -= spend_first
             
             # Sell proportionally from remaining positive assets
             positive_assets = np.maximum(0, liquid_assets)
@@ -816,7 +852,7 @@ def run_simulation(config: SimConfig, return_matrix: np.ndarray, inflation_matri
             # 6. Year-End Rebalancing (sets the allocation held going into the next year)
             do_rebalance_eoy = np.zeros(num_runs, dtype=bool)
             post_sale_liquid = np.sum(liquid_assets, axis=1)
-            if config.rebalance_strategy in ('Monthly', 'Quarterly', 'Yearly', 'Cash Tent'):
+            if config.rebalance_strategy in YEAR_END_REBALANCE_STRATEGIES:
                 do_rebalance_eoy[:] = True
             elif config.rebalance_strategy == 'Threshold':
                 current_total = post_sale_liquid[:, None]

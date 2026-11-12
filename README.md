@@ -17,13 +17,13 @@ Legend: ✅ implemented · 🔁 country-agnostic, reused unchanged · ❌ not im
 | Return engines (Backtesting, Stationary Bootstrap, Monte Carlo), Bitcoin copula | ✅ | 🔁 engines |
 | Historic return data 1922–2025 | ✅ `src/historic_returns.py` (CHF) | ✅ `src/historic_returns_eur.py` (EUR; **1922–1957 Swiss inflation and cash data, 1958–1999 cash PPP-translated from Swiss data**, see below) |
 | Spending strategies, rebalancing, Cash Tent, Smart Cash Buffer | ✅ | 🔁 (✅ Austrian Year-0 tax estimate; sales and rebalancing realize taxable gains) |
-| Metrics, charts, cohort tables, success criterion | ✅ (tax-component medians on hover) | 🔁 (✅ EUR / State Pension labels, no Pillar or Liquid Solvent series, KESt / income tax / health insurance on hover) |
+| Metrics, charts, cohort tables, success criterion | ✅ (tax-component breakdown on hover; withdrawal charts and outflow KPIs count only amounts actually paid, so depleted portfolios don't show unpaid targets) | 🔁 (✅ EUR / State Pension labels, no Pillar or Liquid Solvent series, KESt / income tax / health insurance on hover; the outflow is paid from cash first when a year-end rebalance follows, so cash isn't recycled through a taxed sell-and-buy-back) |
 | Income tax | ✅ Federal + Zurich 2026, ESTV-verified | ✅ § 33 EStG 2026 tariff, pension taxation (6% health contribution capped at the contribution ceiling, 13th/14th payment under § 67 incl. the €2,615 Freigrenze, pensioner credit), BMF-verified |
 | Wealth tax | ✅ Zurich | n/a (no wealth tax) |
 | Cost-basis tracking (average cost, basis = value on day 0; `realized_gains` / `unrealized_gains` outputs) | ✅ tracked, not taxed | ✅ (engine, shared) |
 | Capital gains tax | n/a (tax-free) | ✅ 27.5% KESt on stocks, gold ETC and Bitcoin, in-year loss offset, Regelbesteuerungsoption (the year-end sale is solved for the tax on its own gains or losses) |
-| Ending net worth and success criterion | ✅ gross (liquid wealth carries no latent tax) | ⚠️ gross by design: the KESt still owed on unrealized gains is **not** deducted from ending net worth, success, the TL;DR verdict or the cohort tables (it is only deducted in the after-tax watermark); at app defaults it is ~13–14% of median ending net worth in Historic Backtesting |
-| Dividend / interest tax | ✅ progressive | ✅ 27.5% (incl. deemed distributions) / 25% on bank interest |
+| Ending net worth and success criterion | ✅ gross (liquid wealth carries no latent tax) | ⚠️ gross by design: the KESt still owed on unrealized gains is **not** deducted from ending net worth, success, the TL;DR verdict or the cohort tables (it is only deducted in the after-tax watermark); at app defaults it is ~17% of median ending net worth in Historic Backtesting |
+| Dividend / interest tax | ✅ progressive (dividends treated as reinvested) | ✅ 27.5% (incl. deemed distributions) / 25% on bank interest; dividends are distributed to cash and fund the year's outflow before any holding is sold |
 | Mandatory contributions before 65 | ✅ AHV non-worker | ✅ Health self-insurance (§ 16 ASVG, editable, default €565.25/month in 2026, indexed with CPI + 0.7%/yr real wage growth; for life if no pension) |
 | State pension (single input from 65) | ✅ AHV (monthly, 12×/yr) | ✅ monthly gross, 14×/yr |
 | Pension lump sums | ✅ Pillar 2 / 3a with capital withdrawal tax | n/a (out of scope) |

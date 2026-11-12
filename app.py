@@ -26,6 +26,7 @@ from src.metrics import (
     cumulative_inflation,
     format_depletion_label,
     format_shortfall_label,
+    funded_outflows,
     min_real_net_worth,
     real_final_net_worth,
     summarize_failure_timing,
@@ -314,14 +315,24 @@ else:
 pillar_3a_accounts = [pillar_3a_balance] * int(num_pillar_3a)
 
 # 3. Asset Allocation
+# Every allocation input has a stable `key`: keyless widgets are identified by their label *and*
+# help text, so a country-dependent label (CHF/EUR Cash) or help (Gold ETC note) would reset the
+# input on a country switch and break the 100% check while the other inputs keep their values.
 st.sidebar.subheader("Target Asset Allocation (%)")
-alloc_us = st.sidebar.number_input("US Stocks", value=50.0, min_value=0.0, max_value=100.0, step=0.1, format="%.1f", help="Percentage of your portfolio invested in US Stocks.")
-alloc_non_us = st.sidebar.number_input("Non-US Stocks", value=30.0, min_value=0.0, max_value=100.0, step=0.1, format="%.1f", help="Percentage of your portfolio invested in Non-US Stocks.")
-if "alloc_cash_pct" not in st.session_state:
-    st.session_state["alloc_cash_pct"] = 10.0
+for _key, _default in (
+    ("alloc_us_pct", 50.0),
+    ("alloc_non_us_pct", 30.0),
+    ("alloc_cash_pct", 10.0),
+    ("alloc_gold_pct", 3.0),
+    ("alloc_btc_pct", 7.0),
+):
+    if _key not in st.session_state:
+        st.session_state[_key] = _default
+alloc_us = st.sidebar.number_input("US Stocks", key="alloc_us_pct", min_value=0.0, max_value=100.0, step=0.1, format="%.1f", help="Percentage of your portfolio invested in US Stocks.")
+alloc_non_us = st.sidebar.number_input("Non-US Stocks", key="alloc_non_us_pct", min_value=0.0, max_value=100.0, step=0.1, format="%.1f", help="Percentage of your portfolio invested in Non-US Stocks.")
 alloc_cash = st.sidebar.number_input(f"{CCY} Cash", key="alloc_cash_pct", min_value=0.0, max_value=100.0, step=0.1, format="%.1f", help=f"Percentage of your portfolio held in {CCY} Cash.")
-alloc_gold = st.sidebar.number_input("Gold", value=3.0, min_value=0.0, max_value=100.0, step=0.1, format="%.1f", help="Percentage of your portfolio held in Gold." + (" Held as a gold ETC: gains are taxed at 27.5% like other capital income." if IS_AT else ""))
-alloc_btc = st.sidebar.number_input("Bitcoin", value=7.0, min_value=0.0, max_value=100.0, step=0.1, format="%.1f", help="Percentage of your portfolio held in Bitcoin.")
+alloc_gold = st.sidebar.number_input("Gold", key="alloc_gold_pct", min_value=0.0, max_value=100.0, step=0.1, format="%.1f", help="Percentage of your portfolio held in Gold." + (" Held as a gold ETC: gains are taxed at 27.5% like other capital income." if IS_AT else ""))
+alloc_btc = st.sidebar.number_input("Bitcoin", key="alloc_btc_pct", min_value=0.0, max_value=100.0, step=0.1, format="%.1f", help="Percentage of your portfolio held in Bitcoin.")
 
 total_alloc = alloc_us + alloc_non_us + alloc_cash + alloc_gold + alloc_btc
 if not np.isclose(total_alloc, 100.0, atol=0.01):
@@ -1003,10 +1014,14 @@ def render_results(history, config, num_runs, title, inflation_matrix, success_p
         )
     col_r1c_2.metric("Shortfall Age (Min / Med)", shortfall_age_val, help=shortfall_age_help)
 
-    total_outflows_per_run = np.sum(history['expenses_paid'] + history['taxes_paid'], axis=0)
+    # Withdrawals actually paid: a depleted portfolio cannot pay its target expenses and taxes (the
+    # unpaid part is `unfunded_deficit`, carried as debt), so it is excluded from every outflow figure.
+    funded_expenses, funded_taxes = funded_outflows(history)
+    funded_total = funded_expenses + funded_taxes
+    total_outflows_per_run = np.sum(funded_total, axis=0)
     median_total_withdrawals = np.median(total_outflows_per_run)
 
-    total_outflows_real_per_run = np.sum((history['expenses_paid'] + history['taxes_paid']) / cum_inflation.T, axis=0)
+    total_outflows_real_per_run = np.sum(funded_total / cum_inflation.T, axis=0)
     median_total_withdrawals_real = np.median(total_outflows_real_per_run)
 
     # Pre-65 (<65) vs Post-65 (>=65) breakdown
@@ -1015,18 +1030,18 @@ def render_results(history, config, num_runs, title, inflation_matrix, success_p
     post_65_mask = sim_ages >= 65
 
     if np.any(pre_65_mask):
-        pre_65_outflows = np.sum(history['expenses_paid'][pre_65_mask, :] + history['taxes_paid'][pre_65_mask, :], axis=0)
+        pre_65_outflows = np.sum(funded_total[pre_65_mask, :], axis=0)
         median_pre_65_nominal = np.median(pre_65_outflows)
-        pre_65_outflows_real = np.sum((history['expenses_paid'][pre_65_mask, :] + history['taxes_paid'][pre_65_mask, :]) / cum_inflation.T[pre_65_mask, :], axis=0)
+        pre_65_outflows_real = np.sum(funded_total[pre_65_mask, :] / cum_inflation.T[pre_65_mask, :], axis=0)
         median_pre_65_real = np.median(pre_65_outflows_real)
     else:
         median_pre_65_nominal = 0.0
         median_pre_65_real = 0.0
 
     if np.any(post_65_mask):
-        post_65_outflows = np.sum(history['expenses_paid'][post_65_mask, :] + history['taxes_paid'][post_65_mask, :], axis=0)
+        post_65_outflows = np.sum(funded_total[post_65_mask, :], axis=0)
         median_post_65_nominal = np.median(post_65_outflows)
-        post_65_outflows_real = np.sum((history['expenses_paid'][post_65_mask, :] + history['taxes_paid'][post_65_mask, :]) / cum_inflation.T[post_65_mask, :], axis=0)
+        post_65_outflows_real = np.sum(funded_total[post_65_mask, :] / cum_inflation.T[post_65_mask, :], axis=0)
         median_post_65_real = np.median(post_65_outflows_real)
     else:
         median_post_65_nominal = 0.0
@@ -1039,8 +1054,8 @@ def render_results(history, config, num_runs, title, inflation_matrix, success_p
 
     # Row 3: Median Total Cumulative Withdrawals (Real vs Nominal)
     col_r3_1, col_r3_2 = st.columns(2)
-    col_r3_1.metric("Median Total Withdrawals (Real)", f"{median_total_withdrawals_real:,.0f} {CCY}", help="Total cumulative real purchasing power spent on living expenses and taxes over the full simulation period.")
-    col_r3_2.metric("Median Total Withdrawals (Nominal)", f"{median_total_withdrawals:,.0f} {CCY}", help="Total cumulative nominal cash spent on living expenses and taxes over the full simulation period.")
+    col_r3_1.metric("Median Total Withdrawals (Real)", f"{median_total_withdrawals_real:,.0f} {CCY}", help="Total cumulative real purchasing power spent on living expenses and taxes over the full simulation period. Only amounts actually paid count: once a portfolio is depleted, its unpaid target expenses and taxes are excluded.")
+    col_r3_2.metric("Median Total Withdrawals (Nominal)", f"{median_total_withdrawals:,.0f} {CCY}", help="Total cumulative nominal cash spent on living expenses and taxes over the full simulation period. Only amounts actually paid count: once a portfolio is depleted, its unpaid target expenses and taxes are excluded.")
 
     # Row 4: Pre-AHV (<65) vs Post-65 (>=65) Outflows
     col_r4_1, col_r4_2 = st.columns(2)
@@ -1049,12 +1064,12 @@ def render_results(history, config, num_runs, title, inflation_matrix, success_p
     col_r4_1.metric(
         f"{PRE_PENSION} Outflow (< Age 65, {pre_65_years_cnt}y)",
         f"{median_pre_65_real:,.0f} {CCY}",
-        help=f"Median cumulative real (today's {CCY}) outflows required to cover living expenses and taxes during the early retirement gap before age 65 ({pre_65_years_cnt} years). Nominal: {median_pre_65_nominal:,.0f} {CCY}."
+        help=f"Median cumulative real (today's {CCY}) outflows paid for living expenses and taxes during the early retirement gap before age 65 ({pre_65_years_cnt} years; unpaid amounts of depleted portfolios excluded). Nominal: {median_pre_65_nominal:,.0f} {CCY}."
     )
     col_r4_2.metric(
         f"Post-65 Outflow (Age 65+, {post_65_years_cnt}y)",
         f"{median_post_65_real:,.0f} {CCY}",
-        help=f"Median cumulative real (today's {CCY}) outflows required to cover living expenses and taxes from age 65 through end-of-life ({post_65_years_cnt} years). Nominal: {median_post_65_nominal:,.0f} {CCY}."
+        help=f"Median cumulative real (today's {CCY}) outflows paid for living expenses and taxes from age 65 through end-of-life ({post_65_years_cnt} years; unpaid amounts of depleted portfolios excluded). Nominal: {median_post_65_nominal:,.0f} {CCY}."
     )
 
     # Plotly Chart (x-axis uses the retirement age during each simulated year: start_age .. start_age + duration_years - 1)
@@ -1128,7 +1143,7 @@ def render_results(history, config, num_runs, title, inflation_matrix, success_p
         margin=dict(t=15, b=65, l=10, r=10)
     )
     st.subheader("Net Worth Trajectory", help="This chart displays the value of your assets over time.")
-    st.plotly_chart(fig, width='stretch')
+    st.plotly_chart(fig, width='stretch', key=f"{title}_net_worth")
 
     # Portfolio Survival by Age Chart (Kaplan-Meier style survival curve)
     survival_curves = compute_survival_curves(history, inflation_matrix, success_pct)
@@ -1188,14 +1203,14 @@ def render_results(history, config, num_runs, title, inflation_matrix, success_p
             + "- Above Target: % of never-depleted paths whose real net worth exceeds your target ending wealth criterion at each age."
         ),
     )
-    st.plotly_chart(fig_surv, width='stretch')
+    st.plotly_chart(fig_surv, width='stretch', key=f"{title}_survival")
 
     # Income Breakdown Chart
     median_divs = np.median(history['income_dividends'], axis=1)
     median_interest = np.median(history.get('income_interest', np.zeros_like(history['income_dividends'])), axis=1)
     median_ahv = np.median(history['income_ahv'], axis=1)
-    median_expenses = np.median(history['expenses_paid'], axis=1)
-    median_taxes = np.median(history['taxes_paid'], axis=1)
+    median_expenses = np.median(funded_expenses, axis=1)
+    median_taxes = np.median(funded_taxes, axis=1)
 
     capital_sold = np.maximum(0, median_expenses + median_taxes - median_divs - median_interest - median_ahv)
 
@@ -1217,7 +1232,7 @@ def render_results(history, config, num_runs, title, inflation_matrix, success_p
         margin=dict(t=15, b=65, l=10, r=10)
     )
     st.subheader("Income vs Required Cash", help="This chart displays the median cash flows across all simulated portfolio paths for each year (Dividends, " + CCY + " Cash Interest, " + PENSION_LABEL + ", and Capital Sold), along with the inflation-adjusted starting withdrawal trajectory.")
-    st.plotly_chart(fig_income, width='stretch')
+    st.plotly_chart(fig_income, width='stretch', key=f"{title}_income")
 
     # Annual Withdrawal Breakdown Chart (50th Pct bars + single bad-case path stacked lines on median-CPI scale + Inflation-Adj Start)
     ranked_paths = worst_path_order(history, inflation_matrix, success_pct)
@@ -1228,16 +1243,8 @@ def render_results(history, config, num_runs, title, inflation_matrix, success_p
         bad_idx = int(ranked_paths[int(round(0.05 * (int(num_runs) - 1)))])
         bad_label = '5th Pct'
 
-    exp_path = history['expenses_paid'][:, bad_idx]
-    tax_path = history['taxes_paid'][:, bad_idx]
-    unfunded_path = (
-        history['unfunded_deficit'][:, bad_idx]
-        if 'unfunded_deficit' in history
-        else np.zeros_like(exp_path)
-    )
-    funded_exp_path = np.maximum(0.0, exp_path - unfunded_path)
-    rem_unfunded = np.maximum(0.0, unfunded_path - exp_path)
-    funded_tax_path = np.maximum(0.0, tax_path - rem_unfunded)
+    funded_exp_path = funded_expenses[:, bad_idx]
+    funded_tax_path = funded_taxes[:, bad_idx]
     cpi_scale_to_median = median_cum_inflation / cum_inflation[bad_idx, :]
     bad_expenses = funded_exp_path * cpi_scale_to_median
     bad_taxes = funded_tax_path * cpi_scale_to_median
@@ -1249,14 +1256,26 @@ def render_results(history, config, num_runs, title, inflation_matrix, success_p
         "kest": "KESt (capital income tax)",
         "health_insurance": "Health insurance",
     }
-    components = history.get("tax_components", {})
-    component_lines = [
-        (tax_component_labels.get(name, name), np.median(values, axis=1)) for name, values in components.items()
-    ]
+    components = dict(history.get("tax_components", {}))
     if components:
         residual = history['taxes_paid'] - sum(components.values())
         if np.any(np.abs(residual) > 0.5):
-            component_lines.append(("Capital withdrawal tax", np.median(residual, axis=1)))
+            components["capital_withdrawal_tax"] = residual
+    # Split the median total by each component's average share across runs, so the breakdown always
+    # sums to the bar. Separate medians per component do not: e.g. the all-or-nothing Austrian
+    # Regelbesteuerungsoption makes income tax and KESt each zero in half of the runs, so both
+    # medians can be 0 while the median total is not.
+    total_by_year = sum(components.values()) if components else np.zeros_like(history['taxes_paid'])
+    total_sum = np.sum(total_by_year, axis=1)
+    component_lines = [
+        (
+            tax_component_labels.get(name, name),
+            median_taxes * np.divide(
+                np.sum(values, axis=1), total_sum, out=np.zeros_like(total_sum), where=total_sum > 0
+            ),
+        )
+        for name, values in components.items()
+    ]
     tax_hover = [
         "<br>".join(f"{label}: {vals[t]:,.0f} {CCY}" for label, vals in component_lines) for t in range(len(years))
     ]
@@ -1270,7 +1289,7 @@ def render_results(history, config, num_runs, title, inflation_matrix, success_p
             marker_color='crimson',
             customdata=tax_hover,
             hovertemplate="<b>Taxes Paid (50th Pct)</b><br>Age: %{x}<br>Total: %{y:,.0f} " + CCY
-            + "<br><i>Component medians:</i><br>%{customdata}<extra></extra>",
+            + "<br><i>Breakdown (median total split by average component share):</i><br>%{customdata}<extra></extra>",
         ),
         go.Scatter(
             name=f'Living Expenses ({bad_label})',
@@ -1313,10 +1332,10 @@ def render_results(history, config, num_runs, title, inflation_matrix, success_p
             "This stacked chart displays the median (50th Pct, bars) and bad-case path "
             f"({bad_label}, stacked lines from the worst/5th-percentile outcome path re-expressed on the median CPI scale) "
             "annual funded withdrawals (living expenses and taxes paid) over time, along with the inflation-adjusted starting withdrawal reference line. "
-            "Hover the taxes bar for the median of each tax component."
+            "Hover the taxes bar for its breakdown: the median total split by each tax component's average share across runs."
         ),
     )
-    st.plotly_chart(fig_withdrawal, width='stretch')
+    st.plotly_chart(fig_withdrawal, width='stretch', key=f"{title}_withdrawals")
 
     # Withdrawal Rate Chart (net portfolio withdrawals relative to beginning-of-year net worth)
     withdrawal_rate_history = beginning_of_year_withdrawal_rate(history)
@@ -1346,7 +1365,7 @@ def render_results(history, config, num_runs, title, inflation_matrix, success_p
         margin=dict(t=15, b=65, l=10, r=10)
     )
     st.subheader("Withdrawal Rate", help="This chart displays net annual portfolio withdrawals (expenses + taxes minus " + PENSION_LABEL.lower() + ", floored at 0) as a percentage of beginning-of-year net worth.")
-    st.plotly_chart(fig_wr, width='stretch')
+    st.plotly_chart(fig_wr, width='stretch', key=f"{title}_withdrawal_rate")
 
     # Asset Allocation Development Chart (Liquid Assets + Pillar 2 & 3a)
     median_assets_by_class = np.median(history['liquid_assets_by_class'], axis=1)  # shape: (years, 5)
@@ -1393,7 +1412,7 @@ def render_results(history, config, num_runs, title, inflation_matrix, success_p
             + ") over time, showing how your net worth breakdown glides and rebalances throughout retirement."
         ),
     )
-    st.plotly_chart(fig_alloc, width='stretch')
+    st.plotly_chart(fig_alloc, width='stretch', key=f"{title}_allocation")
 
     analysis_name = "Cohort Analysis" if is_historic_backtest else "Run Analysis"
     id_col_name = "Cohort" if is_historic_backtest else "Run"
@@ -1530,7 +1549,7 @@ def render_results(history, config, num_runs, title, inflation_matrix, success_p
     st.markdown(f"##### Top 10 Best {id_col_name}s")
     st.caption("Sorted by **Final NW (Real)**, highest first.")
     df_best = build_df(best_indices)
-    st.dataframe(df_best, column_config=column_config, hide_index=True, width='stretch')
+    st.dataframe(df_best, column_config=column_config, hide_index=True, width='stretch', key=f"{title}_best")
 
     st.markdown(f"##### Top 10 Worst {id_col_name}s")
     st.caption(
@@ -1543,7 +1562,7 @@ def render_results(history, config, num_runs, title, inflation_matrix, success_p
         help=worst_order_help,
     )
     df_worst = build_df(worst_indices)
-    st.dataframe(df_worst, column_config=column_config, hide_index=True, width='stretch')
+    st.dataframe(df_worst, column_config=column_config, hide_index=True, width='stretch', key=f"{title}_worst")
 
 
 hist_eff_caption = _build_hist_eff_caption(history_hist, config_hist, hist_inflation_matrix, success_pct)

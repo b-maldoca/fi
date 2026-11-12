@@ -100,18 +100,60 @@ def test_year_end_rebalance_gains_are_taxed_next_year():
     history = run_simulation(cfg, returns, _zero_inflation(cfg))
 
     s0 = history["expenses_paid"][0, 0] + history["taxes_paid"][0, 0]
-    s1 = history["expenses_paid"][1, 0] + history["taxes_paid"][1, 0]
-    sale0_gain = s0 / 3.0  # 2/3 of the sale from US, half of it gain
-    eoy_gain = 125_000.0 - s0 / 12.0  # rebalance back to 50/50 sells 250k - s0/6 of US at ratio 0.5
-    sale1_gain = s1 / 4.0  # 50/50 holdings, US basis ratio 0.5
+    # A year-end rebalance follows, so the outflow is paid from cash first and realizes no gain.
+    # The rebalance back to 50/50 of (1.5M - s0) then sells 250k + s0/2 of US at basis ratio 0.5.
+    eoy_gain = 125_000.0 + s0 / 4.0
 
-    assert history["realized_gains"][0, 0] == pytest.approx(sale0_gain + eoy_gain)
-    assert history["taxes_paid"][0, 0] == pytest.approx(
-        calculate_annual_taxes_at(0.0, 0.0, sale0_gain, 0.0)["total"] + HEALTH, rel=1e-9
-    )
+    assert history["realized_gains"][0, 0] == pytest.approx(eoy_gain)
+    assert history["taxes_paid"][0, 0] == pytest.approx(HEALTH, rel=1e-9)
+    # Year 1's outflow is again paid from cash; only the carried rebalance gain is taxed.
     assert history["taxes_paid"][1, 0] == pytest.approx(
-        calculate_annual_taxes_at(0.0, 0.0, eoy_gain + sale1_gain, 0.0)["total"] + HEALTH * WAGE, rel=1e-9
+        calculate_annual_taxes_at(0.0, 0.0, eoy_gain, 0.0)["total"] + HEALTH * WAGE, rel=1e-9
     )
+
+
+def test_outflow_paid_from_cash_before_year_end_rebalance():
+    """With a year-end rebalance following, the outflow must be paid from cash (e.g. the pension
+    credited during the year) instead of selling appreciated holdings and buying them back."""
+    returns = np.zeros((1, 24, 5))
+    returns[0, 0, 0] = 1.0  # US doubles: basis / value = 0.5
+    cfg = _config(
+        duration_years=2,
+        start_age=65,
+        monthly_ahv_pension=2_000.0,
+        annual_base_expenses=10_000.0,
+        alloc_us_stocks=1.0,
+        rebalance_strategy="Yearly",
+    )
+    history = run_simulation(cfg, returns, _zero_inflation(cfg))
+    pension_tax = calculate_annual_taxes_at(28_000.0, 0.0, 0.0, 0.0)["total"]
+    # 28k of pension covers 10k expenses + pension tax: nothing is sold, no KESt.
+    np.testing.assert_allclose(history["tax_components"]["kest"][:, 0], 0.0, atol=1e-9)
+    assert history["realized_gains"][0, 0] == pytest.approx(0.0, abs=1e-6)
+    assert history["taxes_paid"][0, 0] == pytest.approx(pension_tax)
+    # The leftover cash is invested at year end (target 100% US).
+    assert history["liquid_assets_by_class"][0, 0, 2] == pytest.approx(0.0, abs=1e-6)
+    assert history["liquid_assets"][0, 0] == pytest.approx(2_000_000.0 + 28_000.0 - 10_000.0 - pension_tax)
+
+    # Never rebalancing keeps the proportional sale (cash stays where it is).
+    never = run_simulation(_config(**{**cfg.__dict__, "rebalance_strategy": "Never"}), returns, _zero_inflation(cfg))
+    assert never["liquid_assets_by_class"][0, 0, 2] > 0.0
+
+
+def test_cash_first_does_not_change_swiss_results():
+    rng = np.random.default_rng(7)
+    returns = rng.normal(0.006, 0.04, size=(5, 10 * 12, 5))
+    common = dict(
+        num_runs=5, duration_years=10, inflation_mean=0.0, inflation_std=0.0, start_age=60, dividend_yield=0.02,
+        initial_liquid_wealth=1_000_000.0, alloc_us_stocks=0.6, alloc_chf_cash=0.4, annual_base_expenses=60_000.0,
+        monthly_ahv_pension=2_000.0, rebalance_strategy="Yearly", enable_smart_selling=False,
+    )
+    h = run_simulation(SimConfig(**common), returns, np.zeros((5, 10)))
+    # Without a capital gains tax the composition of the sale is irrelevant after the rebalance:
+    # every year ends exactly at the target weights.
+    weights = h["liquid_assets_by_class"] / h["liquid_assets"][:, :, None]
+    np.testing.assert_allclose(weights[:, :, 0], 0.6)
+    np.testing.assert_allclose(weights[:, :, 2], 0.4)
 
 
 def test_rebalancing_costs_tax_in_austria_but_not_in_switzerland():
@@ -281,3 +323,38 @@ def test_watermark_includes_unassessed_realized_gains_from_rebalancing():
     # deducting accrued + latent KESt it is < 1,000k under BOTH Yearly and Never rebalancing.
     assert h_never["below_watermark"][1, 0]
     assert h_yearly["below_watermark"][1, 0]
+
+
+def test_dividends_are_distributed_and_fund_the_outflow():
+    """Austria: dividends are paid out to cash and fund the year-end outflow before shares are sold,
+    so the distribution itself does not trigger a sale of appreciated holdings."""
+    returns = np.zeros((1, 12, 5))
+    returns[0, 0, 0] = 1.0  # US doubles: 2M value, 1M basis
+    cfg = _config(dividend_yield=0.05, annual_base_expenses=50_000.0, rebalance_strategy="Never")
+    history = run_simulation(cfg, returns, _zero_inflation(cfg))
+
+    dividends = history["income_dividends"][0, 0]
+    assert dividends == pytest.approx(100_000.0)
+    # Expenses + taxes (< 100k) are paid entirely from the distribution: nothing is sold.
+    assert history["realized_gains"][0, 0] == pytest.approx(0.0, abs=1e-6)
+    expected_tax = calculate_annual_taxes_at(0.0, dividends, 0.0, 0.0)["total"] + HEALTH
+    assert history["taxes_paid"][0, 0] == pytest.approx(expected_tax)
+    # The stock position drops by the distribution with its basis unchanged; the rest stays in cash.
+    assert history["liquid_assets_by_class"][0, 0, 0] == pytest.approx(1_900_000.0)
+    assert history["cost_basis_by_class"][0, 0, 0] == pytest.approx(1_000_000.0)
+    assert history["liquid_assets_by_class"][0, 0, 2] == pytest.approx(100_000.0 - 50_000.0 - expected_tax)
+    np.testing.assert_allclose(sum(history["tax_components"].values()), history["taxes_paid"])
+
+
+def test_dividends_partly_cover_the_outflow_and_the_rest_is_sold():
+    returns = np.zeros((1, 12, 5))
+    returns[0, 0, 0] = 1.0
+    cfg = _config(dividend_yield=0.01, annual_base_expenses=80_000.0, rebalance_strategy="Never")
+    history = run_simulation(cfg, returns, _zero_inflation(cfg))
+    sale = history["expenses_paid"][0, 0] + history["taxes_paid"][0, 0] - 20_000.0  # 20k distributed
+    # After the distribution the position is 1.98M with a 1M basis.
+    assert history["realized_gains"][0, 0] == pytest.approx((1.0 - 1_000_000.0 / 1_980_000.0) * sale)
+    # Money is conserved: 2M - outflow (the distribution only moved value from stocks to cash).
+    assert history["liquid_assets"][0, 0] == pytest.approx(
+        2_000_000.0 - history["expenses_paid"][0, 0] - history["taxes_paid"][0, 0]
+    )

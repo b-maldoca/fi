@@ -137,13 +137,32 @@ def first_shortfall_year(
     return np.where(ever_shortfall, first_idx + 1.0, np.nan)
 
 
+def funded_outflows(history: dict) -> tuple[np.ndarray, np.ndarray]:
+    """Living expenses and taxes actually paid each year, shape `(duration_years, num_runs)` each.
+
+    `expenses_paid` / `taxes_paid` hold what was *due*; once a portfolio is depleted the unpaid part
+    is recorded in `unfunded_deficit` (and becomes debt). The unpaid amount is attributed to living
+    expenses first, then to taxes.
+    """
+    expenses = np.asarray(history['expenses_paid'], dtype=float)
+    taxes = np.asarray(history.get('taxes_paid', np.zeros_like(expenses)), dtype=float)
+    deficit = np.asarray(history.get('unfunded_deficit', np.zeros_like(expenses)), dtype=float)
+    funded_expenses = np.maximum(0.0, expenses - deficit)
+    funded_taxes = np.maximum(0.0, taxes - np.maximum(0.0, deficit - expenses))
+    return funded_expenses, funded_taxes
+
+
 def min_real_spending_pct(
     history: dict,
     inflation_matrix: np.ndarray,
     annual_base_expenses: float,
 ) -> np.ndarray:
-    """Minimum annual real living expenses per run as % of `annual_base_expenses`."""
-    expenses = np.asarray(history['expenses_paid'], dtype=float)
+    """Minimum annual real living expenses actually paid per run, as % of `annual_base_expenses`.
+
+    Uses funded expenses (see `funded_outflows`), so a depleted run reports the spending it could
+    really afford rather than its unpaid target.
+    """
+    expenses, _ = funded_outflows(history)
     num_runs = expenses.shape[1]
     if annual_base_expenses <= 0.0:
         return np.full(num_runs, 100.0)

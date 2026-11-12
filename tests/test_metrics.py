@@ -302,3 +302,25 @@ def test_worst_path_order_tie_breaks_by_final_real_within_groups():
     inf = np.zeros((4, 2))
     order = worst_path_order({"net_worth": nw, "initial_net_worth": 100.0}, inf, 50.0)
     assert list(order) == [1, 0, 3, 2]
+
+
+def test_funded_outflows_exclude_unpaid_amounts_of_depleted_runs():
+    import pytest
+
+    from src.metrics import funded_outflows
+
+    history = {
+        "expenses_paid": np.array([[60_000.0], [60_000.0], [60_000.0]]),
+        "taxes_paid": np.array([[1_000.0], [1_000.0], [1_000.0]]),
+        # Year 1 only part of the expenses is unpaid; year 2 nothing at all is paid.
+        "unfunded_deficit": np.array([[0.0], [20_000.0], [61_000.0]]),
+    }
+    exp, tax = funded_outflows(history)
+    np.testing.assert_allclose(exp[:, 0], [60_000.0, 40_000.0, 0.0])
+    np.testing.assert_allclose(tax[:, 0], [1_000.0, 1_000.0, 0.0])
+    # The minimum real spending of the depleted run is what it could actually pay (0%).
+    assert min_real_spending_pct(history, np.zeros((1, 3)), 60_000.0)[0] == pytest.approx(0.0)
+    # Without a deficit key nothing changes.
+    exp2, tax2 = funded_outflows({k: v for k, v in history.items() if k != "unfunded_deficit"})
+    np.testing.assert_allclose(exp2, history["expenses_paid"])
+    np.testing.assert_allclose(tax2, history["taxes_paid"])

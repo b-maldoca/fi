@@ -379,3 +379,65 @@ def test_austrian_health_insurance_input_reaches_the_simulation():
     assert next(n for n in at.number_input if n.label.startswith("Health Self-Insurance")).value == pytest.approx(83.49)
     after = pre_pension_outflows(at)
     assert len(before) == len(after) == 3 and all(b != a for b, a in zip(before, after))
+
+
+def test_switching_country_keeps_a_custom_gold_allocation():
+    # Regression: Gold's help text mentions the gold ETC only in Austria; without a stable key the
+    # changed help gave the widget a new identity and reset it to 3% (sum != 100%, app stopped).
+    at = AppTest.from_file("app.py", default_timeout=APP_TIMEOUT_S)
+    at.run()
+    next(n for n in at.number_input if n.label == "US Stocks").set_value(43.0)
+    next(n for n in at.number_input if n.label == "Gold").set_value(10.0)
+    next(n for n in at.number_input if n.label == "Bitcoin").set_value(7.0)
+    at.run()
+    assert not at.error, [e.value for e in at.error]
+    _select_austria(at)
+    at.run()
+    assert not at.exception, [e.value for e in at.exception]
+    assert not at.error, [e.value for e in at.error]
+    inputs = {n.label: n for n in at.number_input}
+    assert inputs["Gold"].value == pytest.approx(10.0)
+    assert inputs["US Stocks"].value == pytest.approx(43.0)
+
+
+def test_identical_charts_in_two_columns_do_not_crash():
+    # Regression: with 0% target and low expenses every engine reaches 100% survival, so two columns
+    # produced byte-identical charts and keyless st.plotly_chart raised StreamlitDuplicateElementId.
+    def setup(at):
+        next(n for n in at.number_input if n.label.startswith("Target Ending NW")).set_value(0.0)
+        next(n for n in at.number_input if n.label.startswith("Annual Base Expenses")).set_value(50_000)
+
+    at = _run(setup)
+    assert not at.exception, [e.value for e in at.exception]
+    assert len(at.get("plotly_chart")) == 18
+
+
+def test_tax_hover_breakdown_sums_to_the_median_total():
+    # Regression: separate medians per component (all-or-nothing Regelbesteuerungsoption) could show
+    # income tax and KESt both as 0 while the median total was ~28k EUR.
+    import json
+    import re
+
+    def setup(at):
+        _select_austria(at)
+        next(s for s in at.selectbox if s.label == "Frequency").set_value("Yearly")
+        next(s for s in at.selectbox if s.label == "Spending Model").set_value("Static")
+
+    at = _run(setup)
+    assert not at.exception, [e.value for e in at.exception]
+    charts = at.get("plotly_chart")
+    assert len(charts) == 18
+    for idx in (3, 9, 15):  # Annual Withdrawal Breakdown of each engine column
+        taxes_bar = json.loads(charts[idx].proto.spec)["data"][1]
+        assert taxes_bar["name"] == "Taxes Paid (50th Pct)"
+        y = taxes_bar["y"]
+        if isinstance(y, dict):
+            import base64
+
+            import numpy as np
+
+            y = np.frombuffer(base64.b64decode(y["bdata"]), dtype=y["dtype"])
+        for total, text in zip(y, taxes_bar["customdata"]):
+            parts = [float(v.replace(",", "")) for v in re.findall(r": ([\d,]+) EUR", text)]
+            assert len(parts) == 3
+            assert sum(parts) == pytest.approx(float(total), abs=2.0)
