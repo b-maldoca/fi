@@ -227,3 +227,21 @@ def test_capital_withdrawal_tax_matches_estv_2026():
         assert calculate_capital_withdrawal_tax(float(amount)) == pytest.approx(fed + canton + city, abs=3)
 
 
+
+
+def test_foreign_tax_credit_is_the_smaller_of_withholding_and_swiss_tax_on_the_income():
+    import pytest
+    from src.tax_engine import calculate_foreign_tax_credit
+
+    # Average Swiss rate 12% on 10,000 of foreign income: maximum 1,200 < 1,500 withheld.
+    assert calculate_foreign_tax_credit(1_500.0, 10_000.0, 12_000.0, 100_000.0) == pytest.approx(1_200.0)
+    # Average rate 20%: the 1,500 withheld is credited in full.
+    assert calculate_foreign_tax_credit(1_500.0, 10_000.0, 20_000.0, 100_000.0) == pytest.approx(1_500.0)
+    # No Swiss tax (e.g. income below the tariff threshold): nothing to credit.
+    assert calculate_foreign_tax_credit(1_500.0, 10_000.0, 0.0, 10_000.0) == 0.0
+    assert calculate_foreign_tax_credit(1_500.0, 10_000.0, 0.0, 0.0) == 0.0
+    out = calculate_foreign_tax_credit(np.array([1_500.0, 300.0]), np.array([10_000.0, 2_000.0]), 12_000.0, 100_000.0)
+    np.testing.assert_allclose(out, [1_200.0, 240.0])
+    # Foreign income above the taxable income (large AHV deduction): the credit is capped at the
+    # whole Swiss income tax and never makes it negative.
+    assert calculate_foreign_tax_credit(7_500.0, 50_000.0, 1_300.0, 26_000.0) == pytest.approx(1_300.0)

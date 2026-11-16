@@ -2564,6 +2564,7 @@ def test_ahv_non_worker_contribution_is_deducted_from_taxable_income():
         initial_liquid_wealth=3_000_000.0,
         alloc_us_stocks=1.0,
         annual_base_expenses=80_000.0,
+        us_dividend_withholding_rate=0.0,  # isolate the AHV deduction from the US withholding tax
     )
     h = run_simulation(cfg, np.zeros((1, 12, 5)), np.zeros((1, 1)))
 
@@ -2594,6 +2595,7 @@ def test_ahv_non_worker_contribution_is_deducted_from_taxable_income():
         initial_liquid_wealth=3_000_000.0,
         alloc_us_stocks=1.0,
         annual_base_expenses=80_000.0,
+        us_dividend_withholding_rate=0.0,
     )
     h_low = run_simulation(cfg_low_div, np.zeros((1, 12, 5)), np.zeros((1, 1)))
     assert h_low["taxes_paid"][0, 0] == pytest.approx(wealth_tax + ahv_contrib)

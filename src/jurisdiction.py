@@ -11,14 +11,16 @@ Design Doc §7; tax rules in `tax_engine_at`).
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Protocol
 
 import numpy as np
 
 from .tax_engine import (
+    FOREIGN_TAX_CREDIT_MIN_CLAIM,
     calculate_ahv_non_worker,
     calculate_capital_withdrawal_tax,
+    calculate_foreign_tax_credit,
     calculate_income_tax,
     calculate_wealth_tax,
 )
@@ -136,6 +138,9 @@ class AnnualTaxes:
 
     total: np.ndarray  # all taxes and mandatory contributions due at year end
     components: dict[str, np.ndarray]  # country-specific breakdown (sums to `total`)
+    # Informational amounts that are not part of the sum, e.g. the DA-1 foreign tax credit
+    # (already deducted from `income_tax`) and the taxable income the income tax was computed on.
+    details: dict[str, np.ndarray] = field(default_factory=dict)
 
 
 class Jurisdiction(Protocol):
@@ -200,9 +205,48 @@ class Jurisdiction(Protocol):
         bracket_factors: np.ndarray,
         realized_gains: np.ndarray | None = None,
         inflation_factors: np.ndarray | None = None,
+        us_dividends: np.ndarray | None = None,
     ) -> AnnualTaxes:
-        """Year-end income/wealth taxes and mandatory contributions."""
+        """Year-end income/wealth taxes and mandatory contributions.
+
+        `dividends` are all equity dividends; `us_dividends` is the part paid by US Stocks (subject
+        to US withholding tax in CH, defaults to 0).
+        """
         ...
+
+
+def year_0_tax_assessment(
+    jurisdiction: Jurisdiction, config: SimConfig, init_wealth: float, weights: np.ndarray
+) -> AnnualTaxes:
+    """Year 0 taxes for a given allocation, as a one-run `assess_annual_taxes` call.
+
+    Assumes Year-0 values: dividends on the Year-0 equity holdings, interest at `config.cash_rate`,
+    taxable wealth = liquid wealth minus the year's base expenses, no inflation or bracket indexation,
+    no realized gains (the cost basis equals the market value on day 0), and the state pension only if
+    retiring at or after the pension age.
+    """
+    one = np.ones(1)
+    us_dividends = max(0.0, init_wealth * float(weights[0])) * config.dividend_yield
+    dividends = max(0.0, init_wealth * float(weights[0] + weights[1])) * config.dividend_yield
+    interest = max(0.0, init_wealth * float(weights[2])) * max(0.0, config.cash_rate)
+    annual_pension = (
+        jurisdiction.defaults.pension_payments_per_year * config.monthly_ahv_pension
+        if config.start_age >= STATE_PENSION_AGE
+        else 0.0
+    )
+    return jurisdiction.assess_annual_taxes(
+        config,
+        current_age=config.start_age,
+        total_liquid_end=np.array([init_wealth], dtype=float),
+        current_expenses=np.array([config.annual_base_expenses], dtype=float),
+        dividends=np.array([dividends]),
+        interest=np.array([interest]),
+        annual_pension=np.array([annual_pension], dtype=float),
+        bracket_factors=one,
+        realized_gains=np.zeros(1),
+        inflation_factors=one,
+        us_dividends=np.array([us_dividends]),
+    )
 
 
 class Switzerland:
@@ -244,26 +288,7 @@ class Switzerland:
         return init_wealth
 
     def estimate_year_0_taxes_for_weights(self, config: SimConfig, init_wealth: float, weights: np.ndarray) -> float:
-        taxable_wealth = max(0.0, init_wealth - config.annual_base_expenses)
-        wealth_tax = float(calculate_wealth_tax(taxable_wealth, config.cantonal_multiplier, config.municipal_multiplier))
-        ahv_contrib = float(calculate_ahv_non_worker(taxable_wealth)) if config.start_age < STATE_PENSION_AGE else 0.0
-
-        equities = max(0.0, init_wealth * float(weights[0] + weights[1]))
-        dividends = equities * config.dividend_yield
-        cash = max(0.0, init_wealth * float(weights[2]))
-        interest = cash * max(0.0, config.cash_rate)
-        annual_ahv = (
-            self.defaults.pension_payments_per_year * config.monthly_ahv_pension
-            if config.start_age >= STATE_PENSION_AGE
-            else 0.0
-        )
-
-        # Mandatory AHV/IV/EO non-worker contributions are deductible from taxable income
-        # (Art. 33 Abs. 1 lit. d DBG / § 31 Abs. 1 lit. d StG ZH).
-        taxable_income = max(0.0, dividends + interest + annual_ahv - ahv_contrib)
-        income_tax = float(calculate_income_tax(taxable_income, config.cantonal_multiplier, config.municipal_multiplier))
-
-        return income_tax + wealth_tax + ahv_contrib
+        return float(year_0_tax_assessment(self, config, init_wealth, weights).total[0])
 
     def liquidate_pensions(
         self,
@@ -366,10 +391,22 @@ class Switzerland:
         bracket_factors: np.ndarray,
         realized_gains: np.ndarray | None = None,
         inflation_factors: np.ndarray | None = None,
+        us_dividends: np.ndarray | None = None,
     ) -> AnnualTaxes:
-        """Zurich wealth tax, AHV non-worker contributions (< 65) and Federal + Zurich income tax.
+        """Zurich wealth tax, AHV non-worker contributions (< 65), Federal + Zurich income tax and the
+        US withholding tax on `us_dividends` net of the DA-1 foreign tax credit.
 
-        `realized_gains` and `inflation_factors` are ignored (no capital gains tax in CH).
+        US withholding (`config.us_dividend_withholding_rate`, 15% under the treaty with a W-8BEN):
+        - `config.us_withholding_credit=True` (US-domiciled holdings): the dividends are declared gross
+          and the withholding is credited against the Swiss income tax up to the Swiss tax on those
+          dividends (`calculate_foreign_tax_credit`), but only if it is at least CHF 100; below that
+          the dividends are declared net of the withholding and nothing is credited.
+        - `False` (e.g. an Ireland-domiciled ETF): the fund loses the withholding, the investor is
+          taxed on the net distribution and has nothing to credit.
+
+        Components: `income_tax` (after the credit), `wealth_tax`, `ahv_contributions` and
+        `us_withholding_tax` (the gross amount withheld); details: `foreign_tax_credit` and
+        `taxable_income`. `realized_gains` and `inflation_factors` are ignored (no capital gains tax).
         """
         num_runs = total_liquid_end.shape[0]
         # Wealth Tax and AHV non-worker tax are assessed on wealth *after* deducting living expenses
@@ -383,17 +420,34 @@ class Switzerland:
         ahv_contrib = np.zeros(num_runs)
         ahv_contrib[ahv_mask] = indexed_tax(calculate_ahv_non_worker, taxable_wealth[ahv_mask], bracket_factors[ahv_mask])
 
+        us_divs = np.zeros(num_runs) if us_dividends is None else np.maximum(0.0, us_dividends)
+        withholding = config.us_dividend_withholding_rate * us_divs
+        # The CHF 100 minimum is a fixed nominal amount (not indexed).
+        claims_credit = config.us_withholding_credit & (withholding >= FOREIGN_TAX_CREDIT_MIN_CLAIM)
+        declared_dividends = np.where(claims_credit, dividends, dividends - withholding)
+
         # Mandatory AHV/IV/EO non-worker contributions are deductible from taxable income
         # (Art. 33 Abs. 1 lit. d DBG / § 31 Abs. 1 lit. d StG ZH).
-        taxable_income = np.maximum(0.0, dividends + interest + annual_pension - ahv_contrib)
-        income_tax = indexed_tax(
+        taxable_income = np.maximum(0.0, declared_dividends + interest + annual_pension - ahv_contrib)
+        income_tax_before_credit = indexed_tax(
             calculate_income_tax, taxable_income, bracket_factors, config.cantonal_multiplier, config.municipal_multiplier
         )
+        credit = np.where(
+            claims_credit,
+            calculate_foreign_tax_credit(withholding, us_divs, income_tax_before_credit, taxable_income),
+            0.0,
+        )
+        income_tax = income_tax_before_credit - credit
 
+        components = {"income_tax": income_tax, "wealth_tax": wealth_tax, "ahv_contributions": ahv_contrib}
         total = income_tax + wealth_tax + ahv_contrib
+        if config.us_dividend_withholding_rate > 0.0:
+            components["us_withholding_tax"] = withholding
+            total = total + withholding
         return AnnualTaxes(
             total=total,
-            components={"income_tax": income_tax, "wealth_tax": wealth_tax, "ahv_contributions": ahv_contrib},
+            components=components,
+            details={"foreign_tax_credit": credit, "taxable_income": taxable_income},
         )
 
 
@@ -438,20 +492,7 @@ class Austria:
         day 0 (PRD decision 5) and the Year-0 price moves before the year-end sale are not known at
         estimation time. The simulation itself taxes whatever gain that sale actually realizes.
         """
-        equities = max(0.0, init_wealth * float(weights[0] + weights[1]))
-        dividends = equities * config.dividend_yield
-        cash = max(0.0, init_wealth * float(weights[2]))
-        interest = cash * max(0.0, config.cash_rate)
-        annual_pension = (
-            self.defaults.pension_payments_per_year * config.monthly_ahv_pension
-            if config.start_age >= STATE_PENSION_AGE
-            else 0.0
-        )
-        taxes = calculate_annual_taxes_at(annual_pension, dividends, 0.0, interest)
-        self_insurance = 12.0 * config.health_insurance_monthly if self._health_self_insurance_due(
-            config, config.start_age
-        ) else 0.0
-        return float(taxes["total"]) + self_insurance
+        return float(year_0_tax_assessment(self, config, init_wealth, weights).total[0])
 
     def liquidate_pensions(
         self,
@@ -492,12 +533,16 @@ class Austria:
         bracket_factors: np.ndarray,
         realized_gains: np.ndarray | None = None,
         inflation_factors: np.ndarray | None = None,
+        us_dividends: np.ndarray | None = None,
     ) -> AnnualTaxes:
         """Income tax (pension; all capital income if the Regelbesteuerungsoption is cheaper),
         KESt and health insurance (6% on the pension, plus § 16 ASVG self-insurance before the
         pension starts). Bracket edges, the pensioner credit and the EUR 620 allowance are indexed
         with `bracket_factors` via positive homogeneity; the self-insurance contribution with CPI
         plus real wage growth (see `health_self_insurance_annual`).
+
+        `us_dividends` is ignored: the 15% US withholding tax is assumed fully credited against the
+        27.5% KESt (PRD §8.2), so it does not change the total.
         """
         gains = np.zeros(total_liquid_end.shape[0]) if realized_gains is None else realized_gains
         inflation = np.ones(total_liquid_end.shape[0]) if inflation_factors is None else inflation_factors

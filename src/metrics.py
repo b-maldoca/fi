@@ -152,6 +152,25 @@ def funded_outflows(history: dict) -> tuple[np.ndarray, np.ndarray]:
     return funded_expenses, funded_taxes
 
 
+def effective_tax_rate(history: dict, inflation_matrix: np.ndarray) -> np.ndarray:
+    """Lifetime effective tax rate per run: real taxes paid / real total withdrawals (expenses + taxes).
+
+    The share of every franc (euro) taken out of the portfolio that goes to taxes and mandatory
+    contributions over the whole horizon. Uses funded outflows (see `funded_outflows`) deflated by
+    each run's own price level; 0 for a run that withdrew nothing.
+    """
+    expenses, taxes = funded_outflows(history)
+    price_level = cumulative_inflation(inflation_matrix).T
+    real_taxes = np.sum(taxes / price_level, axis=0)
+    real_total = np.sum((expenses + taxes) / price_level, axis=0)
+    return np.divide(real_taxes, real_total, out=np.zeros_like(real_taxes), where=real_total > 0.0)
+
+
+def lifetime_real_totals(values: np.ndarray, inflation_matrix: np.ndarray) -> np.ndarray:
+    """Sum over the horizon of `values` (shape `(duration_years, num_runs)`) in today's money, per run."""
+    return np.sum(np.asarray(values, dtype=float) / cumulative_inflation(inflation_matrix).T, axis=0)
+
+
 def min_real_spending_pct(
     history: dict,
     inflation_matrix: np.ndarray,

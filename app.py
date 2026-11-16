@@ -24,24 +24,36 @@ from src.metrics import (
     compute_success_mask,
     compute_survival_curves,
     cumulative_inflation,
+    effective_tax_rate,
     format_depletion_label,
     format_shortfall_label,
     funded_outflows,
+    lifetime_real_totals,
     min_real_net_worth,
     real_final_net_worth,
     summarize_failure_timing,
     worst_path_order,
     years_in_shortfall,
 )
+from src.safe_spending import (
+    DEFAULT_SAFE_SPENDING_SUCCESS_PCT,
+    SafeSpendingResult,
+    find_highest_safe_spending,
+)
 from src.simulation_engine import (
     SimConfig,
+    estimate_year_0_tax_breakdown,
     estimate_year_0_taxes,
     generate_monte_carlo_inflation,
     generate_monte_carlo_returns,
     historic_lognormal_params,
     run_simulation,
 )
-from src.tax_engine import ZURICH_CANTONAL_MULTIPLIER, ZURICH_CITY_MUNICIPAL_MULTIPLIER
+from src.tax_engine import (
+    US_DIVIDEND_WITHHOLDING_RATE,
+    ZURICH_CANTONAL_MULTIPLIER,
+    ZURICH_CITY_MUNICIPAL_MULTIPLIER,
+)
 from src.tax_engine_at import HEALTH_SELF_INSURANCE_MONTHLY, HEALTH_SELF_INSURANCE_REAL_GROWTH
 
 # Historic return data per country. Both generated modules share the calendar and the function
@@ -82,8 +94,7 @@ SWISS_PROXY_NOTE = (
 )
 
 
-@st.cache_data(show_spinner=False)
-def _run_cached_mc(
+def _mc_matrices(
     config: SimConfig,
     ret_us: float,
     ret_non_us: float,
@@ -93,7 +104,7 @@ def _run_cached_mc(
     vol_eq: float,
     vol_gold: float,
     vol_btc: float,
-) -> tuple[dict, np.ndarray]:
+) -> tuple[np.ndarray, np.ndarray]:
     ret_mat = generate_monte_carlo_returns(
         num_runs=config.num_runs,
         duration_years=config.duration_years,
@@ -115,18 +126,12 @@ def _run_cached_mc(
         inflation_std=config.inflation_std,
         seed=config.seed,
     )
-    return run_simulation(config, ret_mat, inf_mat), inf_mat
+    return ret_mat, inf_mat
 
 
-@st.cache_data(show_spinner=False)
-def _run_cached_boot(
-    config: SimConfig,
-    block_size_years: int,
-    ret_btc: float,
-    vol_btc: float,
-) -> tuple[dict, np.ndarray]:
+def _boot_matrices(config: SimConfig, block_size_years: int, ret_btc: float, vol_btc: float) -> tuple[np.ndarray, np.ndarray]:
     hist = _HISTORY[config.country]
-    ret_mat, inf_mat = hist.module.generate_bootstrapped_data(
+    return hist.module.generate_bootstrapped_data(
         num_runs=config.num_runs,
         duration_years=config.duration_years,
         seed=config.seed,
@@ -137,15 +142,9 @@ def _run_cached_boot(
         stationary=True,
         **{hist.ppp_kw: config.real_chf_appreciation},
     )
-    return run_simulation(config, ret_mat, inf_mat), inf_mat
 
 
-@st.cache_data(show_spinner=False)
-def _run_cached_hist(
-    config: SimConfig,
-    ret_btc: float,
-    vol_btc: float,
-) -> tuple[dict, np.ndarray]:
+def _hist_matrices(config: SimConfig, ret_btc: float, vol_btc: float) -> tuple[np.ndarray, np.ndarray]:
     hist = _HISTORY[config.country]
     ret_mat = hist.module.get_historic_return_matrix(
         config.duration_years,
@@ -155,8 +154,28 @@ def _run_cached_hist(
         btc_vol=vol_btc,
         **{hist.ppp_kw: config.real_chf_appreciation},
     )
-    inf_mat = hist.module.get_historic_inflation_matrix(config.duration_years)
+    return ret_mat, hist.module.get_historic_inflation_matrix(config.duration_years)
+
+
+# The return/inflation paths of each method are built by one of the functions above from its
+# arguments, so the paths are a pure function of (method, config, args) and both the simulation and
+# the highest-safe-spending search can be cached on them.
+_MATRIX_BUILDERS = {"mc": _mc_matrices, "boot": _boot_matrices, "hist": _hist_matrices}
+
+
+@st.cache_data(show_spinner=False)
+def _run_cached(method: str, config: SimConfig, *args) -> tuple[dict, np.ndarray]:
+    ret_mat, inf_mat = _MATRIX_BUILDERS[method](config, *args)
     return run_simulation(config, ret_mat, inf_mat), inf_mat
+
+
+@st.cache_data(show_spinner=False)
+def _safe_spending_cached(
+    method: str, config: SimConfig, success_pct: float, target_success_pct: float, *args
+) -> SafeSpendingResult:
+    ret_mat, inf_mat = _MATRIX_BUILDERS[method](config, *args)
+    return find_highest_safe_spending(config, ret_mat, inf_mat, success_pct, target_success_pct)
+
 
 st.set_page_config(page_title="Early Retirement Simulator", layout="wide")
 
@@ -281,6 +300,28 @@ success_pct = st.sidebar.number_input(
     format="%.1f",
     help="The percentage of inflation-adjusted starting net worth you want to preserve at the end of the simulation. 0.0% means you just want to avoid going broke (survival)."
 )
+safe_spending_enabled = st.sidebar.checkbox(
+    "Find Highest Safe Spending",
+    value=True,
+    key="safe_spending_enabled",
+    help="Searches, for each simulation method, the highest Annual Base Expenses that still reaches the target "
+         "success rate below. Reruns each simulation about 7–10 times (a few seconds, cached); switch it off for "
+         "faster edits.",
+)
+safe_spending_target_pct = st.sidebar.number_input(
+    "Highest Safe Spending: Target Success (%)",
+    value=DEFAULT_SAFE_SPENDING_SUCCESS_PCT,
+    min_value=1.0,
+    max_value=100.0,
+    step=5.0,
+    format="%.1f",
+    key="safe_spending_target_pct",
+    disabled=not safe_spending_enabled,
+    help="Success rate the Highest Safe Spending metric must reach in each simulation method. It reports the "
+         "highest Annual Base Expenses (in steps of 1,000, taxes on top) whose probability of success under the "
+         "criterion above is at least this value, keeping all other inputs. 100% in Historic Backtesting is the "
+         "classic 'no historical cohort failed' safe withdrawal amount.",
+)
 
 # 2. Initial Assets
 st.sidebar.subheader(f"Initial Assets ({CCY})")
@@ -369,6 +410,27 @@ spending_strategy = st.sidebar.selectbox(
 total_start_nw = initial_liquid_wealth + initial_pillar_2 + sum(pillar_3a_accounts)
 cantonal_multiplier = ZURICH_CANTONAL_MULTIPLIER  # Zurich Cantonal Steuerfuss for 2026
 
+# Options of the "US Dividend Withholding Tax" input (Switzerland): (withholding rate, DA-1 credit).
+US_WITHHOLDING_OPTIONS = {
+    "US-domiciled (15% withheld, DA-1 credit)": (US_DIVIDEND_WITHHOLDING_RATE, True),
+    "Ireland-domiciled ETF (15% lost in the fund)": (US_DIVIDEND_WITHHOLDING_RATE, False),
+    "Ignore US withholding tax": (0.0, True),
+}
+
+
+def _live_us_withholding() -> tuple[float, bool]:
+    """Current US withholding setting (the input is rendered further down the sidebar)."""
+    if IS_AT:
+        # Austria credits the 15% US withholding tax against the 27.5% KESt (PRD §8.2): no effect.
+        return US_DIVIDEND_WITHHOLDING_RATE, True
+    # Streamlit drops the state of a widget that is not rendered, so an Austria round trip would
+    # reset the choice; it is kept in a plain session key and restored before the widget is created.
+    if "us_withholding_choice" not in st.session_state:
+        st.session_state["us_withholding_choice"] = st.session_state.get(
+            "_us_withholding_saved", next(iter(US_WITHHOLDING_OPTIONS))
+        )
+    return US_WITHHOLDING_OPTIONS[st.session_state["us_withholding_choice"]]
+
 
 def get_year0_taxes(exp: float) -> float:
     try:
@@ -377,6 +439,7 @@ def get_year0_taxes(exp: float) -> float:
         live_ahv = float(st.session_state.get("monthly_ahv_input", 2000))
         live_muni_mult = float(st.session_state.get("municipal_multiplier_pct", ZURICH_CITY_MUNICIPAL_MULTIPLIER * 100.0)) / 100.0
         live_health = float(st.session_state.get("health_insurance_monthly_input", HEALTH_SELF_INSURANCE_MONTHLY))
+        live_wht_rate, live_wht_credit = _live_us_withholding()
         temp_config = SimConfig(
             num_runs=1,
             duration_years=1,
@@ -402,6 +465,8 @@ def get_year0_taxes(exp: float) -> float:
             municipal_multiplier=live_muni_mult,
             country=COUNTRY,
             health_insurance_monthly=live_health,
+            us_dividend_withholding_rate=live_wht_rate,
+            us_withholding_credit=live_wht_credit,
         )
         return estimate_year_0_taxes(temp_config)
     except ValueError:
@@ -431,6 +496,7 @@ _vanguard_sync_sig = (
     round(float(st.session_state.get("monthly_ahv_input", 2000)), 2),
     round(float(st.session_state.get("municipal_multiplier_pct", ZURICH_CITY_MUNICIPAL_MULTIPLIER * 100.0)), 2),
     round(float(st.session_state.get("health_insurance_monthly_input", HEALTH_SELF_INSURANCE_MONTHLY)), 2),
+    _live_us_withholding(),
 )
 
 if '_synced_twr_pct' not in st.session_state or st.session_state.get('_last_vanguard_sync_sig') != _vanguard_sync_sig:
@@ -531,6 +597,29 @@ if IS_AT:
 else:
     monthly_ahv = st.sidebar.number_input("Expected Monthly AHV Pension from age 65 (CHF)", value=2000, min_value=0, step=100, key="monthly_ahv_input", help="The monthly AHV pension you expect to receive starting at age 65 (in today's CHF, adjusted annually for CPI inflation in the simulation).")
 dividend_yield = st.sidebar.number_input("Dividend Yield (%)", value=1.5, min_value=0.0, step=0.1, format="%.1f", key="dividend_yield_pct", help="Expected annual dividend yield on US and Non-US equity holdings.") / 100.0
+
+if not IS_AT:
+    _live_us_withholding()  # restores a choice kept across an Austria round trip
+    st.sidebar.selectbox(
+        "US Dividend Withholding Tax",
+        list(US_WITHHOLDING_OPTIONS),
+        key="us_withholding_choice",
+        help=(
+            "How the dividends of your US Stocks sleeve are held. The US withholds 15% (treaty rate with a "
+            "W-8BEN) of the dividends.\n\n"
+            "- US-domiciled (single US stocks or US ETFs, e.g. at Schwab or IBKR): you declare the gross dividends "
+            "and claim the 15% back against your Swiss income tax with form DA-1, but only up to the Swiss tax on "
+            "those dividends, and only if the withholding is at least CHF 100 a year (otherwise the dividends are "
+            "taxed net and nothing is credited). With little other income the Swiss tax on the dividends is below "
+            "15%, so part of the withholding is lost.\n"
+            "- Ireland-domiciled ETF: the fund loses the 15% and you are taxed on the net distribution; there is "
+            "nothing to credit.\n"
+            "- Ignore: no withholding tax (previous model).\n\n"
+            "Non-US dividends are modelled without foreign withholding tax."
+        ),
+    )
+    st.session_state["_us_withholding_saved"] = st.session_state["us_withholding_choice"]
+us_withholding_rate, us_withholding_credit = _live_us_withholding()
 
 
 def _cagr_pct(annual_returns: np.ndarray) -> float:
@@ -821,6 +910,8 @@ def create_config(num_runs: int, *, mc_inflation: bool = True) -> SimConfig:
         country=COUNTRY,
         health_insurance_monthly=float(health_insurance_monthly),
         health_insurance_real_growth=float(health_insurance_real_growth),
+        us_dividend_withholding_rate=us_withholding_rate,
+        us_withholding_credit=us_withholding_credit,
     )
 
 
@@ -828,18 +919,21 @@ config_mc = create_config(mc_num_runs, mc_inflation=True)
 config_boot = create_config(boot_num_runs, mc_inflation=False)
 config_hist = create_config(hist_num_runs, mc_inflation=False)
 
+mc_args = (ret_us, ret_non_us, ret_cash, ret_gold, ret_btc, vol_eq, vol_gold, vol_btc)
+boot_args = (boot_block_years, ret_btc, vol_btc)
+hist_args = (ret_btc, vol_btc)
 with st.spinner('Running Monte Carlo simulations...'):
-    history_mc, mc_inflation_matrix = _run_cached_mc(
-        config_mc, ret_us, ret_non_us, ret_cash, ret_gold, ret_btc, vol_eq, vol_gold, vol_btc
-    )
+    history_mc, mc_inflation_matrix = _run_cached("mc", config_mc, *mc_args)
 with st.spinner('Running Bootstrapping simulations...'):
-    history_boot, boot_inflation_matrix = _run_cached_boot(
-        config_boot, boot_block_years, ret_btc, vol_btc
-    )
+    history_boot, boot_inflation_matrix = _run_cached("boot", config_boot, *boot_args)
 with st.spinner('Running Historic Backtesting simulations...'):
-    history_hist, hist_inflation_matrix = _run_cached_hist(
-        config_hist, ret_btc, vol_btc
-    )
+    history_hist, hist_inflation_matrix = _run_cached("hist", config_hist, *hist_args)
+safe_hist = safe_boot = safe_mc = None
+if safe_spending_enabled:
+    with st.spinner(f'Searching the highest safe spending ({safe_spending_target_pct:g}% success)...'):
+        safe_hist = _safe_spending_cached("hist", config_hist, success_pct, safe_spending_target_pct, *hist_args)
+        safe_boot = _safe_spending_cached("boot", config_boot, success_pct, safe_spending_target_pct, *boot_args)
+        safe_mc = _safe_spending_cached("mc", config_mc, success_pct, safe_spending_target_pct, *mc_args)
 
 
 def _build_hist_eff_caption(history, config, inflation_matrix, success_pct) -> str:
@@ -858,6 +952,18 @@ def _build_hist_eff_caption(history, config, inflation_matrix, success_pct) -> s
         f"(from {int(eff_stats['n_cohorts'])} overlapping {config.duration_years}y windows) · "
         f"<b>90% CI: {eff_stats['ci_low_pct']:.0f}%–{eff_stats['ci_high_pct']:.0f}%</b>"
     )
+
+
+# Display names of the `tax_components` keys (the residual of `taxes_paid` is the capital withdrawal tax).
+TAX_COMPONENT_LABELS = {
+    "income_tax": "Income tax" if IS_AT else "Income tax (after DA-1 credit)",
+    "wealth_tax": "Wealth tax",
+    "ahv_contributions": "AHV contributions",
+    "us_withholding_tax": "US withholding tax",
+    "kest": "KESt (capital income tax)",
+    "health_insurance": "Health insurance",
+    "capital_withdrawal_tax": "Capital withdrawal tax",
+}
 
 
 _TLDR_BADGES = {
@@ -883,7 +989,48 @@ def _tldr_help(success_pct: float) -> str:
     )
 
 
-def render_results(history, config, num_runs, title, inflation_matrix, success_pct, hist_eff_caption: str = ""):
+def _render_safe_spending(container, result: SafeSpendingResult, config: SimConfig) -> None:
+    """Highest Safe Spending metric: highest Annual Base Expenses meeting the target success rate."""
+    label = f"Highest Safe Spending ({safe_spending_target_pct:g}%)"
+    current = config.annual_base_expenses
+    start_nw = config.initial_liquid_wealth + config.initial_pillar_2 + sum(config.initial_pillar_3a_accounts)
+    if not result.reachable:
+        container.metric(
+            label,
+            "Not reachable",
+            help=f"Even with zero living expenses the probability of success stays below {safe_spending_target_pct:g}% "
+                 f"({result.success_rate_pct:.1f}%): taxes alone or the ending-wealth target are out of reach.",
+        )
+        return
+    outflow = result.expenses + result.year_0_taxes
+    coverage = f" Your Annual Base Expenses ({current:,.0f} {CCY}) are {current / result.expenses * 100:.0f}% of it." if result.expenses > 0 else ""
+    container.metric(
+        label,
+        f"{'≥ ' if result.capped else ''}{result.expenses:,.0f} {CCY}",
+        delta=f"{result.expenses - current:+,.0f} {CCY} vs. current",
+        help=(
+            f"Highest Annual Base Expenses (today's {CCY}, excluding taxes, in steps of 1,000) whose probability of "
+            f"success in this method is at least {safe_spending_target_pct:g}% ({result.success_rate_pct:.1f}% at this "
+            "level), with every other input unchanged."
+            + (" Under Vanguard Dynamic spending the target withdrawal rate scales with the expenses." if config.spending_strategy == "Vanguard Dynamic" else "")
+            + f" Year-0 outflow incl. estimated taxes: {outflow:,.0f} {CCY}"
+            + (f" ({outflow / start_nw * 100:.2f}% of starting net worth)." if start_nw > 0 else ".")
+            + coverage
+            + (" The target is met even when spending the whole starting net worth in a year, so this is a lower bound." if result.capped else "")
+        ),
+    )
+
+
+def render_results(
+    history,
+    config,
+    num_runs,
+    title,
+    inflation_matrix,
+    success_pct,
+    hist_eff_caption: str = "",
+    safe_result: SafeSpendingResult | None = None,
+):
     header_tooltips = {
         "Historic Backtesting": f"Replays exact contiguous historical sequences (e.g. 1928–1978, 1929–1979) from {len(HISTORIC_YEARS)} years of historical {HIST.data_label}{(" (" + SWISS_PROXY_NOTE + ")") if IS_AT else ""}. Because rolling multi-decade cohorts overlap heavily, effective sample size N_eff = T / D is surfaced alongside a 90% Wilson confidence band, and tail lines show Worst/Best Cohort instead of unsupported 5th/95th percentiles.",
         "Historic Bootstrapping": "Creates thousands of distinct retirement scenarios using the Politis–Romano (1994) Stationary Bootstrap with circular wrap-around and geometric block lengths (default mean 5 years). Preserves intra-year and multi-year macroeconomic cycles while sampling all historical years with equal 1/T probability.",
@@ -1013,6 +1160,25 @@ def render_results(history, config, num_runs, title, inflation_matrix, success_p
             f"across all {config.duration_years} simulation years for every run."
         )
     col_r1c_2.metric("Shortfall Age (Min / Med)", shortfall_age_val, help=shortfall_age_help)
+
+    # Row 1d: Highest Safe Spending & Lifetime Effective Tax Rate
+    col_r1d_1, col_r1d_2 = st.columns(2)
+    if safe_result is not None:
+        _render_safe_spending(col_r1d_1, safe_result, config)
+    med_eff_rate = float(np.median(effective_tax_rate(history, inflation_matrix))) * 100.0
+    eff_help = (
+        "Median across runs of the lifetime share of withdrawals that goes to taxes: real taxes and mandatory "
+        "contributions paid divided by real expenses plus taxes paid (unpaid amounts of depleted portfolios "
+        f"excluded). Median lifetime real taxes: {np.median(lifetime_real_totals(funded_outflows(history)[1], inflation_matrix)):,.0f} {CCY}."
+    )
+    withheld = history.get("tax_components", {}).get("us_withholding_tax")
+    if withheld is not None:
+        credit = history.get("tax_details", {}).get("foreign_tax_credit", np.zeros_like(withheld))
+        eff_help += (
+            f"\n\nUS withholding tax (median lifetime, real): {np.median(lifetime_real_totals(withheld, inflation_matrix)):,.0f} {CCY} "
+            f"withheld, {np.median(lifetime_real_totals(credit, inflation_matrix)):,.0f} {CCY} credited via DA-1."
+        )
+    col_r1d_2.metric("Effective Tax Rate (Lifetime)", f"{med_eff_rate:.1f}%", help=eff_help)
 
     # Withdrawals actually paid: a depleted portfolio cannot pay its target expenses and taxes (the
     # unpaid part is `unfunded_deficit`, carried as debt), so it is excluded from every outflow figure.
@@ -1249,13 +1415,6 @@ def render_results(history, config, num_runs, title, inflation_matrix, success_p
     bad_expenses = funded_exp_path * cpi_scale_to_median
     bad_taxes = funded_tax_path * cpi_scale_to_median
 
-    tax_component_labels = {
-        "income_tax": "Income tax",
-        "wealth_tax": "Wealth tax",
-        "ahv_contributions": "AHV contributions",
-        "kest": "KESt (capital income tax)",
-        "health_insurance": "Health insurance",
-    }
     components = dict(history.get("tax_components", {}))
     if components:
         residual = history['taxes_paid'] - sum(components.values())
@@ -1269,7 +1428,7 @@ def render_results(history, config, num_runs, title, inflation_matrix, success_p
     total_sum = np.sum(total_by_year, axis=1)
     component_lines = [
         (
-            tax_component_labels.get(name, name),
+            TAX_COMPONENT_LABELS.get(name, name),
             median_taxes * np.divide(
                 np.sum(values, axis=1), total_sum, out=np.zeros_like(total_sum), where=total_sum > 0
             ),
@@ -1566,10 +1725,80 @@ def render_results(history, config, num_runs, title, inflation_matrix, success_p
 
 
 hist_eff_caption = _build_hist_eff_caption(history_hist, config_hist, hist_inflation_matrix, success_pct)
+
+
+def render_year_0_taxes(config: SimConfig) -> None:
+    """Headline row: the deterministic Year-0 tax estimate with its breakdown and effective rates."""
+    y0 = estimate_year_0_tax_breakdown(config)
+    total = float(y0.total[0])
+    outflow = config.annual_base_expenses + total
+    start_nw = config.initial_liquid_wealth + config.initial_pillar_2 + sum(config.initial_pillar_3a_accounts)
+    components = {name: float(values[0]) for name, values in y0.components.items()}
+    credit = float(y0.details.get("foreign_tax_credit", np.zeros(1))[0])
+    taxable_income = float(y0.details.get("taxable_income", np.zeros(1))[0])
+
+    breakdown = "\n".join(
+        f"- {TAX_COMPONENT_LABELS.get(name, name)}: {value:,.0f} {CCY}" for name, value in components.items()
+    )
+    taxes_help = f"Estimated taxes and mandatory contributions in the first year:\n{breakdown}"
+    if taxable_income > 0.0:
+        income_tax_before_credit = components.get("income_tax", 0.0) + credit
+        taxes_help += (
+            f"\n\nAverage income tax rate: {income_tax_before_credit / taxable_income * 100:.1f}% of the taxable "
+            f"income of {taxable_income:,.0f} {CCY} (before the DA-1 credit)."
+        )
+
+    st.subheader(
+        "Year-0 Taxes",
+        help=(
+            "Deterministic estimate for the first retirement year, the same one used to size the Cash Tent and to "
+            "sync the Target Withdrawal Rate: dividends on the Year-0 holdings, interest at the cash rate"
+            + ("" if IS_AT else ", wealth tax on liquid wealth minus the year's expenses")
+            + ", no inflation. The simulated taxes of every year and method are in the charts below."
+        ),
+    )
+    cols = st.columns(3 if IS_AT else 4)
+    cols[0].metric("Annual Taxes (Year 0)", f"{total:,.0f} {CCY}", help=taxes_help)
+    cols[1].metric(
+        "Effective Tax Rate (Year 0)",
+        f"{(total / outflow * 100.0) if outflow > 0 else 0.0:.1f}%",
+        help=f"Share of the Year-0 withdrawal (expenses {config.annual_base_expenses:,.0f} + taxes {total:,.0f} {CCY}) "
+             "that goes to taxes and mandatory contributions.",
+    )
+    cols[2].metric(
+        "Gross Withdrawal Rate (Year 0)",
+        f"{(outflow / start_nw * 100.0) if start_nw > 0 else 0.0:.2f}%",
+        help=f"Year-0 expenses plus taxes ({outflow:,.0f} {CCY}) as a share of the starting net worth "
+             f"({start_nw:,.0f} {CCY}).",
+    )
+    if not IS_AT:
+        withheld = components.get("us_withholding_tax", 0.0)
+        if config.us_dividend_withholding_rate == 0.0:
+            cols[3].metric("US Withholding (Year 0)", "Ignored", help="US withholding tax is switched off in the sidebar.")
+        else:
+            cols[3].metric(
+                "US Withholding (Year 0)",
+                f"{withheld:,.0f} {CCY}",
+                delta=f"DA-1 credit {credit:,.0f} {CCY}" if credit > 0.0 else None,
+                help=(
+                    f"{config.us_dividend_withholding_rate * 100:.0f}% US withholding tax on the Year-0 US Stocks dividends: "
+                    f"{withheld:,.0f} {CCY}, of which {credit:,.0f} {CCY} is credited against the Swiss income tax "
+                    f"(form DA-1) and {withheld - credit:,.0f} {CCY} is lost. "
+                    + (
+                        "The credit is capped at the Swiss income tax on those dividends and needs at least CHF 100 of "
+                        "withholding a year."
+                        if config.us_withholding_credit
+                        else "An Ireland-domiciled ETF cannot credit the withholding it loses inside the fund."
+                    )
+                ),
+            )
+
+
+render_year_0_taxes(config_hist)
 col_hist, col_boot, col_mc = st.columns(3)
 with col_hist:
-    render_results(history_hist, config_hist, hist_num_runs, "Historic Backtesting", hist_inflation_matrix, success_pct, hist_eff_caption)
+    render_results(history_hist, config_hist, hist_num_runs, "Historic Backtesting", hist_inflation_matrix, success_pct, hist_eff_caption, safe_hist)
 with col_boot:
-    render_results(history_boot, config_boot, boot_num_runs, "Historic Bootstrapping", boot_inflation_matrix, success_pct, hist_eff_caption)
+    render_results(history_boot, config_boot, boot_num_runs, "Historic Bootstrapping", boot_inflation_matrix, success_pct, hist_eff_caption, safe_boot)
 with col_mc:
-    render_results(history_mc, config_mc, mc_num_runs, "Monte Carlo", mc_inflation_matrix, success_pct, hist_eff_caption)
+    render_results(history_mc, config_mc, mc_num_runs, "Monte Carlo", mc_inflation_matrix, success_pct, hist_eff_caption, safe_mc)

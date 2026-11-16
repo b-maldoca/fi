@@ -3,11 +3,14 @@ from dataclasses import dataclass, field
 from .jurisdiction import (
     COUNTRY_DEFAULTS,
     STATE_PENSION_AGE,
+    AnnualTaxes,
     get_jurisdiction,
     indexed_tax,
     unsupported_country_message,
+    year_0_tax_assessment,
 )
 from .tax_engine import (
+    US_DIVIDEND_WITHHOLDING_RATE,
     ZURICH_CANTONAL_MULTIPLIER,
     ZURICH_CITY_MUNICIPAL_MULTIPLIER,
 )
@@ -110,6 +113,14 @@ class SimConfig:
     # Aufwertungszahl, so it is indexed with CPI x (1 + this)^year. Ignored in CH.
     health_insurance_real_growth: float = HEALTH_SELF_INSURANCE_REAL_GROWTH
 
+    # CH only: US withholding tax on the dividends of the US Stocks sleeve (15% treaty rate with a
+    # W-8BEN; 0 ignores it). `us_withholding_credit=True` models US-domiciled holdings (single US
+    # stocks or US ETFs): the withholding is credited against Swiss income tax via form DA-1, up to the
+    # Swiss tax on those dividends. False models e.g. an Ireland-domiciled ETF, where the fund loses
+    # the withholding and there is nothing to credit. Ignored in AT (assumed fully credited, PRD §8.2).
+    us_dividend_withholding_rate: float = US_DIVIDEND_WITHHOLDING_RATE
+    us_withholding_credit: bool = True
+
     def __post_init__(self):
         if self.country not in COUNTRY_DEFAULTS:
             raise ValueError(unsupported_country_message(self.country))
@@ -163,6 +174,7 @@ class SimConfig:
             self.btc_equity_corr,
             self.health_insurance_monthly,
             self.health_insurance_real_growth,
+            self.us_dividend_withholding_rate,
             *self.initial_pillar_3a_accounts,
         )
         if not all(np.isfinite(x) for x in float_fields):
@@ -242,6 +254,13 @@ class SimConfig:
         if self.country == "AT" and (self.initial_pillar_2 > 0.0 or any(a > 0.0 for a in self.initial_pillar_3a_accounts)):
             raise ValueError("Pillar 2 / Pillar 3a balances are Swiss-only and must be 0 when country == 'AT'.")
 
+        if not (0.0 <= self.us_dividend_withholding_rate < 1.0):
+            raise ValueError(
+                f"us_dividend_withholding_rate ({self.us_dividend_withholding_rate}) must be in [0, 1)."
+            )
+        if not isinstance(self.us_withholding_credit, (bool, np.bool_)):
+            raise ValueError(f"us_withholding_credit ({self.us_withholding_credit!r}) must be a bool.")
+
 
 def _get_year_0_liquid_wealth(config: SimConfig) -> float:
     """Year 0 liquid wealth incl. Day-1 pension lump sums net of tax (see `Jurisdiction.year_0_liquid_wealth`)."""
@@ -273,18 +292,24 @@ def _cash_tent_weights_for_year(
     return weights
 
 
-def _estimate_year_0_taxes_for_weights(
-    config: SimConfig, init_wealth: float, weights: np.ndarray
-) -> float:
-    return get_jurisdiction(config.country).estimate_year_0_taxes_for_weights(config, init_wealth, weights)
-
-
 def estimate_year_0_taxes(config: SimConfig) -> float:
-    """Estimates Year 0 total taxes (income, wealth, AHV non-worker) for initial Cash Tent and TWR calculation.
+    """Estimates Year 0 total taxes (income, wealth, AHV non-worker, US withholding net of the DA-1
+    credit; AT: income tax, KESt, health insurance) for initial Cash Tent and TWR calculation.
 
     When `rebalance_strategy == 'Cash Tent'`, evaluates dividends and cash interest on Year 0's
     actual Cash Tent allocation rather than post-tent base weights (using a 2-step fixed point).
     """
+    return float(estimate_year_0_tax_breakdown(config).total[0])
+
+
+def estimate_year_0_tax_breakdown(config: SimConfig) -> AnnualTaxes:
+    """Year 0 tax estimate with its components and details (see `estimate_year_0_taxes`).
+
+    `components` sum to `total` (CH: income tax after the DA-1 credit, wealth tax, AHV contributions,
+    US withholding tax; AT: income tax, KESt, health insurance); `details` holds the DA-1
+    `foreign_tax_credit` and the `taxable_income` (CH). One-element arrays.
+    """
+    jurisdiction = get_jurisdiction(config.country)
     init_wealth = _get_year_0_liquid_wealth(config)
     base_weights = np.array([
         config.alloc_us_stocks,
@@ -294,14 +319,18 @@ def estimate_year_0_taxes(config: SimConfig) -> float:
         config.alloc_bitcoin,
     ], dtype=float)
 
-    est_tax = _estimate_year_0_taxes_for_weights(config, init_wealth, base_weights)
+    breakdown = year_0_tax_assessment(jurisdiction, config, init_wealth, base_weights)
     if config.rebalance_strategy == "Cash Tent" and config.tent_duration_years > 0 and init_wealth > 0:
         for _ in range(2):
             w0 = _cash_tent_weights_for_year(
-                base_weights, config.tent_duration_years, 0, init_wealth, config.annual_base_expenses + est_tax
+                base_weights,
+                config.tent_duration_years,
+                0,
+                init_wealth,
+                config.annual_base_expenses + float(breakdown.total[0]),
             )
-            est_tax = _estimate_year_0_taxes_for_weights(config, init_wealth, w0)
-    return est_tax
+            breakdown = year_0_tax_assessment(jurisdiction, config, init_wealth, w0)
+    return breakdown
 
 
 def get_target_weights(config: SimConfig, year: int) -> np.ndarray:
@@ -527,6 +556,7 @@ def run_simulation(config: SimConfig, return_matrix: np.ndarray, inflation_matri
     history_realized_gains = np.zeros((duration_months // 12, num_runs))
     history_unrealized_gains = np.zeros((duration_months // 12, num_runs))
     history_tax_components: dict[str, np.ndarray] = {}
+    history_tax_details: dict[str, np.ndarray] = {}
     
     inflation_factors = np.ones(num_runs)
     bracket_factors = np.ones(num_runs)
@@ -728,6 +758,8 @@ def run_simulation(config: SimConfig, return_matrix: np.ndarray, inflation_matri
             # US Stocks (0) and Non-US Stocks (1) generate dividends
             equities = np.maximum(0, liquid_assets[:, 0] + liquid_assets[:, 1])
             dividends = equities * config.dividend_yield
+            # The US Stocks part is subject to US withholding tax (CH; see Switzerland.assess_annual_taxes).
+            us_dividends = np.maximum(0, liquid_assets[:, ASSET_US_STOCKS]) * config.dividend_yield
 
             # Cash (index 2) generates taxable interest from the realized annual return on CHF Cash
             # in return_matrix[:, (m - 11):(m + 1), 2] (floored at 0.0 so negative rates never reduce taxable income).
@@ -766,6 +798,7 @@ def run_simulation(config: SimConfig, return_matrix: np.ndarray, inflation_matri
                     bracket_factors=bracket_factors,
                     realized_gains=realized_gains,
                     inflation_factors=inflation_factors,
+                    us_dividends=us_dividends,
                 )
 
             # Runs that pay the outflow from positive cash before selling other holdings: Smart Cash
@@ -892,6 +925,10 @@ def run_simulation(config: SimConfig, return_matrix: np.ndarray, inflation_matri
                 if component not in history_tax_components:
                     history_tax_components[component] = np.zeros((duration_months // 12, num_runs))
                 history_tax_components[component][year, :] = values
+            for detail, values in annual_taxes.details.items():
+                if detail not in history_tax_details:
+                    history_tax_details[detail] = np.zeros((duration_months // 12, num_runs))
+                history_tax_details[detail][year, :] = values
             history_expenses[year, :] = current_expenses
             history_income_divs[year, :] = dividends
             history_income_interest[year, :] = interest
@@ -920,6 +957,7 @@ def run_simulation(config: SimConfig, return_matrix: np.ndarray, inflation_matri
         'realized_gains': history_realized_gains,
         'unrealized_gains': history_unrealized_gains,
         'tax_components': history_tax_components,
+        'tax_details': history_tax_details,
         'initial_net_worth': initial_net_worth,
         'initial_net_worth_after_tax': float(initial_net_worth_after_tax[0]),
     }

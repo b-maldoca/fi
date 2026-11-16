@@ -78,6 +78,17 @@ ZURICH_WEALTH_BRACKETS = [
 ]
 
 
+# US withholding tax on dividends paid to a Swiss resident who filed a W-8BEN: the treaty rate
+# of the CH-US double taxation agreement (Art. 10 Abs. 2 lit. b DBA CH-US) instead of 30%.
+US_DIVIDEND_WITHHOLDING_RATE = 0.15
+
+# Verordnung über die Anrechnung ausländischer Quellensteuern (SR 672.201): the residual foreign
+# withholding tax is credited against Swiss income tax (form DA-1 in Zurich) only if the creditable
+# foreign taxes of the year add up to at least CHF 100. Below that threshold no credit is granted
+# and the foreign income is taxed net of the withholding tax. A fixed nominal amount (not indexed).
+FOREIGN_TAX_CREDIT_MIN_CLAIM = 100.0
+
+
 def _is_scalar(x) -> bool:
     return np.isscalar(x) or (isinstance(x, np.ndarray) and x.ndim == 0)
 
@@ -123,6 +134,41 @@ def calculate_income_tax(
     cantonal_base_tax = _calculate_bracket_tax(taxable_income, ZURICH_INCOME_BRACKETS)
     result = fed_tax + cantonal_base_tax * (cantonal_multiplier + municipal_multiplier)
     return _as_output(result, _is_scalar(taxable_income))
+
+
+def calculate_foreign_tax_credit(
+    foreign_tax: np.ndarray,
+    foreign_income: np.ndarray,
+    income_tax: np.ndarray,
+    taxable_income: np.ndarray,
+) -> np.ndarray:
+    """
+    Credit for residual foreign withholding tax (Anrechnung ausländischer Quellensteuern, SR 672.201).
+
+    Ordinary credit: the foreign tax is credited up to the Swiss income tax attributable to the
+    foreign income (the "Maximalbetrag"), i.e. the foreign income times the average Swiss rate
+    (federal + cantonal + municipal; church tax is excluded and not modelled here):
+
+        credit = min(foreign_tax, min(foreign_income, taxable_income) * income_tax / taxable_income)
+
+    The foreign income counts at most up to the taxable income: when general deductions (e.g. the
+    AHV non-worker contributions) push the taxable income below the foreign income, the whole Swiss
+    income tax is attributable to it, and the credit never exceeds the Swiss income tax.
+    The law computes the maximum separately for the federal and the cantonal/municipal tax; the
+    total is the same. `foreign_income` is the gross income (the model has no deductible asset
+    management costs). The CHF 100 minimum claim (`FOREIGN_TAX_CREDIT_MIN_CLAIM`) is applied by the
+    caller, because below it the income is also declared net of the foreign tax.
+    """
+    is_scalar = all(_is_scalar(x) for x in (foreign_tax, foreign_income, income_tax, taxable_income))
+    foreign_tax, foreign_income, income_tax, taxable_income = np.broadcast_arrays(
+        *(np.asarray(x, dtype=float) for x in (foreign_tax, foreign_income, income_tax, taxable_income))
+    )
+    average_rate = np.divide(
+        income_tax, taxable_income, out=np.zeros_like(income_tax), where=taxable_income > 0.0
+    )
+    maximum = np.clip(foreign_income, 0.0, np.maximum(0.0, taxable_income)) * average_rate
+    credit = np.clip(np.minimum(foreign_tax, maximum), 0.0, None)
+    return _as_output(credit, is_scalar)
 
 
 def calculate_wealth_tax(

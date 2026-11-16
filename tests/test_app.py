@@ -39,7 +39,9 @@ def test_app_runs_with_defaults():
     # chart 2 = Income vs Required Cash, chart 3 = Annual Withdrawal Breakdown,
     # chart 4 = Withdrawal Rate, chart 5 = Asset Allocation Development.
     import json
-    hist_charts = [json.loads(c.proto.spec) for c in at.columns[0].get("plotly_chart")]
+    # The first column holding charts is Historic Backtesting (the Year-0 Taxes row above has none).
+    hist_column = next(col for col in at.columns if col.get("plotly_chart"))
+    hist_charts = [json.loads(c.proto.spec) for c in hist_column.get("plotly_chart")]
     assert len(hist_charts) == 6
     nw_names = [t["name"] for t in hist_charts[0]["data"] if t.get("showlegend") is not False]
     surv_names = [t["name"] for t in hist_charts[1]["data"]]
@@ -309,7 +311,9 @@ def test_app_runs_in_austria_mode():
     slider = next(s for s in at.slider if s.label.startswith("Real EUR Appreciation"))
     assert f"+{HISTORIC_REAL_EUR_APPRECIATION * 100:.2f}%" in slider.help
 
-    hist_charts = [json.loads(c.proto.spec) for c in at.columns[0].get("plotly_chart")]
+    # The first column holding charts is Historic Backtesting (the Year-0 Taxes row above has none).
+    hist_column = next(col for col in at.columns if col.get("plotly_chart"))
+    hist_charts = [json.loads(c.proto.spec) for c in hist_column.get("plotly_chart")]
     assert [t["name"] for t in hist_charts[1]["data"]] == ["Solvent (NW > 0)", "Above Target (50% Start NW)"]
     assert [t["name"] for t in hist_charts[2]["data"]] == ["Dividends", "Cash Interest", "State Pension", "Capital Sold", "Inflation-Adj Start"]
     taxes_bar = hist_charts[3]["data"][1]
@@ -441,3 +445,72 @@ def test_tax_hover_breakdown_sums_to_the_median_total():
             parts = [float(v.replace(",", "")) for v in re.findall(r": ([\d,]+) EUR", text)]
             assert len(parts) == 3
             assert sum(parts) == pytest.approx(float(total), abs=2.0)
+
+
+def test_year_0_taxes_safe_spending_and_effective_tax_rate_in_switzerland():
+    at = _run()
+    assert not at.exception, [e.value for e in at.exception]
+    metrics = {}
+    for m in at.metric:
+        metrics.setdefault(m.label, []).append(m)
+    assert len(metrics["Highest Safe Spending (95%)"]) == 3
+    assert all(m.value.endswith("CHF") and "vs. current" in m.proto.delta for m in metrics["Highest Safe Spending (95%)"])
+    assert len(metrics["Effective Tax Rate (Lifetime)"]) == 3
+    assert all("DA-1" in m.proto.help for m in metrics["Effective Tax Rate (Lifetime)"])
+    for label in ("Annual Taxes (Year 0)", "Effective Tax Rate (Year 0)", "Gross Withdrawal Rate (Year 0)"):
+        assert len(metrics[label]) == 1
+    assert "US withholding tax" in metrics["Annual Taxes (Year 0)"][0].proto.help
+    us = metrics["US Withholding (Year 0)"][0]
+    assert us.value.endswith("CHF") and us.proto.delta.startswith("DA-1 credit")
+    wht = next(s for s in at.selectbox if s.label == "US Dividend Withholding Tax")
+    assert wht.value.startswith("US-domiciled")
+
+
+def test_us_withholding_options_change_year_0_taxes():
+    def year_0_taxes(at):
+        value = next(m.value for m in at.metric if m.label == "Annual Taxes (Year 0)")
+        return float(value.replace(" CHF", "").replace(",", ""))
+
+    def choose(option):
+        def setup(at):
+            next(s for s in at.selectbox if s.label == "US Dividend Withholding Tax").set_value(option)
+            next(c for c in at.checkbox if c.label == "Find Highest Safe Spending").uncheck()
+        return setup
+
+    ignore = _run(choose("Ignore US withholding tax"))
+    da1 = _run(choose("US-domiciled (15% withheld, DA-1 credit)"))
+    ireland = _run(choose("Ireland-domiciled ETF (15% lost in the fund)"))
+    for at in (ignore, da1, ireland):
+        assert not at.exception, [e.value for e in at.exception]
+    assert next(m.value for m in ignore.metric if m.label == "US Withholding (Year 0)") == "Ignored"
+    assert year_0_taxes(ignore) < year_0_taxes(da1) < year_0_taxes(ireland)
+    # Switched off: no search, no metric.
+    assert not any(m.label.startswith("Highest Safe Spending") for m in da1.metric)
+
+
+def test_austria_has_no_us_withholding_input():
+    at = _run(_select_austria)
+    assert not at.exception, [e.value for e in at.exception]
+    assert not any(s.label == "US Dividend Withholding Tax" for s in at.selectbox)
+    labels = [m.label for m in at.metric]
+    assert "US Withholding (Year 0)" not in labels
+    assert "Annual Taxes (Year 0)" in labels
+    assert sum(1 for label in labels if label == "Highest Safe Spending (95%)") == 3
+
+
+def test_us_withholding_choice_survives_an_austria_round_trip():
+    # Streamlit drops the state of a widget that is not rendered (the input is hidden in Austria).
+    option = "Ireland-domiciled ETF (15% lost in the fund)"
+    at = AppTest.from_file("app.py", default_timeout=APP_TIMEOUT_S)
+    at.run()
+    next(c for c in at.checkbox if c.label == "Find Highest Safe Spending").uncheck()
+    next(s for s in at.selectbox if s.label == "US Dividend Withholding Tax").set_value(option)
+    at.run()
+    _select_austria(at)
+    at.run()
+    next(s for s in at.selectbox if s.label == "Country").set_value("Switzerland (Zurich)")
+    at.run()
+    assert not at.exception, [e.value for e in at.exception]
+    assert next(s for s in at.selectbox if s.label == "US Dividend Withholding Tax").value == option
+    us = next(m for m in at.metric if m.label == "US Withholding (Year 0)")
+    assert us.proto.delta == ""  # no DA-1 credit for an Ireland-domiciled ETF

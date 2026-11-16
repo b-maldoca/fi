@@ -237,3 +237,123 @@ def test_brackets_never_decrease_under_random_inflation(monkeypatch, country):
     factors = _capture_bracket_factors(monkeypatch, cls, cfg, inflation)
     assert np.all(np.diff(factors, axis=0) >= 0.0)
     assert np.all(factors >= 1.0)
+
+
+# --------------------------------------------------------------------------- US withholding tax / DA-1 credit
+
+
+def _assess_us(cfg, us_dividends, other_dividends=0.0, interest=0.0, pension=0.0, age=50, factors=None):
+    us = np.atleast_1d(np.asarray(us_dividends, dtype=float))
+    n = us.shape[0]
+    return Switzerland().assess_annual_taxes(
+        cfg,
+        current_age=age,
+        total_liquid_end=np.full(n, 2_000_000.0),
+        current_expenses=np.full(n, 80_000.0),
+        dividends=us + other_dividends,
+        interest=np.full(n, interest),
+        annual_pension=np.full(n, pension),
+        bracket_factors=np.ones(n) if factors is None else factors,
+        us_dividends=us,
+    )
+
+
+def test_da1_credit_is_capped_at_swiss_tax_on_the_us_dividends():
+    from src.tax_engine import calculate_foreign_tax_credit
+
+    cfg = _config()
+    us = np.array([20_000.0, 200_000.0])
+    taxes = _assess_us(cfg, us, age=STATE_PENSION_AGE, pension=24_000.0)
+    taxable = us + 24_000.0  # gross dividends + pension (no AHV contributions from 65)
+    gross_tax = calculate_income_tax(taxable, cfg.cantonal_multiplier, cfg.municipal_multiplier)
+    withheld = 0.15 * us
+    credit = np.minimum(withheld, us * gross_tax / taxable)
+
+    np.testing.assert_allclose(taxes.components["us_withholding_tax"], withheld)
+    np.testing.assert_allclose(taxes.details["foreign_tax_credit"], credit)
+    np.testing.assert_allclose(taxes.components["income_tax"], gross_tax - credit)
+    np.testing.assert_allclose(taxes.details["taxable_income"], taxable)
+    np.testing.assert_allclose(taxes.total, sum(taxes.components.values()))
+    np.testing.assert_allclose(calculate_foreign_tax_credit(withheld, us, gross_tax, taxable), credit)
+    # Low income: the average Swiss rate is below 15%, so part of the withholding is lost. High
+    # income: the average rate exceeds 15% and the withholding is credited in full.
+    assert credit[0] < withheld[0]
+    assert credit[1] == pytest.approx(withheld[1])
+
+
+def test_da1_credit_needs_chf_100_of_withholding_else_dividends_are_taxed_net():
+    cfg = _config()
+    # 600 * 15% = 90 < CHF 100: no credit, dividends declared net of the withholding.
+    taxes = _assess_us(cfg, 600.0, other_dividends=40_000.0, age=STATE_PENSION_AGE)
+    expected = calculate_income_tax(40_000.0 + 510.0, cfg.cantonal_multiplier, cfg.municipal_multiplier)
+    assert taxes.details["foreign_tax_credit"][0] == 0.0
+    assert taxes.components["us_withholding_tax"][0] == pytest.approx(90.0)
+    assert taxes.components["income_tax"][0] == pytest.approx(expected)
+
+
+def test_ireland_domiciled_etf_loses_withholding_and_is_taxed_net():
+    cfg = _config(us_withholding_credit=False)
+    taxes = _assess_us(cfg, 50_000.0, age=STATE_PENSION_AGE)
+    expected = calculate_income_tax(42_500.0, cfg.cantonal_multiplier, cfg.municipal_multiplier)
+    assert taxes.details["foreign_tax_credit"][0] == 0.0
+    assert taxes.components["us_withholding_tax"][0] == pytest.approx(7_500.0)
+    assert taxes.components["income_tax"][0] == pytest.approx(expected)
+
+
+def test_zero_withholding_rate_reproduces_the_model_without_withholding():
+    rng = np.random.default_rng(11)
+    returns = rng.normal(0.005, 0.04, size=(3, 8 * 12, 5))
+    inflation = rng.normal(0.02, 0.01, size=(3, 8))
+    off = run_simulation(_config(us_dividend_withholding_rate=0.0), returns, inflation)
+    on = run_simulation(_config(), returns, inflation)
+    assert "us_withholding_tax" not in off["tax_components"]
+    np.testing.assert_array_equal(off["tax_details"]["foreign_tax_credit"], 0.0)
+    # The withholding net of the credit is an extra cost.
+    lost = on["tax_components"]["us_withholding_tax"] - on["tax_details"]["foreign_tax_credit"]
+    assert np.all(lost >= -1e-9) and np.any(lost > 0.0)
+    assert on["net_worth"][-1].sum() < off["net_worth"][-1].sum()
+
+
+def test_us_withholding_rate_is_validated():
+    with pytest.raises(ValueError, match="us_dividend_withholding_rate"):
+        _config(us_dividend_withholding_rate=1.0)
+    with pytest.raises(ValueError, match="us_withholding_credit"):
+        _config(us_withholding_credit="yes")
+
+
+def test_year_0_breakdown_matches_estimate_and_components():
+    from src.simulation_engine import estimate_year_0_tax_breakdown
+
+    for cfg in (
+        _config(rebalance_strategy="Cash Tent", start_age=45),
+        _config(rebalance_strategy="Yearly", start_age=66),
+        _config(country="AT", initial_pillar_2=0.0, initial_pillar_3a_accounts=[], start_age=45),
+    ):
+        y0 = estimate_year_0_tax_breakdown(cfg)
+        assert float(y0.total[0]) == estimate_year_0_taxes(cfg)
+        assert float(y0.total[0]) == pytest.approx(sum(float(v[0]) for v in y0.components.values()))
+    ch = estimate_year_0_tax_breakdown(_config(rebalance_strategy="Yearly", start_age=45))
+    us_dividends = 1_500_000.0 * 0.6 * 0.02
+    assert ch.components["us_withholding_tax"][0] == pytest.approx(0.15 * us_dividends)
+    assert 0.0 < ch.details["foreign_tax_credit"][0] <= 0.15 * us_dividends
+
+
+def test_da1_credit_never_makes_income_tax_negative():
+    # Large wealth -> AHV non-worker contribution near the maximum, deducted from income: the
+    # taxable income falls below the US dividends, so the credit is capped at the whole Swiss tax.
+    cfg = _config(initial_liquid_wealth=8_000_000.0)
+    us = np.array([40_000.0, 50_000.0, 60_000.0])
+    taxes = Switzerland().assess_annual_taxes(
+        cfg,
+        current_age=50,
+        total_liquid_end=np.full(3, 8_000_000.0),
+        current_expenses=np.full(3, 80_000.0),
+        dividends=us,
+        interest=np.zeros(3),
+        annual_pension=np.zeros(3),
+        bracket_factors=np.ones(3),
+        us_dividends=us,
+    )
+    assert np.all(taxes.details["taxable_income"] < us)
+    np.testing.assert_allclose(taxes.components["income_tax"], 0.0, atol=1e-9)
+    assert np.all(taxes.details["foreign_tax_credit"] > 0.0)
