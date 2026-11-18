@@ -84,6 +84,8 @@ def test_outflow_sale_pays_tax_on_its_own_gains():
 
 
 def test_large_sale_falls_back_to_flat_kest():
+    from src.metrics import annual_income_tax_rate
+
     returns = np.zeros((1, 12, 5))
     returns[0, 0, 0] = 1.0
     cfg = _config(annual_base_expenses=600_000.0)
@@ -91,6 +93,8 @@ def test_large_sale_falls_back_to_flat_kest():
     realized = history["realized_gains"][0, 0]
     assert history["tax_components"]["kest"][0, 0] == pytest.approx(0.275 * realized, rel=1e-9)
     assert history["tax_components"]["income_tax"][0, 0] == pytest.approx(0.0)
+    assert history["tax_details"]["taxable_income"][0, 0] == pytest.approx(realized, rel=1e-9)
+    assert annual_income_tax_rate(history)[0, 0] == pytest.approx(27.5, rel=1e-9)
 
 
 def test_year_end_rebalance_gains_are_taxed_next_year():

@@ -340,20 +340,22 @@ def test_year_0_breakdown_matches_estimate_and_components():
 
 def test_da1_credit_never_makes_income_tax_negative():
     # Large wealth -> AHV non-worker contribution near the maximum, deducted from income: the
-    # taxable income falls below the US dividends, so the credit is capped at the whole Swiss tax.
+    # taxable income falls below the US dividends, so the credit is capped at the whole Swiss tax
+    # (never exceeding `income_tax` even by 1 ULP of `a * (b / a)` rounding).
     cfg = _config(initial_liquid_wealth=8_000_000.0)
-    us = np.array([40_000.0, 50_000.0, 60_000.0])
+    us = np.linspace(35_000.0, 65_000.0, 200)
     taxes = Switzerland().assess_annual_taxes(
         cfg,
         current_age=50,
-        total_liquid_end=np.full(3, 8_000_000.0),
-        current_expenses=np.full(3, 80_000.0),
+        total_liquid_end=np.full(200, 8_000_000.0),
+        current_expenses=np.full(200, 80_000.0),
         dividends=us,
-        interest=np.zeros(3),
-        annual_pension=np.zeros(3),
-        bracket_factors=np.ones(3),
+        interest=np.zeros(200),
+        annual_pension=np.zeros(200),
+        bracket_factors=np.ones(200),
         us_dividends=us,
     )
     assert np.all(taxes.details["taxable_income"] < us)
+    assert np.all(taxes.components["income_tax"] >= 0.0)
     np.testing.assert_allclose(taxes.components["income_tax"], 0.0, atol=1e-9)
-    assert np.all(taxes.details["foreign_tax_credit"] > 0.0)
+    assert np.all(taxes.details["foreign_tax_credit"] >= 0.0)

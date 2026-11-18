@@ -554,6 +554,7 @@ class Austria:
         return AnnualTaxes(
             total=income_tax + kest + health,
             components={"income_tax": income_tax, "kest": kest, "health_insurance": health},
+            details={"taxable_income": f * taxes["taxable_income"]},
         )
 
 

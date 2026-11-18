@@ -2822,6 +2822,8 @@ def test_package_exports_and_generated_historic_returns_in_sync():
         "HEALTH_SELF_INSURANCE_MONTHLY",
         "calculate_annual_taxes_at",
         "calculate_income_tax_at",
+        "annual_effective_tax_rate",
+        "annual_income_tax_rate",
     ):
         assert sym in src.__all__
         assert hasattr(src, sym)

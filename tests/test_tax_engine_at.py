@@ -69,6 +69,7 @@ def test_pension_only():
     assert t["pension_health_insurance"] == pytest.approx(1_680.0)
     assert t["income_tax"] == pytest.approx(tariff - credit + special)
     assert t["kest"] == 0.0
+    assert t["taxable_income"] == pytest.approx(28_000.0 - 1_680.0)
     assert t["total"] == pytest.approx(tariff - credit + special + 1_680.0)
 
 
@@ -78,6 +79,7 @@ def test_regelbesteuerung_wins_for_small_capital_income():
     assert t["regelbesteuerung"] == 1.0
     assert t["kest"] == 0.0
     assert t["income_tax"] == pytest.approx(4_693.0)
+    assert t["taxable_income"] == pytest.approx(32_000.0)
     assert t["total"] == pytest.approx(4_693.0)
 
 

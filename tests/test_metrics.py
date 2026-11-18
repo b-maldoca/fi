@@ -324,3 +324,62 @@ def test_funded_outflows_exclude_unpaid_amounts_of_depleted_runs():
     exp2, tax2 = funded_outflows({k: v for k, v in history.items() if k != "unfunded_deficit"})
     np.testing.assert_allclose(exp2, history["expenses_paid"])
     np.testing.assert_allclose(tax2, history["taxes_paid"])
+
+
+def test_annual_effective_and_income_tax_rates():
+    from src.metrics import annual_effective_tax_rate, annual_income_tax_rate
+
+    # Switzerland-style history: income_tax is after DA-1 credit; wealth_tax, ahv_contributions and
+    # us_withholding_tax are excluded from annual_income_tax_rate but included in annual_effective_tax_rate.
+    ch_history = {
+        "expenses_paid": np.array([[80_000.0, 50_000.0], [80_000.0, 50_000.0]]),
+        "taxes_paid": np.array([[20_000.0, 10_000.0], [25_000.0, 10_000.0]]),
+        # Run 1 is completely unfunded in year 1 (depleted portfolio -> 0% effective withdrawal tax rate).
+        "unfunded_deficit": np.array([[0.0, 0.0], [0.0, 60_000.0]]),
+        "tax_components": {
+            "income_tax": np.array([[0.0, 1_500.0], [4_400.0, 0.0]]),
+            "wealth_tax": np.array([[10_000.0, 5_000.0], [18_600.0, 5_000.0]]),
+            "ahv_contributions": np.array([[8_000.0, 3_500.0], [0.0, 5_000.0]]),
+            "us_withholding_tax": np.array([[2_000.0, 0.0], [2_000.0, 0.0]]),
+        },
+        "tax_details": {
+            "taxable_income": np.array([[0.0, 15_000.0], [44_000.0, 0.0]]),
+        },
+    }
+    np.testing.assert_allclose(
+        annual_effective_tax_rate(ch_history),
+        [[20.0, 10_000.0 / 60_000.0 * 100.0], [25_000.0 / 105_000.0 * 100.0, 0.0]],
+    )
+    np.testing.assert_allclose(annual_income_tax_rate(ch_history), [[0.0, 10.0], [10.0, 0.0]])
+
+    # Austria-style history: run 0 uses Regelbesteuerungsoption (kest=0), run 1 uses flat 27.5% KESt (income_tax=0).
+    at_history = {
+        "expenses_paid": np.array([[40_000.0, 100_000.0]]),
+        "taxes_paid": np.array([[10_976.0, 61_783.0]]),
+        "tax_components": {
+            "income_tax": np.array([[4_193.0, 0.0]]),
+            "kest": np.array([[0.0, 55_000.0]]),
+            "health_insurance": np.array([[6_783.0, 6_783.0]]),
+        },
+        "tax_details": {
+            "taxable_income": np.array([[30_000.0, 200_000.0]]),
+        },
+    }
+    np.testing.assert_allclose(annual_income_tax_rate(at_history), [[4_193.0 / 30_000.0 * 100.0, 27.5]])
+
+    # Minimal dict fallback when tax_details / tax_components are omitted.
+    np.testing.assert_allclose(annual_income_tax_rate({"expenses_paid": np.array([[50.0]])}), [[0.0]])
+
+    # Regression: IEEE-754 cancellation when `deficit == float(expenses + taxes)` (`51005.0 + 540.653`)
+    # must not leave a ~1.6e-12 tax residual that divides by itself to produce a 100% effective tax rate.
+    from src.metrics import effective_tax_rate
+
+    exp_due = np.array([[51_005.0]])
+    tax_due = np.array([[540.653]])
+    unfunded = {
+        "expenses_paid": exp_due,
+        "taxes_paid": tax_due,
+        "unfunded_deficit": exp_due + tax_due,
+    }
+    np.testing.assert_array_equal(annual_effective_tax_rate(unfunded), [[0.0]])
+    np.testing.assert_array_equal(effective_tax_rate(unfunded, np.zeros((1, 1))), [0.0])

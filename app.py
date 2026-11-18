@@ -18,6 +18,8 @@ from src.historic_returns import (
 from src.jurisdiction import COUNTRY_DEFAULTS
 from src.metrics import (
     RICH_MULTIPLE,
+    annual_effective_tax_rate,
+    annual_income_tax_rate,
     beginning_of_year_withdrawal_rate,
     classify_outcome,
     classify_path_outcomes,
@@ -1526,6 +1528,66 @@ def render_results(
     st.subheader("Withdrawal Rate", help="This chart displays net annual portfolio withdrawals (expenses + taxes minus " + PENSION_LABEL.lower() + ", floored at 0) as a percentage of beginning-of-year net worth.")
     st.plotly_chart(fig_wr, width='stretch', key=f"{title}_withdrawal_rate")
 
+    # Tax Rates Chart (median Effective Tax Rate on withdrawals vs. median Average Income Tax Rate on taxable income)
+    eff_tr_median = np.median(annual_effective_tax_rate(history), axis=1)
+    inc_tr_median = np.median(annual_income_tax_rate(history), axis=1)
+    fig_tr = go.Figure()
+    fig_tr.add_trace(go.Scatter(
+        x=years,
+        y=eff_tr_median,
+        mode='lines',
+        name='Effective Tax Rate (50th Pct)',
+        line=dict(color='crimson', width=3.5),
+        hovertemplate="<b>Effective Tax Rate (50th Pct)</b><br>Age: %{x}<br>Rate: %{y:.1f}%<extra></extra>",
+    ))
+    fig_tr.add_trace(go.Scatter(
+        x=years,
+        y=inc_tr_median,
+        mode='lines',
+        name='Average Income Tax Rate (50th Pct)',
+        line=dict(color='royalblue', width=3),
+        hovertemplate="<b>Average Income Tax Rate (50th Pct)</b><br>Age: %{x}<br>Rate: %{y:.1f}%<extra></extra>",
+    ))
+    if config.start_age < 65 < config.start_age + config.duration_years:
+        fig_tr.add_vline(
+            x=65,
+            line_width=1.5,
+            line_dash="dash",
+            line_color="gray",
+            annotation_text="Age 65 (State Pension)" if IS_AT else "Age 65 (AHV + P2)",
+            annotation_position="top left" if 65 - config.start_age >= 8 else "top right",
+        )
+    max_tr_val = max(5.0, float(np.max(eff_tr_median)), float(np.max(inc_tr_median)))
+    fig_tr.update_layout(
+        xaxis_title="Age",
+        yaxis_title="Tax Rate (%)",
+        yaxis=dict(tickformat=".1f", range=[0, min(100.0, max_tr_val * 1.15)]),
+        hovermode="x",
+        legend=dict(orientation="h", yanchor="top", y=-0.22, xanchor="center", x=0.5),
+        margin=dict(t=15, b=65, l=10, r=10),
+    )
+    st.subheader(
+        "Tax Rates",
+        help=(
+            "Compares the median (50th Pct) tax burden over retirement across two definitions:\n"
+            "- Effective Tax Rate (50th Pct): Share of each year's funded withdrawal (taxes / (expenses + taxes)) "
+            "going to all taxes and mandatory contributions ("
+            + (
+                "income tax, KESt, and health insurance"
+                if IS_AT
+                else "income tax after any DA-1 credit, wealth tax, non-worker AHV before 65, US withholding, and Pillar 2/3a capital withdrawal taxes"
+            )
+            + ").\n"
+            "- Average Income Tax Rate (50th Pct): "
+            + (
+                "(Income tax + KESt) divided by taxable pension and capital income (pension net of 6% health contribution + net dividends/gains + cash interest)."
+                if IS_AT
+                else "Net Federal + Zurich income tax (after any DA-1 credit) divided by taxable income (declared dividends + interest + AHV pension − AHV contributions)."
+            )
+        ),
+    )
+    st.plotly_chart(fig_tr, width='stretch', key=f"{title}_tax_rate")
+
     # Asset Allocation Development Chart (Liquid Assets + Pillar 2 & 3a)
     median_assets_by_class = np.median(history['liquid_assets_by_class'], axis=1)  # shape: (years, 5)
     p2_hist = history['pillar_2'] if 'pillar_2' in history else np.zeros((len(years), 1))
@@ -1742,11 +1804,26 @@ def render_year_0_taxes(config: SimConfig) -> None:
     )
     taxes_help = f"Estimated taxes and mandatory contributions in the first year:\n{breakdown}"
     if taxable_income > 0.0:
-        income_tax_before_credit = components.get("income_tax", 0.0) + credit
-        taxes_help += (
-            f"\n\nAverage income tax rate: {income_tax_before_credit / taxable_income * 100:.1f}% of the taxable "
-            f"income of {taxable_income:,.0f} {CCY} (before the DA-1 credit)."
-        )
+        if IS_AT:
+            inc_kest = components.get("income_tax", 0.0) + components.get("kest", 0.0)
+            taxes_help += (
+                f"\n\nAverage income tax rate: {inc_kest / taxable_income * 100:.1f}% of the taxable "
+                f"income of {taxable_income:,.0f} {CCY} (income tax + KESt)."
+            )
+        else:
+            net_inc = components.get("income_tax", 0.0)
+            if credit > 0.0:
+                income_tax_before_credit = net_inc + credit
+                taxes_help += (
+                    f"\n\nAverage income tax rate: {net_inc / taxable_income * 100:.1f}% after the DA-1 credit "
+                    f"({income_tax_before_credit / taxable_income * 100:.1f}% before credit) of the taxable "
+                    f"income of {taxable_income:,.0f} {CCY}."
+                )
+            else:
+                taxes_help += (
+                    f"\n\nAverage income tax rate: {net_inc / taxable_income * 100:.1f}% of the taxable "
+                    f"income of {taxable_income:,.0f} {CCY}."
+                )
 
     st.subheader(
         "Year-0 Taxes",

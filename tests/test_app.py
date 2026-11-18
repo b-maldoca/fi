@@ -37,21 +37,22 @@ def test_app_runs_with_defaults():
     # Historic Backtesting column (column 0):
     # chart 0 = Net Worth Trajectory, chart 1 = Portfolio Survival by Age,
     # chart 2 = Income vs Required Cash, chart 3 = Annual Withdrawal Breakdown,
-    # chart 4 = Withdrawal Rate, chart 5 = Asset Allocation Development.
+    # chart 4 = Withdrawal Rate, chart 5 = Tax Rates, chart 6 = Asset Allocation Development.
     import json
     # The first column holding charts is Historic Backtesting (the Year-0 Taxes row above has none).
     hist_column = next(col for col in at.columns if col.get("plotly_chart"))
     hist_charts = [json.loads(c.proto.spec) for c in hist_column.get("plotly_chart")]
-    assert len(hist_charts) == 6
+    assert len(hist_charts) == 7
     nw_names = [t["name"] for t in hist_charts[0]["data"] if t.get("showlegend") is not False]
     surv_names = [t["name"] for t in hist_charts[1]["data"]]
     inc_hist_names = [t["name"] for t in hist_charts[2]["data"]]
     wb_hist_names = [t["name"] for t in hist_charts[3]["data"]]
     all_charts = [json.loads(c.proto.spec) for c in at.get("plotly_chart")]
-    assert len(all_charts) == 18
-    wb_boot_names = [t["name"] for t in all_charts[9]["data"]]
-    wb_mc_names = [t["name"] for t in all_charts[15]["data"]]
+    assert len(all_charts) == 21
+    wb_boot_names = [t["name"] for t in all_charts[10]["data"]]
+    wb_mc_names = [t["name"] for t in all_charts[17]["data"]]
     wr_traces = [t for t in hist_charts[4]["data"]]
+    tr_names = [t["name"] for t in hist_charts[5]["data"]]
     assert nw_names[:5] == ["Worst Cohort (Min)", "25th Pct", "50th Pct", "75th Pct", "Best Cohort (Max)"]
     assert surv_names == ["Solvent (NW > 0)", "Liquid Solvent (Liquid > 0)", "Above Target (50% Start NW)"]
     assert inc_hist_names == ["Dividends", "Cash Interest", "AHV Pension", "Capital Sold", "Inflation-Adj Start"]
@@ -82,7 +83,8 @@ def test_app_runs_with_defaults():
     assert [t["name"] for t in wr_traces] == ["Best Cohort (Min)", "25th Pct", "50th Pct", "75th Pct", "Worst Cohort (Max)"]
     assert wr_traces[0]["line"]["color"] == "purple"
     assert wr_traces[-1]["line"]["color"] == "crimson"
-    alloc_names = [t["name"] for t in hist_charts[5]["data"]]
+    assert tr_names == ["Effective Tax Rate (50th Pct)", "Average Income Tax Rate (50th Pct)"]
+    alloc_names = [t["name"] for t in hist_charts[6]["data"]]
     assert alloc_names == ["CHF Cash", "US Stocks", "Non-US Stocks", "Gold", "Bitcoin", "Pillar 2 & 3a"]
     for df in at.dataframe:
         assert "Depletion Age" in df.value.columns
@@ -319,8 +321,14 @@ def test_app_runs_in_austria_mode():
     taxes_bar = hist_charts[3]["data"][1]
     assert taxes_bar["name"] == "Taxes Paid (50th Pct)"
     assert "KESt" in taxes_bar["customdata"][0] and "Health insurance" in taxes_bar["customdata"][0]
-    alloc_names = [t["name"] for t in hist_charts[5]["data"]]
+    assert [t["name"] for t in hist_charts[5]["data"]] == [
+        "Effective Tax Rate (50th Pct)",
+        "Average Income Tax Rate (50th Pct)",
+    ]
+    alloc_names = [t["name"] for t in hist_charts[6]["data"]]
     assert alloc_names[0] == "EUR Cash" and "Pillar 2 & 3a" not in alloc_names
+    y0_help = next(m for m in at.metric if m.label == "Annual Taxes (Year 0)").proto.help
+    assert "(income tax + KESt)" in y0_help and "DA-1" not in y0_help
     assert sum(1 for m in at.metric if m.label.startswith("Pre-Pension Outflow")) == 3
     assert all("EUR" in m.value for m in at.metric if m.label == "Median Ending NW (Real)")
     cohort_sub = next(s for s in at.subheader if s.value == "Cohort Analysis")
@@ -413,7 +421,7 @@ def test_identical_charts_in_two_columns_do_not_crash():
 
     at = _run(setup)
     assert not at.exception, [e.value for e in at.exception]
-    assert len(at.get("plotly_chart")) == 18
+    assert len(at.get("plotly_chart")) == 21
 
 
 def test_tax_hover_breakdown_sums_to_the_median_total():
@@ -430,8 +438,8 @@ def test_tax_hover_breakdown_sums_to_the_median_total():
     at = _run(setup)
     assert not at.exception, [e.value for e in at.exception]
     charts = at.get("plotly_chart")
-    assert len(charts) == 18
-    for idx in (3, 9, 15):  # Annual Withdrawal Breakdown of each engine column
+    assert len(charts) == 21
+    for idx in (3, 10, 17):  # Annual Withdrawal Breakdown of each engine column
         taxes_bar = json.loads(charts[idx].proto.spec)["data"][1]
         assert taxes_bar["name"] == "Taxes Paid (50th Pct)"
         y = taxes_bar["y"]
@@ -484,6 +492,9 @@ def test_us_withholding_options_change_year_0_taxes():
         assert not at.exception, [e.value for e in at.exception]
     assert next(m.value for m in ignore.metric if m.label == "US Withholding (Year 0)") == "Ignored"
     assert year_0_taxes(ignore) < year_0_taxes(da1) < year_0_taxes(ireland)
+    assert "after the DA-1 credit" in next(m for m in da1.metric if m.label == "Annual Taxes (Year 0)").proto.help
+    assert "after the DA-1 credit" not in next(m for m in ignore.metric if m.label == "Annual Taxes (Year 0)").proto.help
+    assert "after the DA-1 credit" not in next(m for m in ireland.metric if m.label == "Annual Taxes (Year 0)").proto.help
     # Switched off: no search, no metric.
     assert not any(m.label.startswith("Highest Safe Spending") for m in da1.metric)
 

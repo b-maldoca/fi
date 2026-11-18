@@ -142,13 +142,15 @@ def funded_outflows(history: dict) -> tuple[np.ndarray, np.ndarray]:
 
     `expenses_paid` / `taxes_paid` hold what was *due*; once a portfolio is depleted the unpaid part
     is recorded in `unfunded_deficit` (and becomes debt). The unpaid amount is attributed to living
-    expenses first, then to taxes.
+    expenses first, then to taxes. When `deficit > expenses`, computing `(expenses + taxes) - deficit`
+    directly avoids IEEE-754 cancellation noise where `taxes - (deficit - expenses)` leaves ~1e-12 on
+    a completely unfunded run (`deficit == float(expenses + taxes)`).
     """
     expenses = np.asarray(history['expenses_paid'], dtype=float)
     taxes = np.asarray(history.get('taxes_paid', np.zeros_like(expenses)), dtype=float)
     deficit = np.asarray(history.get('unfunded_deficit', np.zeros_like(expenses)), dtype=float)
     funded_expenses = np.maximum(0.0, expenses - deficit)
-    funded_taxes = np.maximum(0.0, taxes - np.maximum(0.0, deficit - expenses))
+    funded_taxes = np.where(deficit <= expenses, taxes, np.maximum(0.0, (expenses + taxes) - deficit))
     return funded_expenses, funded_taxes
 
 
@@ -163,7 +165,42 @@ def effective_tax_rate(history: dict, inflation_matrix: np.ndarray) -> np.ndarra
     price_level = cumulative_inflation(inflation_matrix).T
     real_taxes = np.sum(taxes / price_level, axis=0)
     real_total = np.sum((expenses + taxes) / price_level, axis=0)
-    return np.divide(real_taxes, real_total, out=np.zeros_like(real_taxes), where=real_total > 0.0)
+    return np.divide(real_taxes, real_total, out=np.zeros_like(real_taxes), where=real_total > 1e-9)
+
+
+def annual_effective_tax_rate(history: dict) -> np.ndarray:
+    """Annual effective tax rate per year and run, in % (0-100), shape `(duration_years, num_runs)`.
+
+    Share of each year's funded withdrawal (`expenses + taxes` actually paid; see `funded_outflows`)
+    that goes to taxes and mandatory contributions. 0 where nothing was withdrawn.
+    """
+    expenses, taxes = funded_outflows(history)
+    total = expenses + taxes
+    return np.divide(taxes, total, out=np.zeros_like(taxes), where=total > 1e-9) * 100.0
+
+
+def annual_income_tax_rate(history: dict) -> np.ndarray:
+    """Annual average income tax rate per year and run, in %, shape `(duration_years, num_runs)`.
+
+    Divides net income-based taxes (`income_tax` after the DA-1 credit in Switzerland;
+    `income_tax + kest` in Austria) by that year's `taxable_income` (`tax_details["taxable_income"]`).
+    0 where `taxable_income <= 0`.
+    """
+    details = history.get("tax_details", {})
+    components = history.get("tax_components", {})
+    if "taxable_income" in details:
+        taxable = np.asarray(details["taxable_income"], dtype=float)
+    elif "income_tax" in components:
+        taxable = np.zeros_like(components["income_tax"], dtype=float)
+    else:
+        taxable = np.zeros_like(history["expenses_paid"], dtype=float)
+    zeros = np.zeros_like(taxable)
+    income_taxes = np.maximum(
+        0.0,
+        np.asarray(components.get("income_tax", zeros), dtype=float)
+        + np.asarray(components.get("kest", zeros), dtype=float),
+    )
+    return np.divide(income_taxes, taxable, out=np.zeros_like(taxable), where=taxable > 1e-9) * 100.0
 
 
 def lifetime_real_totals(values: np.ndarray, inflation_matrix: np.ndarray) -> np.ndarray:

@@ -167,7 +167,7 @@ def calculate_foreign_tax_credit(
         income_tax, taxable_income, out=np.zeros_like(income_tax), where=taxable_income > 0.0
     )
     maximum = np.clip(foreign_income, 0.0, np.maximum(0.0, taxable_income)) * average_rate
-    credit = np.clip(np.minimum(foreign_tax, maximum), 0.0, None)
+    credit = np.clip(np.minimum(foreign_tax, maximum), 0.0, np.maximum(0.0, income_tax))
     return _as_output(credit, is_scalar)
 
 

@@ -145,6 +145,8 @@ def calculate_annual_taxes_at(
             the progressive tax on all capital income.
         kest: special-rate tax on capital income (0 when the Regelbesteuerungsoption applies).
         regelbesteuerung: 1.0 where the progressive option was chosen, else 0.0.
+        taxable_income: pension (net of the 6% health contribution) plus positive capital income pool
+            and bank interest, i.e. the income base on which `income_tax + kest` is levied.
         total: income_tax + kest + pension_health_insurance.
 
     The Regelbesteuerungsoption (§ 27a Abs. 5 EStG) is evaluated every year and the cheaper of
@@ -197,6 +199,7 @@ def calculate_annual_taxes_at(
         "income_tax": income_tax,
         "kest": kest,
         "regelbesteuerung": use_regel.astype(float),
+        "taxable_income": net_of_health + pool + interest_arr,
         "total": income_tax + kest + pension_health,
     }
     return {k: _as_output(v, scalar) for k, v in out.items()}
