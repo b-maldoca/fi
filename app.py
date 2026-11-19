@@ -1078,7 +1078,6 @@ def render_results(
     inf_adj_start_nw_trajectory = initial_nw * median_cum_inflation
     initial_withdrawal = config.annual_base_expenses + estimate_year_0_taxes(config)
     inf_adj_start_withdrawal_trajectory = initial_withdrawal * median_cum_inflation
-    st.markdown(f"**Nominal Starting NW:** {initial_nw:,.0f} {CCY}")
     if hist_eff_caption:
         visibility_style = "visible" if is_historic_backtest else "hidden"
         st.markdown(
@@ -1871,6 +1870,8 @@ def render_year_0_taxes(config: SimConfig) -> None:
             )
 
 
+# Same starting wealth for every method, so it is shown once above the Year-0 Taxes row.
+st.markdown(f"**Nominal Starting NW:** {history_hist['initial_net_worth']:,.0f} {CCY}")
 render_year_0_taxes(config_hist)
 col_hist, col_boot, col_mc = st.columns(3)
 with col_hist:
